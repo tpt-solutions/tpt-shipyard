@@ -1,0 +1,38 @@
+# Compiled output
+/target
+**/target
+
+# Cargo
+Cargo.lock
+
+# Backup / swap files
+*.bak
+*.swp
+*.swo
+*~
+
+# Editor / IDE
+.idea
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# WASM build artifacts
+pkg/
+dist/
+
+# Coverage / profiling
+/coverage
+*.profraw
+*.gcda
+*.gcno
+
+# Local env
+.env
+.env.local

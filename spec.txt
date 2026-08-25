@@ -1,0 +1,1570 @@
+# TPT Shipyard: Open Source Design Document
+
+**Organization:** TPT Solutions (`tpt-solutions`)
+**Repository:** `tpt-shipyard`
+**Crate Prefix:** `tpt-yard-*`
+**License:** `MIT OR Apache-2.0`
+**Status:** Open Source Master Plan
+**Philosophy:** 100% Open Source. Build Anything, Anywhere. Sea or Space. No Gravity Constraints. No Proprietary Lock-in.
+
+---
+
+## 1. Open Source Declaration
+
+`tpt-shipyard` is a fully open-source, MIT-licensed computational engine for **vehicle construction and assembly**: sea shipyards, orbital assembly, in-space manufacturing, and the digital twin of the build process. Every crate, every assembly planner, and every structural solver is freely available under MIT OR Apache-2.0.
+
+### The Core Insight
+
+You identified something profound: **a spaceship built in space does not need to be a rocket.**
+
+On Earth, every spacecraft is constrained by:
+- Aerodynamic drag during ascent
+- Maximum dynamic pressure (Max-Q)
+- Fairing diameter limits (typically 5m)
+- Launch vibration and acoustic loads
+- Gravity-induced sag during horizontal assembly
+
+In orbit, none of these constraints exist. You can build:
+- Rotating habitats (O'Neill cylinders, Stanford torus)
+- Kilometer-scale solar power stations
+- Arbitrary truss geometries
+- Gravity-gradient stabilised structures
+- Vehicles optimised purely for vacuum operation
+
+`tpt-shipyard` is the engine that plans, simulates, and validates the construction of these structures — whether in a drydock in Busan or in a robotic assembly bay at Earth-Moon L2.
+
+### Why Fully Open Source?
+
+1. **Sea shipyards** (Hyundai Heavy, Meyer Werft, Fincantieri) run on proprietary planning tools and tribal knowledge. There is no open, auditable digital twin standard for ship construction.
+2. **Space assembly** is in its infancy. NASA's Gateway, SpaceX Starship assembly, and commercial station projects are all developing proprietary tooling. An open standard for orbital assembly planning does not exist yet.
+3. **The physics gap:** Most structural tools simulate vehicles *in service*. Almost none simulate vehicles *during construction* — where the structure is incomplete, partially welded, and subject to completely different load cases.
+
+### Open Source Governance
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                   TPT SHIPYARD GOVERNANCE                    │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  License:        MIT OR Apache-2.0 (dual)                   │
+│  Contributions:  MIT OR Apache-2.0 (CLA-free via DCO)       │
+│  Trademark:      "TPT Shipyard" name reserved by TPT        │
+│  Governance:     Benevolent Dictator + RFC process          │
+│  Roadmap:        Public GitHub Projects board               │
+│  Releases:       SemVer, 6-week cadence                     │
+│  Security:       SECURITY.md, private disclosure            │
+│  Standards:      ISO 19847 (ship data), CCSDS (space)       │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 2. Executive Vision: Build Anything, Anywhere
+
+`tpt-shipyard` is the **construction phase** of the vehicle lifecycle. It sits between design (`tpt-transport`) and operation, managing the transformation of raw materials into a complete vessel.
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│              THE VEHICLE LIFECYCLE STACK                     │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
+│  │  tpt-    │  │  tpt-    │  │  tpt-    │  │  tpt-    │  │
+│  │transport │→ │ shipyard │→ │transport │→ │  (end of │  │
+│  │ (design) │  │ (build)  │  │(operate) │  │   life)  │  │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘  │
+│                     │                                       │
+│         ┌───────────┼───────────┐                          │
+│         ▼           ▼           ▼                          │
+│    ┌─────────┐ ┌─────────┐ ┌─────────┐                   │
+│    │   SEA   │ │  SPACE  │ │  BOTH   │                   │
+│    │Drydock  │ │ Orbital │ │ Digital │                   │
+│    │Slipway  │ │Assembly │ │  Twin   │                   │
+│    │Launch   │ │In-space │ │ Weight  │                   │
+│    │Outfit   │ │ Mfg     │ │ CoG     │                   │
+│    └─────────┘ └─────────┘ └─────────┘                   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### The Two Worlds
+
+| Dimension | Sea Shipyard | Space Shipyard |
+|---|---|---|
+| Gravity | 1g during entire build | Microgravity assembly |
+| Atmosphere | Air, wind, rain | Vacuum, thermal extremes |
+| Structural loads | Gravity sag, welding distortion | Station-keeping, docking impulses |
+| Launch constraint | Must float after launch | No launch constraint if assembled in orbit |
+| Shape freedom | Hull must displace water | Arbitrary geometry possible |
+| Assembly method | Cranes, welding, block construction | Robotic arms, additive manufacturing |
+| Environment | Shipyard, drydock, slipway | Orbital station, Lagrange point |
+| Key risk | Launch failure, flooding | Micrometeoroid, thermal cycling |
+
+### Why Rust for Shipyard Simulation?
+
+| Requirement | Rust Advantage |
+|---|---|
+| Multi-phase structural analysis | Track incomplete structures through 50+ build stages |
+| Real-time digital twin | WASM compilation for interactive shipyard dashboards |
+| Robotic path planning | Memory-safe motion planning for space assembly robots |
+| Enterprise deployment | MIT-only chain, no GPL audit risk for shipyards |
+| Concurrency | Parallel simulation of welding sequences |
+| GPU acceleration | `wgpu` for visualising assembly sequences in 3D |
+
+---
+
+## 3. Substrate Integration Map
+
+```text
+tpt-math
+├── tpt-math-linalg-fixed     → Rigid body transforms, CoG tensors
+├── tpt-math-optimize-general → Assembly sequence optimisation, scheduling
+├── tpt-math-prob-dist        → Risk modeling, launch window analysis
+└── tpt-math-signal-filter    → Sensor fusion for robotic assembly
+
+tpt-engineering
+├── Structural mechanics      → Welding distortion, residual stress
+├── Thermal properties        → Space thermal control during assembly
+├── Material properties       → Steel, aluminium, composites, Inconel
+└── Fluid mechanics           → Launch hydrodynamics, ballast control
+
+tpt-science
+├── Orbital mechanics         → Station-keeping during assembly
+├── Thermodynamics            → Vacuum thermal control
+└── Robotics                  → Kinematics, path planning
+
+tpt-fem
+├── Mesh generation           → Hull blocks, space trusses
+├── Element types             → Shell, beam, solid elements
+├── Assembly                  → Global stiffness during build phases
+└── Solvers                   → Structural analysis at each stage
+
+Cross-Repo Integration:
+├── ← tpt-transport           → Vehicle design geometry
+├── → tpt-transport           → As-built structural properties
+├── ← tpt-process             → Welding processes, material specs
+├── → tpt-construction        → Shipyard facility planning
+├── ← tpt-earth               → Sea state for launch, weather windows
+└── → tpt-energy              → Power requirements during assembly
+```
+
+---
+
+## 4. Workspace Layout
+
+```text
+tpt-shipyard/
+├── Cargo.toml
+├── LICENSE-MIT
+├── LICENSE-APACHE
+├── README.md
+├── CONTRIBUTING.md
+├── SECURITY.md
+├── deny.toml
+├── rustfmt.toml
+├── clippy.toml
+├── .github/
+│   ├── workflows/
+│   │   ├── ci.yml
+│   │   ├── license.yml
+│   │   ├── benchmark.yml
+│   │   └── release.yml
+│   ├── ISSUE_TEMPLATE/
+│   └── PULL_REQUEST_TEMPLATE.md
+├── crates/
+│   ├── core/
+│   │   ├── tpt-yard-core/
+│   │   ├── tpt-yard-digital-twin/
+│   │   ├── tpt-yard-assembly/
+│   │   ├── tpt-yard-weight/
+│   │   └── tpt-yard-wasm/
+│   ├── structural/
+│   │   ├── tpt-yard-structural/
+│   │   ├── tpt-yard-welding/
+│   │   ├── tpt-yard-distortion/
+│   │   └── tpt-yard-joints/
+│   ├── sea/
+│   │   ├── tpt-yard-hull/
+│   │   ├── tpt-yard-blocks/
+│   │   ├── tpt-yard-drydock/
+│   │   ├── tpt-yard-launch/
+│   │   ├── tpt-yard-outfitting/
+│   │   └── tpt-yard-sea-trials/
+│   ├── space/
+│   │   ├── tpt-yard-orbital-assembly/
+│   │   ├── tpt-yard-space-structural/
+│   │   ├── tpt-yard-space-manufacturing/
+│   │   ├── tpt-yard-robotic-assembly/
+│   │   ├── tpt-yard-habitat/
+│   │   └── tpt-yard-propellant/
+│   ├── planning/
+│   │   ├── tpt-yard-scheduling/
+│   │   ├── tpt-yard-logistics/
+│   │   ├── tpt-yard-facility/
+│   │   └── tpt-yard-quality/
+│   └── integration/
+│       ├── tpt-yard-transport-link/
+│       ├── tpt-yard-process-link/
+│       └── tpt-yard-earth-link/
+├── examples/
+│   ├── container-ship-block-assembly/
+│   ├── orbital-station-truss/
+│   ├── rotating-habitat-construction/
+│   ├── submarine-pressure-hull/
+│   ├── space-solar-array-assembly/
+│   └── drydock-flooding-sequence/
+├── test-data/
+│   ├── hull-blocks/
+│   ├── orbital-structures/
+│   ├── welding-procedures/
+│   └── golden/
+├── benches/
+│   ├── block-lifting.rs
+│   ├── welding-distortion.rs
+│   ├── orbital-assembly-sequence.rs
+│   └── launch-stability.rs
+├── docs/
+│   ├── book/
+│   ├── rfc/
+│   └── api/
+└── rfcs/
+    ├── 0001-digital-twin-state.md
+    ├── 0002-block-assembly-sequencing.md
+    ├── 0003-orbital-assembly-planning.md
+    ├── 0004-welding-distortion-model.md
+    └── 0005-rotating-habitat-structural.md
+```
+
+---
+
+## 5. Crate Taxonomy
+
+### Domain 1: Core & Digital Twin
+
+#### `tpt-yard-core`
+
+Fundamental shipyard domain types.
+
+```rust
+pub struct VesselProject {
+    pub id: ProjectId,
+    pub name: String,
+    pub vessel_type: VesselType,
+    pub construction_method: ConstructionMethod,
+    pub build_phases: Vec<BuildPhase>,
+    pub current_phase: PhaseId,
+    pub digital_twin: DigitalTwin,
+}
+
+pub enum VesselType {
+    Sea(SeaVesselType),
+    Space(SpaceVesselType),
+    Hybrid,  // e.g., space-rated pressure hull tested at sea
+}
+
+pub enum SeaVesselType {
+    ContainerShip { teu_capacity: u32 },
+    Tanker { deadweight_tonnes: f64 },
+    LngCarrier { cargo_volume_m3: f64 },
+    CruiseShip { passengers: u32 },
+    NavalVessel { classification: String },
+    Submarine { hull_type: HullType },
+    OffshoreVessel { vessel_class: String },
+    FishingVessel,
+}
+
+pub enum SpaceVesselType {
+    SpaceStation { modules: u32 },
+    OrbitalHabitat { rotation_rpm: f64, radius_m: f64 },
+    SolarPowerStation { array_area_m2: f64 },
+    DeepSpaceVessel { propulsion: PropulsionType },
+    LunarVehicle,
+    MarsVehicle,
+    OrbitalFactory,
+    FuelDepot,
+}
+
+pub enum ConstructionMethod {
+    SeaBlockConstruction,
+    SeaSlipwayLaunch,
+    SeaDrydock,
+    OrbitalAssembly,
+    InSpaceManufacturing,
+    LunarSurfaceConstruction,
+}
+
+pub struct BuildPhase {
+    pub id: PhaseId,
+    pub name: String,
+    pub activities: Vec<AssemblyActivity>,
+    pub structural_state: StructuralState,
+    pub weight_state: WeightState,
+    pub duration_days: f64,
+}
+
+pub struct AssemblyActivity {
+    pub id: ActivityId,
+    pub activity_type: ActivityType,
+    pub dependencies: Vec<ActivityId>,
+    pub duration_hours: f64,
+    pub resources: Vec<Resource>,
+}
+
+pub enum ActivityType {
+    CutSteel,
+    FormPlate,
+    WeldBlock,
+    LiftBlock,
+    JoinBlock,
+    Outfit { system: OutfitSystem },
+    Paint,
+    Test { test_type: TestType },
+    Launch,
+    Dock,
+    RoboticAssembly { robot: RobotId },
+    AdditiveManufacturing { material: String },
+    PropellantLoad,
+}
+```
+
+#### `tpt-yard-digital-twin`
+
+Construction state tracking and simulation.
+
+```rust
+pub struct DigitalTwin {
+    pub vessel: VesselProject,
+    pub structural_model: StructuralModel,
+    pub weight_model: WeightModel,
+    pub assembly_state: AssemblyState,
+    pub quality_records: Vec<QualityRecord>,
+    pub sensor_data: Vec<SensorReading>,
+}
+
+pub struct AssemblyState {
+    pub completed_activities: HashSet<ActivityId>,
+    pub in_progress: HashSet<ActivityId>,
+    pub blocked: HashSet<ActivityId>,
+    pub current_geometry: Geometry3D,
+    pub current_mass_properties: MassProperties,
+}
+
+impl DigitalTwin {
+    pub fn advance_phase(&mut self, activity: &ActivityId) -> Result<(), TwinError> {
+        // Update structural state, weight, geometry
+        // Validate that all dependencies are complete
+        // Check structural integrity at this partial state
+    }
+
+    pub fn structural_check_at_phase(
+        &self,
+        phase: &PhaseId,
+    ) -> StructuralCheckResult {
+        // Verify that the partially-built structure
+        // can survive all loads at this construction stage
+        // e.g., a half-built ship on a slipway must not collapse
+    }
+
+    pub fn weight_deviation(&self) -> WeightDeviation {
+        // Compare as-built weight vs design weight
+    }
+
+    pub fn centre_of_gravity_tracking(&self) -> CoGReport {
+        // Track CoG evolution through construction
+        // Critical for launch stability and orbital assembly
+    }
+}
+```
+
+#### `tpt-yard-weight`
+
+Weight and centre of gravity management.
+
+```rust
+pub struct WeightModel {
+    pub design_weight_kg: f64,
+    pub design_cog: Vector3,
+    pub items: Vec<WeightItem>,
+}
+
+pub struct WeightItem {
+    pub id: ItemId,
+    pub name: String,
+    pub weight_kg: f64,
+    pub cog: Vector3,
+    pub status: ItemStatus,
+    pub margin_pct: f64,
+}
+
+pub enum ItemStatus {
+    Design,
+    Ordered,
+    Received,
+    Installed,
+    Replaced,
+}
+
+impl WeightModel {
+    pub fn total_weight(&self) -> f64 {
+        self.items.iter()
+            .filter(|i| matches!(i.status, ItemStatus::Installed | ItemStatus::Design))
+            .map(|i| i.weight_kg)
+            .sum()
+    }
+
+    pub fn centre_of_gravity(&self) -> Vector3 {
+        let total = self.total_weight();
+        let weighted_sum: Vector3 = self.items.iter()
+            .map(|i| i.cog * i.weight_kg)
+            .sum();
+        weighted_sum / total
+    }
+
+    pub fn weight_report(&self) -> WeightReport {
+        // Generate weight report by system/zone
+        // Track margins and deviations
+    }
+}
+```
+
+---
+
+### Domain 2: Structural During Construction
+
+#### `tpt-yard-structural`
+
+Structural analysis at each build phase.
+
+```rust
+pub struct ConstructionStructuralSolver {
+    pub fem_solver: TransportFemSolver,
+    pub build_phases: Vec<BuildPhase>,
+}
+
+impl ConstructionStructuralSolver {
+    pub fn analyze_at_phase(
+        &self,
+        phase: &BuildPhase,
+        loads: &[ConstructionLoad],
+    ) -> StructuralResult {
+        // Analyze the INCOMPLETE structure
+        // This is fundamentally different from in-service analysis:
+        // - Missing blocks
+        // - Temporary supports
+        // - Lifting loads
+        // - Welding residual stresses
+    }
+
+    pub fn lifting_analysis(
+        &self,
+        block: &HullBlock,
+        crane_capacity_kn: f64,
+        lift_points: Vec<Vector3>,
+    ) -> LiftingResult {
+        // Verify block can be lifted without excessive deflection
+        // Check sling loads, local stresses at lift points
+    }
+
+    pub fn launch_analysis(
+        &self,
+        vessel: &VesselProject,
+        launch_method: LaunchMethod,
+    ) -> LaunchResult {
+        // Sea: Verify hull strength during sliding/floating
+        // Space: Verify structural loads during deployment
+    }
+}
+
+pub enum ConstructionLoad {
+    Gravity,
+    Wind { speed_ms: f64, direction: f64 },
+    CraneLoad { capacity_kn: f64, position: Vector3 },
+    WeldingThermal { heat_input_kj_mm: f64 },
+    Hydrostatic { draft_m: f64 },
+    WaveSlamming { significant_wave_height_m: f64 },
+    Docking { force_kn: f64 },
+    RoboticArm { force_kn: f64, moment_knm: f64 },
+}
+```
+
+#### `tpt-yard-welding`
+
+Welding simulation and distortion control.
+
+```rust
+pub struct WeldingSimulation {
+    pub weld_procedure: WeldProcedure,
+    pub material: Material,
+    pub joint_geometry: JointGeometry,
+}
+
+pub struct WeldProcedure {
+    pub process: WeldProcess,
+    pub heat_input_kj_mm: f64,
+    pub travel_speed_mm_s: f64,
+    pub preheat_temp_c: f64,
+    pub interpass_temp_c: f64,
+    pub filler_metal: String,
+    pub sequence: Vec<WeldPass>,
+}
+
+pub enum WeldProcess {
+    Smaw,   // Shielded Metal Arc Welding
+    Gmaw,   // Gas Metal Arc Welding (MIG)
+    Gtaw,   // Gas Tungsten Arc Welding (TIG)
+    Saw,    // Submerged Arc Welding
+    Fcaw,   // Flux-Cored Arc Welding
+    Ebw,    // Electron Beam Welding (space/vacuum)
+    LaserWeld,
+}
+
+impl WeldingSimulation {
+    pub fn thermal_cycle(
+        &self,
+        distance_from_weld_mm: f64,
+    ) -> ThermalCycle {
+        // Calculate temperature vs time at a point
+        // Using Rosenthal equation or FEM
+    }
+
+    pub fn residual_stress(
+        &self,
+    ) -> ResidualStressField {
+        // Predict residual stress distribution after cooling
+    }
+
+    pub fn distortion(
+        &self,
+    ) -> DistortionResult {
+        // Predict angular distortion, shrinkage, bowing
+    }
+
+    pub fn welding_sequence_optimization(
+        &self,
+        possible_sequences: &[Vec<WeldPass>],
+    ) -> Vec<WeldPass> {
+        // Find sequence that minimizes total distortion
+    }
+}
+```
+
+#### `tpt-yard-distortion`
+
+Block distortion management.
+
+```rust
+pub struct DistortionControl {
+    pub target_geometry: Geometry3D,
+    pub measured_geometry: Geometry3D,
+    pub corrections: Vec<CorrectionAction>,
+}
+
+impl DistortionControl {
+    pub fn deviation_map(&self) -> DeviationField {
+        // Map of measured vs target geometry
+    }
+
+    pub fn correction_plan(
+        &self,
+        allowable_tolerance_mm: f64,
+    ) -> Vec<CorrectionAction> {
+        // Plan heat straightening, rework, or acceptance
+    }
+}
+
+pub enum CorrectionAction {
+    HeatStraighten { location: Vector3, heat_input: f64 },
+    Rework { description: String },
+    Accept { deviation_mm: f64 },
+    Reject { reason: String },
+}
+```
+
+---
+
+### Domain 3: Sea Shipyard
+
+#### `tpt-yard-hull`
+
+Hull construction and block management.
+
+```rust
+pub struct HullConstruction {
+    pub hull_form: HullGeometry,
+    pub blocks: Vec<HullBlock>,
+    pub block_join_sequence: Vec<BlockJoin>,
+}
+
+pub struct HullBlock {
+    pub id: BlockId,
+    pub name: String,
+    pub geometry: Geometry3D,
+    pub weight_kg: f64,
+    pub cog: Vector3,
+    pub structural_members: Vec<StructuralMember>,
+    pub outfitting: Vec<OutfitItem>,
+    pub status: BlockStatus,
+}
+
+pub enum BlockStatus {
+    Design,
+    Cutting,
+    Assembly,
+    Welding,
+    Outfitting,
+    Painted,
+    ReadyForErection,
+    Erected,
+}
+
+impl HullConstruction {
+    pub fn block_division(
+        &self,
+        crane_capacity_kn: f64,
+        workshop_dimensions: Dimensions,
+    ) -> Vec<HullBlock> {
+        // Divide hull into blocks based on:
+        // - Crane capacity
+        // - Workshop size
+        // - Transport limits
+        // - Outfitting access
+    }
+
+    pub fn erection_sequence(
+        &self,
+    ) -> Vec<BlockJoin> {
+        // Determine optimal block joining sequence
+        // Minimise welding in difficult positions
+        // Ensure structural stability at each stage
+    }
+}
+```
+
+#### `tpt-yard-launch`
+
+Launch calculations.
+
+```rust
+pub struct LaunchAnalysis {
+    pub launch_method: LaunchMethod,
+    pub vessel: VesselProject,
+    pub site_conditions: SiteConditions,
+}
+
+pub enum LaunchMethod {
+    Slipway { slope_deg: f64, ways: u32 },
+    Shiplift { capacity_kn: f64 },
+    DrydockFlooding,
+    SideLaunch,
+    FloatOut,
+}
+
+impl LaunchAnalysis {
+    pub fn slipway_launch(
+        &self,
+    ) -> SlipwayLaunchResult {
+        // Calculate:
+        // - Weight distribution on ways
+        // - Sliding friction
+        // - Tip-up risk (stern lift-off)
+        // - Entry velocity into water
+        // - Hydrodynamic loads during water entry
+    }
+
+    pub fn drydock_flooding(
+        &self,
+        flood_rate_m3_hr: f64,
+    ) -> FloodingSequence {
+        // Plan ballast/flooding sequence
+        // Ensure stability at each water level
+    }
+
+    pub fn launch_stability(
+        &self,
+        weight_model: &WeightModel,
+    ) -> StabilityResult {
+        // Verify vessel is stable immediately after launch
+        // Check GM > minimum at partial outfitting state
+    }
+}
+
+pub struct SlipwayLaunchResult {
+    pub sliding_velocity_ms: f64,
+    pub way_pressure_mpa: Vec<f64>,
+    pub tip_up_risk: bool,
+    pub entry_angle_deg: f64,
+    pub slamming_pressure_mpa: f64,
+    pub safe: bool,
+}
+```
+
+#### `tpt-yard-outfitting`
+
+Systems installation and routing.
+
+```rust
+pub struct OutfittingPlan {
+    pub systems: Vec<OutfitSystem>,
+    pub routing: Vec<Route>,
+}
+
+pub enum OutfitSystem {
+    Piping { fluid: FluidType, diameter_mm: f64 },
+    Electrical { voltage_v: f64, cable_type: String },
+    Hvac { duct_size_mm: f64 },
+    Structural { member_type: String },
+    Machinery { equipment: String },
+    Navigation { equipment: String },
+}
+
+impl OutfittingPlan {
+    pub fn collision_detection(
+        &self,
+        hull_geometry: &Geometry3D,
+    ) -> Vec<Collision> {
+        // Detect clashes between systems
+        // Pipe vs cable tray vs structural member
+    }
+
+    pub fn installation_sequence(
+        &self,
+    ) -> Vec<OutfitActivity> {
+        // Determine installation order
+        // Large items first, then smaller routing
+    }
+}
+```
+
+---
+
+### Domain 4: Space Shipyard
+
+#### `tpt-yard-orbital-assembly`
+
+Orbital assembly planning and simulation.
+
+```rust
+pub struct OrbitalAssembly {
+    pub structure: SpaceStructure,
+    pub assembly_sequence: Vec<AssemblyStep>,
+    pub robots: Vec<RoboticArm>,
+    pub orbit: OrbitalParameters,
+}
+
+pub enum SpaceStructure {
+    Truss { segments: u32, length_m: f64 },
+    Station { modules: Vec<ModuleSpec> },
+    RotatingHabitat { radius_m: f64, rotation_rpm: f64 },
+    SolarArray { panel_count: u32, area_m2: f64 },
+    FuelDepot { tank_count: u32 },
+    Arbitrary { geometry: Geometry3D },
+}
+
+pub struct AssemblyStep {
+    pub id: StepId,
+    pub action: AssemblyAction,
+    pub component: ComponentId,
+    pub robot: Option<RobotId>,
+    pub duration_hours: f64,
+    pub constraints: Vec<AssemblyConstraint>,
+}
+
+pub enum AssemblyAction {
+    GraspComponent,
+    Translate { delta: Vector3 },
+    Rotate { axis: Vector3, angle_rad: f64 },
+    Dock,
+    Bolt { torque_nm: f64 },
+    Weld { process: WeldProcess },
+    ConnectFluid { fluid: FluidType },
+    ConnectElectrical { connector: String },
+    Release,
+}
+
+pub enum AssemblyConstraint {
+    NoCollision,
+    MaintainStationKeeping,
+    AvoidSunExposure { sensitive_component: ComponentId },
+    ThermalLimit { max_temp_c: f64 },
+    ForceLimit { max_force_n: f64 },
+    LineOfSight { to: String },
+}
+
+impl OrbitalAssembly {
+    pub fn plan_sequence(
+        &self,
+        initial_components: &[ComponentSpec],
+        target_structure: &SpaceStructure,
+    ) -> Vec<AssemblyStep> {
+        // Generate assembly sequence using:
+        // - Graph-based planning
+        // - Constraint satisfaction
+        // - Optimisation for minimum time/energy
+    }
+
+    pub fn simulate_step(
+        &self,
+        step: &AssemblyStep,
+        current_state: &AssemblyState,
+    ) -> SimulationResult {
+        // Simulate one assembly step
+        // Check for collisions, force limits, thermal limits
+    }
+
+    pub fn verify_structural_integrity(
+        &self,
+        at_step: &StepId,
+    ) -> StructuralCheckResult {
+        // Verify partially-assembled structure is stable
+        // In orbit, no gravity, but must survive:
+        // - Docking impulses
+        // - Thermal cycling
+        // - Micrometeoroid impacts
+        // - Station-keeping thruster firings
+    }
+}
+```
+
+#### `tpt-yard-space-structural`
+
+Structures without launch constraints.
+
+```rust
+pub struct SpaceStructuralDesigner {
+    pub environment: SpaceEnvironment,
+    pub requirements: StructuralRequirements,
+}
+
+pub struct SpaceEnvironment {
+    pub orbit: OrbitalParameters,
+    pub thermal_cycling: ThermalCycle,
+    pub micrometeoroid_flux: f64,
+    pub radiation: RadiationEnvironment,
+    pub atomic_oxygen: bool,  // LEO only
+}
+
+impl SpaceStructuralDesigner {
+    pub fn no_launch_constraint(
+        &self,
+    ) -> DesignFreedom {
+        // In orbit, NO aerodynamic constraints:
+        // - No fairing diameter limit
+        // - No Max-Q vibration
+        // - No aerodynamic heating
+        // - No gravity sag during assembly
+        
+        // Design purely for:
+        // - Vacuum thermal loads
+        // - Micrometeoroid protection
+        // - Station-keeping thrust
+        // - Docking loads
+        // - Rotation (if habitat)
+    }
+
+    pub fn rotating_habitat_stress(
+        &self,
+        radius_m: f64,
+        rotation_rpm: f64,
+        habitat_mass_kg: f64,
+    ) -> RotatingStressResult {
+        // Centrifugal stress in rotating structure
+        // σ = ρ * ω² * r²
+        // Critical for O'Neill cylinders, Stanford torus
+    }
+
+    pub fn thermal_cycling_fatigue(
+        &self,
+        material: &Material,
+        cycles: u64,
+    ) -> FatigueResult {
+        // Thermal fatigue from orbit day/night cycles
+    }
+
+    pub fn micrometeoroid_shielding(
+        &self,
+        required_protection: f64,
+    ) -> ShieldDesign {
+        // Whipple shield, multi-layer insulation
+    }
+}
+
+pub struct DesignFreedom {
+    pub max_dimension_m: f64,       // Unlimited in theory
+    pub shape_constraint: ShapeConstraint,
+    pub launch_required: bool,       // false if assembled in orbit
+}
+
+pub enum ShapeConstraint {
+    None,                          // Arbitrary shape possible
+    Aerodynamic,                   // Must survive atmosphere
+    FairingLimit { diameter_m: f64 },
+}
+```
+
+#### `tpt-yard-robotic-assembly`
+
+Robotic arm path planning for space assembly.
+
+```rust
+pub struct RoboticArm {
+    pub id: RobotId,
+    pub joints: Vec<Joint>,
+    pub end_effector: EndEffector,
+    pub workspace: Workspace,
+}
+
+pub struct Joint {
+    pub joint_type: JointType,
+    pub range_rad: (f64, f64),
+    pub max_velocity_rad_s: f64,
+    pub max_torque_nm: f64,
+}
+
+pub enum EndEffector {
+    Gripper { force_n: f64 },
+    Welder { process: WeldProcess },
+    Drill,
+    Camera,
+    MultiTool,
+}
+
+impl RoboticArm {
+    pub fn inverse_kinematics(
+        &self,
+        target_pose: &Pose,
+    ) -> Option<Vec<f64>> {
+        // Solve joint angles for target position/orientation
+    }
+
+    pub fn plan_path(
+        &self,
+        start: &Pose,
+        goal: &Pose,
+        obstacles: &[CollisionObject],
+    ) -> Option<MotionPlan> {
+        // Plan collision-free path
+        // RRT* or PRM algorithms
+    }
+
+    pub fn grasp_planning(
+        &self,
+        object: &ComponentSpec,
+    ) -> GraspPlan {
+        // Determine optimal grasp points
+    }
+}
+
+pub struct MotionPlan {
+    pub waypoints: Vec<Pose>,
+    pub joint_trajectories: Vec<Vec<f64>>,
+    pub duration_s: f64,
+    pub max_velocity: f64,
+    pub collision_free: bool,
+}
+```
+
+#### `tpt-yard-habitat`
+
+Rotating habitat design.
+
+```rust
+pub struct HabitatDesigner {
+    pub habitat_type: HabitatType,
+    pub artificial_gravity: f64,  // Target g-level
+}
+
+pub enum HabitatType {
+    ONeillCylinder { radius_m: f64, length_m: f64 },
+    StanfordTorus { radius_m: f64, tube_diameter_m: f64 },
+    BernalSphere { radius_m: f64 },
+    RingStation { radius_m: f64 },
+    Custom { geometry: Geometry3D },
+}
+
+impl HabitatDesigner {
+    pub fn required_rotation(
+        &self,
+        radius_m: f64,
+        target_gravity: f64,
+    ) -> f64 {
+        // ω = sqrt(g / r)
+        // Returns rotation rate in rad/s
+        (target_gravity * 9.81 / radius_m).sqrt()
+    }
+
+    pub fn coriolis_effects(
+        &self,
+        radius_m: f64,
+        rotation_rpm: f64,
+    ) -> CoriolisReport {
+        // Calculate Coriolis acceleration for moving occupants
+        // Must be < 2 rpm to avoid motion sickness
+    }
+
+    pub fn structural_design(
+        &self,
+        habitat_mass_kg: f64,
+        safety_factor: f64,
+    ) -> StructuralDesign {
+        // Design structure to withstand centrifugal loads
+        // Include pressure vessel requirements
+    }
+}
+```
+
+#### `tpt-yard-space-manufacturing`
+
+In-space manufacturing and additive construction.
+
+```rust
+pub struct InSpaceManufacturing {
+    pub process: ManufacturingProcess,
+    pub material_feedstock: Feedstock,
+    pub environment: SpaceEnvironment,
+}
+
+pub enum ManufacturingProcess {
+    AdditiveManufacturing { 
+        technique: AdditiveTechnique,
+        material: String,
+    },
+    WireFeedDeposition,
+    ElectronBeamFreeform,
+    RoboticAssemblyOfTruss,
+    InSituResourceUtilization { source: IsruSource },
+}
+
+pub enum AdditiveTechnique {
+    PowderBedFusion,
+    DirectedEnergyDeposition,
+    WireArcAdditive,
+    ElectronBeamFreeform,
+}
+
+pub enum IsruSource {
+    LunarRegolith,
+    MartianRegolith,
+    AsteroidMetal,
+    RecycledDebris,
+}
+
+impl InSpaceManufacturing {
+    pub fn print_time_estimate(
+        &self,
+        volume_m3: f64,
+        deposition_rate_kg_hr: f64,
+    ) -> f64 {
+        // Estimate manufacturing time
+    }
+
+    pub fn thermal_control_during_print(
+        &self,
+    ) -> ThermalControlPlan {
+        // Manage heat rejection in vacuum during printing
+    }
+
+    pub fn quality_verification(
+        &self,
+    ) -> QualityPlan {
+        // In-situ monitoring, NDT in microgravity
+    }
+}
+```
+
+---
+
+### Domain 5: Planning & Logistics
+
+#### `tpt-yard-scheduling`
+
+Construction scheduling and critical path.
+
+```rust
+pub struct ShipyardScheduler {
+    pub activities: Vec<AssemblyActivity>,
+    pub resources: Vec<Resource>,
+    pub constraints: Vec<ScheduleConstraint>,
+}
+
+impl ShipyardScheduler {
+    pub fn critical_path(&self) -> Vec<ActivityId> {
+        // Find critical path through assembly network
+    }
+
+    pub fn optimize_sequence(
+        &self,
+        objective: ScheduleObjective,
+    ) -> ScheduleResult {
+        // Optimise for minimum time, cost, or resource usage
+    }
+
+    pub fn resource_leveling(&self) -> ScheduleResult {
+        // Level resource usage to avoid over-allocation
+    }
+}
+
+pub enum ScheduleObjective {
+    MinimizeDuration,
+    MinimizeCost,
+    MinimizeCraneUsage,
+    MinimizeDrydockTime,
+    MaximizeParallelism,
+}
+```
+
+#### `tpt-yard-quality`
+
+Quality control and inspection.
+
+```rust
+pub struct QualityManagement {
+    pub inspection_plan: Vec<InspectionPoint>,
+    pub ndt_methods: Vec<NdtMethod>,
+    pub acceptance_criteria: AcceptanceCriteria,
+}
+
+pub enum NdtMethod {
+    UltrasonicTesting,
+    RadiographicTesting,
+    MagneticParticleTesting,
+    DyePenetrantTesting,
+    EddyCurrentTesting,
+    VisualInspection,
+    VacuumTesting,
+    PressureTesting,
+}
+
+impl QualityManagement {
+    pub fn generate_inspection_plan(
+        &self,
+        build_phases: &[BuildPhase],
+    ) -> Vec<InspectionPoint> {
+        // Generate NDT inspection points based on:
+        // - Weld criticality
+        // - Material type
+        // - Regulatory requirements (class society, NASA)
+    }
+
+    pub fn defect_tracking(
+        &self,
+    ) -> DefectReport {
+        // Track defects, rework, and disposition
+    }
+}
+```
+
+---
+
+## 6. Cross-Repo Integration
+
+```rust
+// Vehicle design → Shipyard construction
+// tpt-transport → tpt-shipyard
+use tpt_transport::core::Vehicle;
+use tpt_shipyard::core::VesselProject;
+
+fn plan_construction(vehicle_design: &Vehicle) -> VesselProject {
+    // Convert design geometry into buildable blocks/modules
+    // Determine construction method based on vessel type
+    
+    match vehicle_design.vehicle_type {
+        VehicleType::Maritime { .. } => {
+            // Sea shipyard: block construction, drydock
+            plan_sea_construction(vehicle_design)
+        }
+        VehicleType::Space { .. } => {
+            // Space: orbital assembly or launch-integrated
+            plan_space_construction(vehicle_design)
+        }
+    }
+}
+
+// Shipyard → Transport operation
+// tpt-shipyard → tpt-transport
+use tpt_shipyard::digital_twin::DigitalTwin;
+use tpt_transport::core::AsBuiltProperties;
+
+fn handover_to_operations(
+    digital_twin: &DigitalTwin,
+) -> AsBuiltProperties {
+    // Transfer as-built properties to operational model
+    // Includes:
+    // - Actual weight and CoG (not design)
+    // - Welding residual stresses
+    // - As-built geometry (with distortions)
+    // - Quality records
+    
+    AsBuiltProperties {
+        weight_kg: digital_twin.weight_model.total_weight(),
+        cog: digital_twin.weight_model.centre_of_gravity(),
+        structural_state: digital_twin.structural_model.clone(),
+        quality_records: digital_twin.quality_records.clone(),
+    }
+}
+
+// Shipyard → Earth environment
+// tpt-shipyard → tpt-earth
+use tpt_earth::ocean::SeaState;
+use tpt_shipyard::sea::LaunchAnalysis;
+
+fn plan_launch_window(
+    launch: &LaunchAnalysis,
+    sea_forecast: &SeaState,
+) -> LaunchWindow {
+    // Find weather window for safe launch
+    // Sea state must be below limits for:
+    // - Slipway launch
+    // - Drydock flooding
+    // - Sea trials
+    
+    LaunchWindow {
+        earliest: sea_forecast.first_safe_window(),
+        latest: sea_forecast.last_safe_window(),
+        sea_state_limit: launch.site_conditions.max_sea_state,
+    }
+}
+
+// Shipyard → Process engineering
+// tpt-shipyard → tpt-process
+use tpt_process::thermo_eos::PengRobinson;
+use tpt_shipyard::space::PropellantLoading;
+
+fn plan_propellant_loading(
+    propellant: &PropellantSpec,
+    tank_volume_m3: f64,
+) -> PropellantLoadingPlan {
+    // Calculate propellant loading sequence
+    // Manage boil-off for cryogenic propellants
+    // Ensure thermal stability during loading
+    
+    let eos = PengRobinson::new(vec![propellant.component()]);
+    // Calculate required pressure/temperature for loading
+    
+    PropellantLoadingPlan {
+        fill_rate_kg_s: 50.0,
+        venting_required: true,
+        thermal_control: ThermalControlPlan::default(),
+    }
+}
+```
+
+---
+
+## 7. WASM Integration
+
+`tpt-yard-wasm` compiles the shipyard engine to WebAssembly for interactive construction planning.
+
+```rust
+#[wasm_bindgen]
+pub struct WasmDigitalTwin {
+    twin: DigitalTwin,
+}
+
+#[wasm_bindgen]
+impl WasmDigitalTwin {
+    #[wasm_bindgen(constructor)]
+    pub fn new(project_json: &str) -> WasmDigitalTwin {
+        // Load vessel project from JSON
+    }
+
+    pub fn advance_phase(&mut self, activity_id: u64) -> bool {
+        // Advance construction by one activity
+        // Returns true if structurally valid
+    }
+
+    pub fn get_current_geometry(&self) -> Vec<f64> {
+        // Return current geometry for WebGL rendering
+    }
+
+    pub fn get_weight_report(&self) -> WeightReport {
+        // Return weight and CoG status
+    }
+
+    pub fn structural_check(&self) -> StructuralCheckResult {
+        // Run structural check at current phase
+    }
+}
+
+#[wasm_bindgen]
+pub struct WasmOrbitalAssembly {
+    assembly: OrbitalAssembly,
+}
+
+#[wasm_bindgen]
+impl WasmOrbitalAssembly {
+    pub fn simulate_next_step(&mut self) -> SimulationResult {
+        // Simulate next assembly step in browser
+    }
+
+    pub fn get_robot_pose(&self) -> Vec<f64> {
+        // Return robotic arm joint angles for visualization
+    }
+}
+```
+
+**WASM Use Cases:**
+- **Interactive construction dashboard:** Shipyard managers see 3D model evolve as blocks are erected
+- **Orbital assembly planning:** Engineers simulate robotic assembly sequences in browser before uploading to spacecraft
+- **Client presentations:** Show customers their vessel being built in real-time 3D
+- **Training:** Train crane operators and robotic arm operators in virtual shipyard
+
+---
+
+## 8. MIT Chain Enforcement
+
+### `deny.toml`
+
+```toml
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0"
+]
+
+copyleft = "deny"
+unlicensed = "deny"
+allow-osi-fsf-free = "neither"
+```
+
+### License Traps to Avoid
+
+| Domain | Proprietary Trap | MIT Solution |
+|---|---|---|
+| Ship construction planning | AVEVA Marine, CADMATIC (proprietary) | Pure Rust block assembly planner |
+| Naval architecture | NAPA, FORAN (proprietary) | Clean-room hull design and launch analysis |
+| Orbital mechanics | AGI STK (proprietary) | `tpt-earth` orbital mechanics |
+| Robotic planning | ROS MoveIt (BSD but C++ heavy) | Pure Rust motion planning |
+| FEM analysis | Ansys, Nastran (proprietary) | `tpt-fem` pure Rust |
+| Welding simulation | Sysweld, Simufact (proprietary) | Clean-room thermal-stress coupling |
+
+---
+
+## 9. Testing & Validation
+
+### Verification Tests
+
+```rust
+#[cfg(test)]
+mod verification_tests {
+    use super::*;
+
+    #[test]
+    fn test_block_weight_sum() {
+        // Sum of block weights must equal total vessel weight
+    }
+
+    #[test]
+    fn test_cog_tracking() {
+        // CoG must shift predictably as blocks are added
+    }
+
+    #[test]
+    fn test_slipway_tip_up() {
+        // Verify tip-up detection for known launch configurations
+    }
+
+    #[test]
+    fn test_rotating_habitat_stress() {
+        // σ = ρ * ω² * r² for thin ring
+        let omega = 2.0 * std::f64::consts::PI * 2.0 / 60.0; // 2 rpm
+        let r = 100.0; // meters
+        let rho = 2700.0; // aluminum
+        let expected = rho * omega.powi(2) * r.powi(2);
+        // Verify FEM matches analytical
+    }
+
+    #[test]
+    fn test_welding_distortion() {
+        // Compare to experimental welding distortion data
+    }
+
+    #[test]
+    fn test_orbital_assembly_collision() {
+        // Verify collision detection in assembly sequence
+    }
+}
+```
+
+### Benchmark Models
+
+```text
+test-data/golden/
+├── sea/
+│   ├── container-ship-block-division.json
+│   ├── slipway-launch-stability.json
+│   ├── drydock-flooding-sequence.json
+│   └── welding-distortion-panel.json
+├── space/
+│   ├── iss-truss-assembly.json
+│   ├── rotating-habitat-stress.json
+│   ├── orbital-assembly-sequence.json
+│   └── robotic-arm-path.json
+├── planning/
+│   ├── critical-path-schedule.json
+│   └── resource-leveling.json
+└── quality/
+    ├── ndt-inspection-plan.json
+    └── weld-defect-tracking.json
+```
+
+---
+
+## 10. Phased Delivery Plan
+
+### Phase 1: Core & Digital Twin (Months 1-3)
+- `tpt-yard-core`, `tpt-yard-digital-twin`, `tpt-yard-weight`
+- Basic vessel project types, weight tracking
+- **Milestone:** Track weight and CoG through 10 build phases
+
+### Phase 2: Structural During Construction (Months 4-6)
+- `tpt-yard-structural`, `tpt-yard-welding`, `tpt-yard-distortion`
+- FEM analysis at partial build states
+- **Milestone:** Simulate welding distortion in a hull panel
+
+### Phase 3: Sea Shipyard (Months 7-12)
+- `tpt-yard-hull`, `tpt-yard-blocks`, `tpt-yard-launch`
+- `tpt-yard-drydock`, `tpt-yard-outfitting`
+- **Milestone:** Plan block erection sequence for a container ship
+
+### Phase 4: Space Shipyard (Months 13-18)
+- `tpt-yard-orbital-assembly`, `tpt-yard-space-structural`
+- `tpt-yard-robotic-assembly`, `tpt-yard-habitat`
+- **Milestone:** Simulate orbital truss assembly with robotic arm
+
+### Phase 5: Manufacturing & Planning (Months 19-24)
+- `tpt-yard-space-manufacturing`, `tpt-yard-scheduling`
+- `tpt-yard-quality`, `tpt-yard-logistics`
+- **Milestone:** Plan in-space additive manufacturing of a solar array
+
+### Phase 6: Integration & WASM (Months 25-30)
+- `tpt-yard-transport-link`, `tpt-yard-earth-link`
+- `tpt-yard-wasm` browser visualization
+- **Milestone:** Interactive 3D shipyard dashboard in browser
+
+---
+
+## 11. Open Source Business Model
+
+Since `tpt-shipyard` is 100% open source, revenue comes from enterprise services:
+
+### Revenue Streams
+
+| Stream | Description | Price Point |
+|---|---|---|
+| **Shipyard Digital Twin** | Custom digital twin implementation for shipyards | $50k-500k/project |
+| **Orbital Assembly Planning** | Assembly sequence planning for space stations | $100k-1M/project |
+| **Launch Analysis** | Launch safety verification for new vessels | $20k-100k/project |
+| **Welding Distortion Control** | Distortion prediction and correction planning | $10k-50k/project |
+| **Training** | Corporate training on shipyard simulation | $2k-10k/session |
+| **Support Contracts** | Priority bug fixes, SLA | $10k-100k/year |
+
+### What We Will Never Do
+
+```text
+No open-core.
+No proprietary file formats.
+No vendor lock-in.
+No GPL contamination.
+```
+
+### What We Will Always Do
+
+```text
+MIT OR Apache-2.0 licensing.
+Public roadmap.
+Open RFC process.
+Standards-based data formats.
+Community governance.
+```
+
+---
+
+## 12. README Template
+
+```markdown
+# tpt-shipyard
+
+A fully open-source, MIT-licensed computational engine for vehicle construction: sea shipyards, orbital assembly, in-space manufacturing, and construction digital twins.
+
+## Crates
+
+| Crate | Description | Status |
+|---|---|---|
+| `tpt-yard-core` | Core shipyard types | Planned |
+| `tpt-yard-digital-twin` | Construction state tracking | Planned |
+| `tpt-yard-weight` | Weight and CoG management | Planned |
+| `tpt-yard-structural` | Structural analysis during build | Planned |
+| `tpt-yard-welding` | Welding simulation | Planned |
+| `tpt-yard-hull` | Hull block construction | Planned |
+| `tpt-yard-launch` | Launch calculations | Planned |
+| `tpt-yard-orbital-assembly` | Orbital assembly planning | Planned |
+| `tpt-yard-space-structural` | Structures without launch constraints | Planned |
+| `tpt-yard-robotic-assembly` | Robotic arm planning | Planned |
+| `tpt-yard-habitat` | Rotating habitat design | Planned |
+| `tpt-yard-scheduling` | Construction scheduling | Planned |
+
+## Quick Start
+
+```rust
+use tpt_yard::core::VesselProject;
+use tpt_yard::digital_twin::DigitalTwin;
+
+fn main() {
+    let project = VesselProject::from_json("container-ship.json").unwrap();
+    let mut twin = DigitalTwin::new(project);
+    
+    // Advance through construction phases
+    for activity in twin.vessel.build_phases[0].activities.iter() {
+        twin.advance_phase(&activity.id).unwrap();
+        println!("Weight: {} kg", twin.weight_model.total_weight());
+    }
+}
+```
+
+## Build Anything, Anywhere
+
+`tpt-shipyard` supports:
+- Sea shipyards (block construction, drydock, launch)
+- Orbital assembly (robotic, microgravity)
+- In-space manufacturing (additive, ISRU)
+- Rotating habitats (O'Neill cylinders, Stanford torus)
+
+No gravity constraints. No aerodynamic limits. No proprietary lock-in.
+
+## License
+
+Licensed under either of
+
+- MIT license
+- Apache License, Version 2.0
+
+at your option.
+```
+
+---
+
+## 13. Summary
+
+`tpt-shipyard` is a fully open-source, MIT-licensed, pure-Rust computational engine for vehicle construction:
+
+- **Sea Shipyard** — Hull blocks, welding, drydock, launch, outfitting
+- **Space Shipyard** — Orbital assembly, robotic planning, in-space manufacturing
+- **Structural During Construction** — Partial structure analysis, welding distortion
+- **Digital Twin** — Weight tracking, CoG management, assembly state
+- **Planning** — Scheduling, logistics, quality control
+- **Habitat Design** — Rotating structures without launch constraints
+
+All crates maintain the strict MIT chain, leverage the TPT substrates, and compile to WebAssembly for interactive construction visualization.
+
+No proprietary cores.
+No launch constraints.
+No gravity limits.
+No GPL traps.
+
+Just open source. Build anything, anywhere.
