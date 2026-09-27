@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tpt-shipyard — Construction Dashboard</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; font-family: "Segoe UI", system-ui, sans-serif;
+    background: #0e1420; color: #dce6f5;
+  }
+  header {
+    padding: 14px 22px; border-bottom: 1px solid #1d2a3f;
+    display: flex; align-items: baseline; gap: 14px;
+  }
+  header h1 { font-size: 18px; margin: 0; color: #7fb4ff; }
+  header span { font-size: 12px; color: #6b7f9e; }
+  main { display: flex; gap: 16px; padding: 16px 22px; flex-wrap: wrap; }
+  .panel {
+    background: #131c2e; border: 1px solid #1d2a3f; border-radius: 10px;
+    padding: 14px;
+  }
+  #stage { flex: 2 1 640px; }
+  #side { flex: 1 1 280px; display: flex; flex-direction: column; gap: 12px; }
+  canvas { background: #0a101b; border-radius: 6px; display: block; width: 100%; }
+  button {
+    background: #1c3563; color: #cfe2ff; border: 1px solid #2c4a85;
+    padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 14px;
+  }
+  button:hover { background: #25437a; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  .kv { display: flex; justify-content: space-between; padding: 3px 0; font-size: 13px; }
+  .kv b { color: #9fc2ff; font-weight: 600; }
+  #progress { height: 8px; background: #0a101b; border-radius: 4px; overflow: hidden; margin: 8px 0; }
+  #bar { height: 100%; width: 0%; background: linear-gradient(90deg,#2c6bed,#57d1a4); transition: width .3s; }
+  pre { font-size: 11px; color: #8ba3c7; white-space: pre-wrap; margin: 0; }
+  .ok { color: #57d1a4; } .bad { color: #ff7b72; }
+</style>
+</head>
+<body>
+<header>
+  <h1>tpt-shipyard</h1>
+  <span>construction digital twin — WebAssembly</span>
+</header>
+<main>
+  <div class="panel" id="stage">
+    <h3 style="margin:2px 0 10px">Erection state (plan view + elevation)</h3>
+    <canvas id="cv" width="860" height="340"></canvas>
+    <div id="progress"><div id="bar"></div></div>
+    <button id="step">Erect next block</button>
+    <button id="auto">Run to completion</button>
+    <button id="reset">Reset</button>
+  </div>
+  <div class="panel" id="side">
+    <div>
+      <h3 style="margin:2px 0 8px">Weight &amp; CoG</h3>
+      <div class="kv"><span>Installed</span><b id="w-inst">–</b></div>
+      <div class="kv"><span>Best estimate</span><b id="w-best">–</b></div>
+      <div class="kv"><span>Design</span><b id="w-design">–</b></div>
+      <div class="kv"><span>Deviation</span><b id="w-dev">–</b></div>
+      <div class="kv"><span>CoG x</span><b id="cog">–</b></div>
+    </div>
+    <div>
+      <h3 style="margin:2px 0 8px">Structural check</h3>
+      <div class="kv"><span>Status</span><b id="s-pass">–</b></div>
+      <div class="kv"><span>Margin</span><b id="s-margin">–</b></div>
+      <div class="kv"><span>Reactions (aft / fore)</span><b id="s-react">–</b></div>
+      <pre id="raw"></pre>
+    </div>
+  </div>
+</main>
+<script type="module">
+import init, { WasmDigitalTwin } from "./pkg/tpt_yard_wasm.js";
+
+// 12-block barge project, one erection phase per block.
+function projectJson(blocks) {
+  const phases = [];
+  for (let i = 1; i <= blocks; i++) {
+    phases.push({
+      id: i,
+      name: `Erection phase ${i}`,
+      activities: [{
+        id: i,
+        name: `Erect block ${200 + i}`,
+        activity_type: { kind: "join_block" },
+        dependencies: i === 1 ? [] : [i - 1],
+        duration_hours: 6,
+        resources: [],
+      }],
+      structural_state: { kind: "not_started" },
+      weight_state: { design_kg: 142800, installed_kg: 0 },
+      duration_days: 4,
+    });
+  }
+  return JSON.stringify({
+    id: 1,
+    name: "Container ship 1400 TEU (WASM demo)",
+    vessel_type: { kind: "sea", value: { kind: "container_ship", teu_capacity: 1400 } },
+    construction_method: "sea_drydock",
+    build_phases: phases,
+    current_phase: 1,
+  });
+}
+
+await init();
+let twin = new WasmDigitalTwin(projectJson(12));
+
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+const bar = document.getElementById("bar");
+
+function fmtT(kg) { return (kg / 1000).toFixed(0) + " t"; }
+
+function refresh() {
+  const report = JSON.parse(twin.get_weight_report());
+  const check = JSON.parse(twin.structural_check());
+  const verts = twin.get_geometry();
+
+  document.getElementById("w-inst").textContent = fmtT(report.installed_kg);
+  document.getElementById("w-best").textContent = fmtT(report.best_estimate_kg);
+  document.getElementById("w-design").textContent = fmtT(report.design_kg);
+  const dev = report.deviation_kg;
+  document.getElementById("w-dev").textContent = fmtT(dev);
+  document.getElementById("w-dev").className = dev > 0 ? "bad" : "ok";
+  document.getElementById("cog").textContent = report.cog[0].toFixed(1) + " m";
+
+  const pass = document.getElementById("s-pass");
+  pass.textContent = check.passed ? "PASSED" : "FAILED";
+  pass.className = check.passed ? "ok" : "bad";
+  document.getElementById("s-margin").textContent = (check.margin * 100).toFixed(1) + " %";
+  document.getElementById("s-react").textContent =
+    (check.reactions.aft ?? 0).toFixed(0) + " / " + (check.reactions.fore ?? 0).toFixed(0) + " kN";
+  document.getElementById("raw").textContent = JSON.stringify(check);
+
+  const done = twin.completed_count();
+  bar.style.width = (done / 12 * 100) + "%";
+
+  // ---- draw: top-down blocks + CoG marker ----
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  const n = 12, pitch = 62, bx = 40, by = 70;
+  for (let i = 0; i < n; i++) {
+    const erected = i < done;
+    ctx.strokeStyle = "#2c4a85";
+    ctx.fillStyle = erected ? "#274b8f" : "#101a2c";
+    ctx.beginPath();
+    ctx.rect(bx + i * pitch, by, pitch - 8, 60);
+    ctx.fill(); ctx.stroke();
+    if (erected) {
+      ctx.fillStyle = "#8fb6ff";
+      ctx.font = "11px sans-serif";
+      ctx.fillText("B" + (200 + i + 1), bx + i * pitch + 11, by + 34);
+    }
+  }
+  // elevation strip
+  for (let i = 0; i < n; i++) {
+    const erected = i < done;
+    ctx.fillStyle = erected ? "#57d1a4" : "#1a2438";
+    ctx.fillRect(bx + i * pitch, by + 90, pitch - 8, 22);
+  }
+  // keel supports + CoG marker
+  ctx.fillStyle = "#6b7f9e";
+  ctx.fillRect(bx - 20, by + 118, 16, 10);
+  ctx.fillRect(bx + n * pitch - 12, by + 118, 16, 10);
+  if (done > 0) {
+    const cx = bx + (report.cog[0] / (n * 10)) * (n * pitch) - 5;
+    ctx.fillStyle = "#ffb454";
+    ctx.beginPath();
+    ctx.moveTo(cx, by + 58); ctx.lineTo(cx + 6, by + 70); ctx.lineTo(cx - 6, by + 70);
+    ctx.closePath(); ctx.fill();
+    ctx.fillText("CoG", cx - 12, by + 84);
+  }
+  document.getElementById("step").disabled = done >= 12;
+}
+
+document.getElementById("step").onclick = () => { twin.advance_next(); refresh(); };
+document.getElementById("auto").onclick = () => {
+  const timer = setInterval(() => {
+    twin.advance_next();
+    refresh();
+    if (twin.completed_count() >= 12) clearInterval(timer);
+  }, 350);
+};
+document.getElementById("reset").onclick = () => {
+  twin = new WasmDigitalTwin(projectJson(12));
+  refresh();
+};
+
+refresh();
+</script>
+</body>
+</html>

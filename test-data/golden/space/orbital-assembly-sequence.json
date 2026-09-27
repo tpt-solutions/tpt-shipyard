@@ -1,0 +1,26 @@
+{
+  "case": "ISS-class truss assembly sequence and partial-structure integrity (RFC 0003 reference case)",
+  "structure": { "kind": "truss", "segments": 3, "length_m": 30.0 },
+  "bays": [
+    { "id": 1, "name": "bay 1", "mass_kg": 500.0, "dimensions_m": [10.0, 3.0, 3.0], "target_m": [5.0, 0.0, 0.0] },
+    { "id": 2, "name": "bay 2", "mass_kg": 500.0, "dimensions_m": [10.0, 3.0, 3.0], "target_m": [15.0, 0.0, 0.0] },
+    { "id": 3, "name": "bay 3", "mass_kg": 500.0, "dimensions_m": [10.0, 3.0, 3.0], "target_m": [25.0, 0.0, 0.0] }
+  ],
+  "orbit": { "designation": "LEO 400 km, 51.6 deg", "station_keeping_accel_ms2": 1e-4 },
+  "sequence_policy": {
+    "actions_per_bay": ["GraspComponent", "Translate", "Rotate", "Dock", "Bolt", "Release"],
+    "durations_hours": [0.5, 1.0, 0.5, 1.5, 0.5, 0.1],
+    "force_limit_n": 400.0
+  },
+  "expected": {
+    "n_steps": 18,
+    "total_duration_hours": 12.3,
+    "handling_force_n": 25.05,
+    "docking_impulse_n": 20000.0,
+    "final_root_stress_mpa": 16.666666666666668,
+    "final_utilization": 0.06666666666666667,
+    "deployed_length_m": 25.0,
+    "structural_passed": true
+  },
+  "tolerance": { "relative": 1e-09, "note": "closed-form sequence and cantilever statics" }
+}

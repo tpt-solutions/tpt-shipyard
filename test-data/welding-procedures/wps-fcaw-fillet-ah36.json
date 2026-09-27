@@ -1,0 +1,19 @@
+{
+  "wps_id": "WPS-FCAW-FILLET-AH36-02",
+  "revision": "A",
+  "title": "FCAW double fillet, AH36 T-joints 6-20 mm",
+  "process": "FCAW",
+  "heat_input_kj_mm": 2.5,
+  "travel_speed_mm_s": 7.0,
+  "preheat_temp_c": 0.0,
+  "interpass_temp_c": 200.0,
+  "filler_metal": "E71T-1C, 1.2 mm",
+  "shielding": "CO2 15-18 L/min",
+  "position": "PB (horizontal fillet)",
+  "base_material": "AH36 (EN 10025-4)",
+  "joint": {
+    "kind": "t-joint",
+    "leg_mm": 6.0
+  },
+  "notes": "Two toes; leg 6 mm nominal, 5-7 mm acceptance band."
+}

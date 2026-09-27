@@ -1,0 +1,46 @@
+{
+  "case": "Reference hull-panel welding distortion benchmark (RFC 0004)",
+  "description": "Single-V SAW butt weld on an AH36 panel; golden values are the analytical model outputs locked at acceptance, verified against published experimental ranges for comparable joints (transverse shrinkage 0.5-2.5 mm, angular distortion 0.5-4 deg for single-side V butts).",
+  "panel": {
+    "length_mm": 1000,
+    "width_mm": 500,
+    "thickness_mm": 12
+  },
+  "joint": {
+    "kind": "butt",
+    "groove": "V",
+    "groove_angle_deg": 60.0,
+    "root_gap_mm": 3.0,
+    "root_face_mm": 2.0,
+    "thickness_mm": 12.0,
+    "weld_area_mm2": 63.735
+  },
+  "procedure": {
+    "process": "SAW",
+    "heat_input_kj_mm": 12.0,
+    "travel_speed_mm_s": 8.0,
+    "preheat_temp_c": 20.0,
+    "interpass_temp_c": 150.0,
+    "filler_metal": "S2Si2 / SA AB1 47"
+  },
+  "material": "AH36 shipbuilding steel",
+  "expected": {
+    "transverse_shrinkage_mm": 1.5599,
+    "longitudinal_shrinkage_mm": 0.0717,
+    "angular_distortion_deg": 0.6849,
+    "bowing_mm": 0.0009,
+    "residual_stress": {
+      "tension_half_width_mm": 10.017,
+      "compressive_stress_mpa": -2.39,
+      "peak_tensile_mpa": 355.0
+    },
+    "thermal_cycle_at_8mm": {
+      "peak_temp_c": 9808.5,
+      "t8_5_s": 14.46
+    }
+  },
+  "tolerance": {
+    "relative": 0.05,
+    "note": "computed values must match expected within +/-5% relative (t8/5 within 10%: sample discretisation)"
+  }
+}

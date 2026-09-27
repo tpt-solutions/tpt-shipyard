@@ -1,0 +1,12 @@
+[package]
+name = "tpt-yard-habitat"
+description = "Rotating habitat design: artificial gravity, Coriolis comfort, structure."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tpt-yard-core = { workspace = true }
+tpt-yard-space-structural = { workspace = true }

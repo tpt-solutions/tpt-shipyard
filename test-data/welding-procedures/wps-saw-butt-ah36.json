@@ -1,0 +1,22 @@
+{
+  "wps_id": "WPS-SAW-BUTT-AH36-01",
+  "revision": "B",
+  "title": "SAW single-V butt, AH36 plate 10-16 mm",
+  "process": "SAW",
+  "heat_input_kj_mm": 12.0,
+  "travel_speed_mm_s": 8.0,
+  "preheat_temp_c": 20.0,
+  "interpass_temp_c": 150.0,
+  "filler_metal": "S2Si2 wire / SA AB1 47 flux, 4.0 mm",
+  "shielding": "flux layer (submerged)",
+  "position": "PA (flat)",
+  "base_material": "AH36 (EN 10025-4)",
+  "joint": {
+    "kind": "butt",
+    "groove": "V",
+    "groove_angle_deg": 60.0,
+    "root_gap_mm": 3.0,
+    "root_face_mm": 2.0
+  },
+  "notes": "Single wire DC-EP. Back gouge + back weld before NDT."
+}

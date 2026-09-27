@@ -1,0 +1,11 @@
+[package]
+name = "tpt-yard-facility"
+description = "Shipyard and orbital-facility layout planning with capacity constraints."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tpt-yard-core = { workspace = true }

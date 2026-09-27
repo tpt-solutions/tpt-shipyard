@@ -1,0 +1,20 @@
+{
+  "wps_id": "WPS-GTAW-AA5083-03",
+  "revision": "A",
+  "title": "GTAC (TIG) AC square butt, AA5083 plate 4-6 mm",
+  "process": "GTAW",
+  "heat_input_kj_mm": 1.2,
+  "travel_speed_mm_s": 5.0,
+  "preheat_temp_c": 0.0,
+  "interpass_temp_c": 80.0,
+  "filler_metal": "ER5183 (AlMg4.5Mn), 2.4 mm",
+  "shielding": "Ar 99.998%, 12 L/min",
+  "position": "PA (flat)",
+  "base_material": "AA5083-O/H116 (marine aluminium)",
+  "joint": {
+    "kind": "butt",
+    "groove": "Square",
+    "root_gap_mm": 2.0
+  },
+  "notes": "AC TIG with zirconiated electrode; stainless backing strip."
+}

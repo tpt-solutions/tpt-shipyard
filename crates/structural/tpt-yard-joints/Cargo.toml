@@ -1,0 +1,11 @@
+[package]
+name = "tpt-yard-joints"
+description = "Shared joint-geometry primitives for structural and welding analysis."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tpt-yard-core = { workspace = true }

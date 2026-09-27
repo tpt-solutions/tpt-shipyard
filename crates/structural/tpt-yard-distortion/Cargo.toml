@@ -1,0 +1,11 @@
+[package]
+name = "tpt-yard-distortion"
+description = "Block distortion management: deviation maps and correction planning."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tpt-yard-core = { workspace = true }

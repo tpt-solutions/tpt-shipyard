@@ -1,0 +1,12 @@
+[package]
+name = "tpt-yard-welding"
+description = "Welding simulation and distortion control for ship construction."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tpt-yard-core = { workspace = true }
+tpt-yard-joints = { workspace = true }

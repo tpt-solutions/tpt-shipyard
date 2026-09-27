@@ -1,0 +1,20 @@
+{
+  "case": "Resource levelling reference (Phase 5 golden)",
+  "network": {
+    "activities": [
+      { "id": 1, "name": "A", "duration_hours": 8.0, "dependencies": [], "crane": 1.0 },
+      { "id": 2, "name": "B", "duration_hours": 16.0, "dependencies": [1], "crane": 1.0 },
+      { "id": 3, "name": "C", "duration_hours": 8.0, "dependencies": [1], "crane": 1.0 },
+      { "id": 4, "name": "E", "duration_hours": 8.0, "dependencies": [2], "crane": 0.0 },
+      { "id": 5, "name": "F", "duration_hours": 8.0, "dependencies": [3], "crane": 0.0 }
+    ]
+  },
+  "expected": {
+    "earliest_makespan_hours": 32.0,
+    "earliest_crane_peak": 2.0,
+    "levelled_crane_peak": 1.0,
+    "levelled_makespan_hours": 40.0,
+    "note": "levelling trades makespan (32 -> 40 h) for a flat crane profile (2 -> 1)"
+  },
+  "tolerance": { "relative": 1e-09, "note": "discrete-event exact" }
+}

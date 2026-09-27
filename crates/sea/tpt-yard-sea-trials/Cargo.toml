@@ -1,0 +1,11 @@
+[package]
+name = "tpt-yard-sea-trials"
+description = "Post-launch sea-trial test planning and acceptance criteria."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tpt-yard-core = { workspace = true }

@@ -1,0 +1,18 @@
+{
+  "case": "Rotating habitat hoop stress (RFC 0005 verification, spec reference case)",
+  "formula": "sigma = rho * omega^2 * r^2",
+  "parameters": {
+    "material": "AA5083 aluminium",
+    "density_kg_m3": 2660.0,
+    "radius_m": 100.0,
+    "rotation_rpm": 2.0,
+    "habitat_mass_kg": 1000000.0
+  },
+  "expected": {
+    "angular_velocity_rad_s": 0.20943951023931953,
+    "hoop_stress_mpa": 1.1668065647510086,
+    "utilization": 0.0054270072779117,
+    "radial_growth_m": 0.0016433895278183
+  },
+  "tolerance": { "relative": 1e-09, "note": "closed form: exact within floating-point rounding" }
+}

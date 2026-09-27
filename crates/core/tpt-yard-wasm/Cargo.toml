@@ -1,0 +1,20 @@
+[package]
+name = "tpt-yard-wasm"
+description = "WebAssembly bindings for interactive shipyard construction dashboards."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tpt-yard-core = { workspace = true }
+tpt-yard-assembly = { workspace = true }
+tpt-yard-weight = { workspace = true }
+tpt-yard-digital-twin = { workspace = true }
+tpt-yard-orbital-assembly = { workspace = true }
+tpt-yard-robotic-assembly = { workspace = true }
+wasm-bindgen = { workspace = true }

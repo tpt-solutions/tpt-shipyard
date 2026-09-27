@@ -1,0 +1,12 @@
+[package]
+name = "tpt-yard-hull"
+description = "Hull construction and block management for sea shipyards."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tpt-yard-core = { workspace = true }
+tpt-yard-blocks = { workspace = true }

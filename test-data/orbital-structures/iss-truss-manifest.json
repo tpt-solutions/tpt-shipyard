@@ -1,0 +1,23 @@
+{
+  "structure": "ISS-integrated-truss-class reference manifest",
+  "type": "truss",
+  "segments": 15,
+  "bay_pitch_m": 5.0,
+  "bay": {
+    "mass_kg": 500.0,
+    "dimensions_m": [5.0, 3.0, 3.0],
+    "chord_area_m2": 0.01,
+    "bay_height_m": 3.0
+  },
+  "orbit": { "designation": "LEO 400 km, 51.6 deg", "station_keeping_accel_ms2": 1e-4 },
+  "robot": {
+    "name": "SSRMS-class arm (planar model)",
+    "links_m": [4.0, 4.0],
+    "gripper_force_n": 400.0
+  },
+  "assembly": {
+    "policy": "anchor bay first, build outwards one bay at a time",
+    "force_limit_n": 400.0,
+    "bolt_torque_nm": 75.0
+  }
+}

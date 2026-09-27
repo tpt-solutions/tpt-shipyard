@@ -1,0 +1,3 @@
+# Clippy configuration for tpt-shipyard.
+# Numerical/geometric constructors legitimately take many parameters.
+too-many-arguments-threshold = 10

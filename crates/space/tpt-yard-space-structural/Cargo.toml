@@ -1,0 +1,11 @@
+[package]
+name = "tpt-yard-space-structural"
+description = "Structural design without launch constraints: vacuum, rotation, thermal cycling."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tpt-yard-core = { workspace = true }

@@ -1,0 +1,21 @@
+{
+  "vessel": "Submarine pressure hull (reference example case)",
+  "hull": {
+    "pressure_hull_diameter_m": 8.0,
+    "pressure_hull_length_m": 55.0,
+    "shell_thickness_mm": 40.0,
+    "frame_spacing_m": 0.6,
+    "material": "HY-80 class steel",
+    "test_depth_m": 450.0
+  },
+  "sections": [
+    { "id": "S1", "x_from_m": 0.0, "x_to_m": 12.0, "note": "aft torpedo/ machinery" },
+    { "id": "S2", "x_from_m": 12.0, "x_to_m": 27.0, "note": "reactor/ machinery spaces" },
+    { "id": "S3", "x_from_m": 27.0, "x_to_m": 43.0, "note": "accommodation/ control" },
+    { "id": "S4", "x_from_m": 43.0, "x_to_m": 55.0, "note": "forward torpedo/ sonar" }
+  ],
+  "construction": {
+    "method": "sea_drydock",
+    "notes": "Ring-section construction: each section fully welded and pressure-tested in the workshop before join-up; circumferential seams are full-penetration butt welds with 100% RT."
+  }
+}

@@ -1,0 +1,16 @@
+[package]
+name = "submarine-pressure-hull"
+description = "TPT Shipyard example: submarine-pressure-hull"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tpt-yard-core = { workspace = true }
+tpt-yard-hull = { workspace = true }
+tpt-yard-structural = { workspace = true }
+tpt-yard-welding = { workspace = true }
+tpt-yard-joints = { workspace = true }

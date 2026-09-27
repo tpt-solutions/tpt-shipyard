@@ -1,0 +1,12 @@
+[package]
+name = "tpt-yard-space-manufacturing"
+description = "In-space manufacturing and additive construction planning."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tpt-yard-core = { workspace = true }
+tpt-yard-space-structural = { workspace = true }

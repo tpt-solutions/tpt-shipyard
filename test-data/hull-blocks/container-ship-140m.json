@@ -1,0 +1,19 @@
+{
+  "vessel": "Container ship 1400 TEU (reference block-division case)",
+  "hull": {
+    "loa_m": 140.0,
+    "boa_m": 22.0,
+    "depth_m": 12.0,
+    "areal_density_kg_m2": 180.0,
+    "depth_bands": 2
+  },
+  "yard_capabilities": {
+    "crane_capacity_kn": 40000.0,
+    "workshop": { "length_m": 24.0, "breadth_m": 30.0, "depth_m": 14.0 },
+    "transport_limit_t": 200.0
+  },
+  "construction": {
+    "method": "sea_drydock",
+    "notes": "Two-tier block division; bottom tier erected first from midship outwards."
+  }
+}

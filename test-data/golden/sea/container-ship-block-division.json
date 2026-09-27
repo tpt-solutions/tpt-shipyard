@@ -1,0 +1,26 @@
+{
+  "case": "Container ship 140 m block division (RFC 0002 reference case)",
+  "hull": {
+    "loa_m": 140.0,
+    "boa_m": 22.0,
+    "depth_m": 12.0,
+    "areal_density_kg_m2": 180.0,
+    "depth_bands": 2
+  },
+  "constraints": {
+    "crane_capacity_kn": 40000.0,
+    "workshop": { "length_m": 24.0, "breadth_m": 30.0, "depth_m": 14.0 }
+  },
+  "expected": {
+    "n_blocks": 12,
+    "n_longitudinal_bands": 6,
+    "block_length_m": 23.333333,
+    "block_weight_kg": 142800.0,
+    "max_block_load_kn": 1400.868,
+    "total_steel_kg": 1713600.0,
+    "keel_tier_blocks": 6,
+    "min_block_cog_z_m": 3.0,
+    "first_join_seam": "DockJoint"
+  },
+  "tolerance": { "relative": 0.001, "note": "closed-form division: exact within rounding" }
+}

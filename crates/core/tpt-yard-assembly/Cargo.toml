@@ -1,0 +1,10 @@
+[package]
+name = "tpt-yard-assembly"
+description = "Shared assembly-activity primitives: dependency graphs and activity status tracking."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]

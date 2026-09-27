@@ -1,0 +1,15 @@
+[package]
+name = "space-solar-array-assembly"
+description = "TPT Shipyard example: space-solar-array-assembly"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tpt-yard-core = { workspace = true }
+tpt-yard-space-manufacturing = { workspace = true }
+tpt-yard-orbital-assembly = { workspace = true }
+tpt-yard-robotic-assembly = { workspace = true }

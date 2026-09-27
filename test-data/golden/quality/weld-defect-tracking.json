@@ -1,0 +1,17 @@
+{
+  "case": "Weld defect tracking reference (Phase 5 golden)",
+  "records": [
+    { "id": 1, "inspection_point": 1, "defect_type": "Porosity", "size_mm": 1.5, "disposition": "Repair" },
+    { "id": 2, "inspection_point": 1, "defect_type": "Porosity", "size_mm": 1.0, "disposition": "AcceptAsIs" },
+    { "id": 3, "inspection_point": 2, "defect_type": "Cracking", "size_mm": 5.0, "disposition": "Reject" },
+    { "id": 4, "inspection_point": 2, "defect_type": "Undercut", "size_mm": 0.8, "disposition": "RepairAndReinspect" }
+  ],
+  "expected": {
+    "total": 4,
+    "dominant_defect": "Porosity",
+    "by_type": [["Porosity", 2], ["Cracking", 1], ["Undercut", 1]],
+    "repair_rate": 0.5,
+    "rejected": 1
+  },
+  "tolerance": { "relative": 1e-09, "note": "exact aggregation" }
+}

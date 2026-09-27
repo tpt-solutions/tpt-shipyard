@@ -1,0 +1,12 @@
+[package]
+name = "tpt-yard-process-link"
+description = "Bridge between process engineering (tpt-process) and construction planning."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tpt-yard-core = { workspace = true }
+tpt-yard-propellant = { workspace = true }

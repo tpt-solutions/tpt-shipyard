@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions & discussions
+    url: https://github.com/tpt-solutions/tpt-shipyard/discussions
+    about: Usage questions and design discussions.
+  - name: Security reports
+    url: https://github.com/tpt-solutions/tpt-shipyard/security/advisories/new
+    about: Please report vulnerabilities privately (see SECURITY.md).

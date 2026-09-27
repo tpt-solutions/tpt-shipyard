@@ -1,0 +1,51 @@
+# cargo-deny configuration — MIT-chain enforcement for tpt-shipyard.
+# Run: cargo deny check
+#
+# NOTE: the design spec expressed the policy as `copyleft = "deny"`,
+# `unlicensed = "deny"`, `allow-osi-fsf-free = "neither"`. cargo-deny >= 0.17
+# removed those keys (EmbarkStudios/cargo-deny#611): under `version = 2` the
+# allow-list below is the *entire* policy — any license not listed (all
+# copyleft families, and anything unlicensed) fails the check. That is exactly
+# the spec's intent.
+
+[graph]
+all-features = true
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CC0-1.0",
+]
+
+# Confidence threshold for license detection.
+confidence-threshold = 0.93
+
+[[licenses.clarify]]
+crate = "unicode-ident"
+expression = "(MIT OR Apache-2.0) AND Unicode-DFS-2016"
+license-files = [{ path = "COPYING", hash = 0x7a4a2f2f }]
+
+[bans]
+# Multiple versions of the same crate are a warning; resolve before release.
+multiple-versions = "warn"
+# Workspace-internal path dependencies (`{ workspace = true }`) carry no
+# version by design, so a hard wildcard deny would flag every member crate.
+wildcards = "warn"
+deny = []
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

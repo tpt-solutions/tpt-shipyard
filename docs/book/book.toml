@@ -1,0 +1,13 @@
+[book]
+title = "The TPT Shipyard Book"
+authors = ["TPT Solutions"]
+language = "en"
+description = "Computational engine for vehicle construction: sea shipyards, orbital assembly, in-space manufacturing, and construction digital twins."
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/tpt-solutions/tpt-shipyard"
+edit-url-template = "https://github.com/tpt-solutions/tpt-shipyard/edit/main/docs/book/{path}"

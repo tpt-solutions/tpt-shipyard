@@ -1,0 +1,12 @@
+[package]
+name = "tpt-yard-orbital-assembly"
+description = "Orbital assembly planning and simulation for space structures."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tpt-yard-core = { workspace = true }
+tpt-yard-robotic-assembly = { workspace = true }

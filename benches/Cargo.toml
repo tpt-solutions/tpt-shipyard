@@ -1,0 +1,37 @@
+[package]
+name = "tpt-shipyard-benches"
+description = "Benchmarks for the TPT Shipyard construction engine"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bench]]
+name = "block-lifting"
+harness = false
+
+[[bench]]
+name = "welding-distortion"
+harness = false
+
+[[bench]]
+name = "orbital-assembly-sequence"
+harness = false
+
+[[bench]]
+name = "launch-stability"
+harness = false
+
+[dependencies]
+tpt-yard-core = { workspace = true }
+tpt-yard-joints = { workspace = true }
+tpt-yard-welding = { workspace = true }
+tpt-yard-hull = { workspace = true }
+tpt-yard-blocks = { workspace = true }
+tpt-yard-launch = { workspace = true }
+tpt-yard-drydock = { workspace = true }
+tpt-yard-weight = { workspace = true }
+tpt-yard-orbital-assembly = { workspace = true }
+tpt-yard-robotic-assembly = { workspace = true }

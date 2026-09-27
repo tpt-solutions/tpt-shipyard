@@ -1,0 +1,14 @@
+[package]
+name = "tpt-yard-transport-link"
+description = "Bridge between vehicle design (tpt-transport) and shipyard construction."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tpt-yard-assembly = { workspace = true }
+tpt-yard-core = { workspace = true }
+tpt-yard-digital-twin = { workspace = true }
+tpt-yard-weight = { workspace = true }

@@ -1,0 +1,16 @@
+[package]
+name = "container-ship-block-assembly"
+description = "TPT Shipyard example: container-ship-block-assembly"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tpt-yard-core = { workspace = true }
+tpt-yard-hull = { workspace = true }
+tpt-yard-blocks = { workspace = true }
+tpt-yard-digital-twin = { workspace = true }
+tpt-yard-weight = { workspace = true }

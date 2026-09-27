@@ -1,0 +1,12 @@
+[package]
+name = "tpt-yard-weight"
+description = "Weight and centre-of-gravity management for vessels under construction."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tpt-yard-assembly = { workspace = true }
+tpt-yard-core = { workspace = true }

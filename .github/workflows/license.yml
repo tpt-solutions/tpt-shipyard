@@ -1,0 +1,16 @@
+name: License check
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  cargo-deny:
+    name: cargo-deny (MIT chain)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses bans

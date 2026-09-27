@@ -1,0 +1,11 @@
+[package]
+name = "tpt-yard-core"
+description = "Fundamental shipyard domain types for the TPT Shipyard construction engine."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tpt-yard-assembly = { workspace = true }

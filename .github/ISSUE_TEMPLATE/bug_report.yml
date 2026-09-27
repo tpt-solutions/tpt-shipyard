@@ -1,0 +1,71 @@
+name: Bug report
+description: Report a problem in tpt-shipyard
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug! For security issues, please use
+        [private vulnerability reporting](https://github.com/tpt-solutions/tpt-shipyard/security/advisories/new) instead.
+  - type: dropdown
+    id: crate
+    attributes:
+      label: Affected crate
+      options:
+        - tpt-yard-core
+        - tpt-yard-assembly
+        - tpt-yard-weight
+        - tpt-yard-digital-twin
+        - tpt-yard-structural
+        - tpt-yard-welding
+        - tpt-yard-distortion
+        - tpt-yard-joints
+        - tpt-yard-hull
+        - tpt-yard-blocks
+        - tpt-yard-drydock
+        - tpt-yard-launch
+        - tpt-yard-outfitting
+        - tpt-yard-sea-trials
+        - tpt-yard-orbital-assembly
+        - tpt-yard-space-structural
+        - tpt-yard-space-manufacturing
+        - tpt-yard-robotic-assembly
+        - tpt-yard-habitat
+        - tpt-yard-propellant
+        - tpt-yard-scheduling
+        - tpt-yard-logistics
+        - tpt-yard-facility
+        - tpt-yard-quality
+        - tpt-yard-transport-link
+        - tpt-yard-process-link
+        - tpt-yard-earth-link
+        - tpt-yard-wasm
+        - other / multiple
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Include a minimal reproduction (code and/or input JSON) and what you expected to happen.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      placeholder: v0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Wrong numerical results (safety-relevant)
+        - Crash / panic
+        - Incorrect behaviour without crash
+        - Documentation issue
+        - Build / tooling issue
+    validations:
+      required: true

@@ -1,0 +1,13 @@
+[package]
+name = "tpt-yard-digital-twin"
+description = "Construction state tracking and simulation: the shipyard digital twin."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tpt-yard-core = { workspace = true }
+tpt-yard-weight = { workspace = true }
+tpt-yard-assembly = { workspace = true }

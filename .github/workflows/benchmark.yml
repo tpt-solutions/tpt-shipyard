@@ -1,0 +1,26 @@
+name: Benchmark
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  bench:
+    name: Run benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run benches
+        run: |
+          mkdir -p bench-results
+          for b in block-lifting welding-distortion orbital-assembly-sequence launch-stability; do
+            cargo bench -p tpt-shipyard-benches --bench "$b" 2>&1 | tee "bench-results/$b.txt"
+          done
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: bench-results/

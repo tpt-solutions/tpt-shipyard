@@ -1,0 +1,41 @@
+name: Feature request
+description: Propose an enhancement or new capability
+labels: ["enhancement", "triage"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Sea shipyard (hull, blocks, drydock, launch, outfitting, sea trials)
+        - Space shipyard (orbital assembly, robotics, habitats, propellant)
+        - Structural / welding / distortion
+        - Digital twin / weight / core
+        - Planning (scheduling, logistics, facility, quality)
+        - Integrations (transport, process, earth) / WASM
+        - Documentation / tooling
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What are you trying to build or compute? What is missing or awkward?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: API sketch, physics model, or workflow you have in mind.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: rfc
+    attributes:
+      label: RFC awareness
+      description: Large changes (new crates, API shape, physics models) require an RFC per GOVERNANCE.md.
+      options:
+        - label: I know this may need an RFC, or I will draft one

@@ -1,0 +1,28 @@
+{
+  "case": "Slipway end-launch statics (RFC 0002 reference case)",
+  "method": "slipway",
+  "parameters": {
+    "slope_deg": 3.0,
+    "ways": 2,
+    "launch_mass_kg": 4000000.0,
+    "cog_x_from_way_end_m": 70.0,
+    "way_length_m": 120.0,
+    "way_width_m": 2.0,
+    "friction_coefficient": 0.02,
+    "end_bearing_m": 20.0,
+    "immersion_length_m": 90.0,
+    "block_coefficient": 0.8,
+    "breadth_m": 20.0
+  },
+  "expected": {
+    "sliding_velocity_ms": 8.729,
+    "full_contact_pressure_mpa": 0.16328,
+    "pivot_pressure_mpa": 0.48983,
+    "tip_up_risk": false,
+    "entry_angle_deg": 3.0,
+    "slamming_pressure_mpa": 0.15620,
+    "launch_draft_m": 2.7100,
+    "safe": true
+  },
+  "tolerance": { "relative": 0.002, "note": "closed-form statics: exact within rounding" }
+}
