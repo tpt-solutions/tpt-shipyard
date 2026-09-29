@@ -1,8 +1,12 @@
 [package]
 name = "tpt-yard-space-manufacturing"
 description = "In-space manufacturing and additive construction planning."
+keywords = ["additive-manufacturing", "isru", "in-space-manufacturing", "aerospace", "deposition"]
+categories = ["aerospace", "science", "simulation"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

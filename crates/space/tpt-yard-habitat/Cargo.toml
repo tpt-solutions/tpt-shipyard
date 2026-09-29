@@ -1,8 +1,12 @@
 [package]
 name = "tpt-yard-habitat"
 description = "Rotating habitat design: artificial gravity, Coriolis comfort, structure."
+keywords = ["habitat", "artificial-gravity", "coriolis", "rotating-ring", "oneill"]
+categories = ["aerospace", "science", "simulation"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

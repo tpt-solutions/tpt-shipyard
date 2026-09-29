@@ -1,8 +1,12 @@
 [package]
 name = "tpt-yard-transport-link"
 description = "Bridge between vehicle design (tpt-transport) and shipyard construction."
+keywords = ["integration", "as-built", "handover", "vessel", "lifecycle"]
+categories = ["science", "simulation", "development-tools"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

@@ -24,9 +24,14 @@ A fully open-source, MIT-licensed computational engine for vehicle construction:
 
 ## Crates
 
+Every crate ships its own `README.md` (overview, features, usage, verification)
+and `CHANGELOG.md`; crates.io `keywords` and `categories` are declared in each
+manifest. See for example
+[`crates/structural/tpt-yard-welding`](crates/structural/tpt-yard-welding).
+
 | Crate | Description | Status |
 |---|---|---|
-| `tpt-yard-core` | Core shipyard types: vessel projects, build phases, activities | In Progress |
+| `tpt-yard-core` | Core shipyard types: vessel projects, build phases, activities | Done |
 | `tpt-yard-assembly` | Shared assembly-activity primitives: dependency graphs | Done |
 | `tpt-yard-weight` | Weight and CoG management | Done |
 | `tpt-yard-digital-twin` | Construction state tracking and simulation | Done |
@@ -65,10 +70,12 @@ fn main() {
     let project = VesselProject::from_json("container-ship.json").unwrap();
     let mut twin = DigitalTwin::new(project);
 
-    // Advance through construction phases
-    for activity in twin.vessel().build_phases[0].activities.clone() {
-        twin.advance_phase(&activity.id).unwrap();
-        println!("Weight: {} kg", twin.weight_model().total_weight());
+    // Advance through construction, phase by phase
+    for phase in &twin.vessel.build_phases {
+        for activity in &phase.activities {
+            twin.advance_phase(&activity.id).unwrap();
+            println!("Weight: {} kg", twin.weight_model().total_weight());
+        }
     }
 }
 ```

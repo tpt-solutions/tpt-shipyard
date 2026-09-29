@@ -1,8 +1,12 @@
 [package]
 name = "tpt-yard-scheduling"
 description = "Construction scheduling: critical path, optimisation and resource levelling."
+keywords = ["scheduling", "critical-path", "resource-leveling", "project-planning", "cpm"]
+categories = ["algorithms", "science", "simulation"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

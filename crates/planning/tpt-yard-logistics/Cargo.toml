@@ -1,8 +1,12 @@
 [package]
 name = "tpt-yard-logistics"
 description = "Material and resource logistics: delivery, staging and transport scheduling."
+keywords = ["logistics", "material-flow", "staging", "supply", "delivery"]
+categories = ["science", "simulation", "algorithms"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

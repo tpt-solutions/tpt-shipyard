@@ -1,8 +1,12 @@
 [package]
 name = "tpt-yard-joints"
 description = "Shared joint-geometry primitives for structural and welding analysis."
+keywords = ["welding", "joint-geometry", "groove", "fillet", "throat"]
+categories = ["science"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

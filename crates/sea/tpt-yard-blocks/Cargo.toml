@@ -1,8 +1,12 @@
 [package]
 name = "tpt-yard-blocks"
 description = "Shared block-lifting and handling primitives: lift points and sling loads."
+keywords = ["lifting", "sling", "rigging", "statics", "crane"]
+categories = ["science", "simulation"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

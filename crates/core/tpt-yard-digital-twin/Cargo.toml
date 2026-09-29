@@ -1,8 +1,12 @@
 [package]
 name = "tpt-yard-digital-twin"
 description = "Construction state tracking and simulation: the shipyard digital twin."
+keywords = ["digital-twin", "construction", "simulation", "monitoring", "shipbuilding"]
+categories = ["science", "simulation"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

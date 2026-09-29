@@ -1,8 +1,12 @@
 [package]
 name = "tpt-yard-assembly"
 description = "Shared assembly-activity primitives: dependency graphs and activity status tracking."
+keywords = ["dependency-graph", "dag", "topological-sort", "cpm", "scheduling"]
+categories = ["algorithms", "data-structures", "science"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

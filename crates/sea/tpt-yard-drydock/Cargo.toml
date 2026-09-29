@@ -1,8 +1,12 @@
 [package]
 name = "tpt-yard-drydock"
 description = "Drydock flooding and ballast sequencing with stability at every water level."
+keywords = ["drydock", "flooding", "stability", "metacentric", "ballast"]
+categories = ["science", "simulation"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

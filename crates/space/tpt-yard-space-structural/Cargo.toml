@@ -1,8 +1,12 @@
 [package]
 name = "tpt-yard-space-structural"
 description = "Structural design without launch constraints: vacuum, rotation, thermal cycling."
+keywords = ["space-structures", "habitat", "whipple-shield", "thermal-fatigue", "aerospace"]
+categories = ["aerospace", "science", "simulation"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

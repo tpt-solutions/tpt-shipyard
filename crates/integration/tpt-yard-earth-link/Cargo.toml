@@ -1,8 +1,12 @@
 [package]
 name = "tpt-yard-earth-link"
 description = "Bridge between weather and sea-state data (tpt-earth) and launch planning."
+keywords = ["sea-state", "launch-window", "weather", "douglas-scale", "marine"]
+categories = ["science", "simulation", "aerospace"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

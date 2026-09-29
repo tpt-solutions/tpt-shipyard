@@ -1,8 +1,12 @@
 [package]
 name = "tpt-yard-weight"
 description = "Weight and centre-of-gravity management for vessels under construction."
+keywords = ["weight", "centre-of-gravity", "mass-properties", "shipbuilding"]
+categories = ["science", "simulation"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

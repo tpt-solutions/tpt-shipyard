@@ -1,8 +1,12 @@
 [package]
 name = "tpt-yard-structural"
 description = "Structural analysis of incomplete structures at every build phase."
+keywords = ["fem", "truss", "structural-analysis", "construction", "lifting"]
+categories = ["science", "simulation", "mathematics"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

@@ -1,8 +1,12 @@
 [package]
 name = "tpt-yard-wasm"
 description = "WebAssembly bindings for interactive shipyard construction dashboards."
+keywords = ["wasm", "webassembly", "digital-twin", "dashboard", "shipyard"]
+categories = ["web-programming::wasm", "science", "simulation", "graphics"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

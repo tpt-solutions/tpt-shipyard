@@ -1,8 +1,12 @@
 [package]
 name = "tpt-yard-robotic-assembly"
 description = "Robotic arm kinematics and collision-free path planning for space assembly."
+keywords = ["robotics", "inverse-kinematics", "rrt", "path-planning", "motion-planning"]
+categories = ["science::robotics", "algorithms", "aerospace"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

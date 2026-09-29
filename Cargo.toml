@@ -46,6 +46,7 @@ members = [
 ]
 
 [workspace.package]
+rust-version = "1.98"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
@@ -54,30 +55,30 @@ authors = ["TPT Solutions"]
 
 [workspace.dependencies]
 # Internal crates (single source of truth for inter-crate edges).
-tpt-yard-core = { path = "crates/core/tpt-yard-core" }
-tpt-yard-assembly = { path = "crates/core/tpt-yard-assembly" }
-tpt-yard-weight = { path = "crates/core/tpt-yard-weight" }
-tpt-yard-digital-twin = { path = "crates/core/tpt-yard-digital-twin" }
-tpt-yard-joints = { path = "crates/structural/tpt-yard-joints" }
-tpt-yard-structural = { path = "crates/structural/tpt-yard-structural" }
-tpt-yard-welding = { path = "crates/structural/tpt-yard-welding" }
-tpt-yard-distortion = { path = "crates/structural/tpt-yard-distortion" }
-tpt-yard-blocks = { path = "crates/sea/tpt-yard-blocks" }
-tpt-yard-hull = { path = "crates/sea/tpt-yard-hull" }
-tpt-yard-drydock = { path = "crates/sea/tpt-yard-drydock" }
-tpt-yard-launch = { path = "crates/sea/tpt-yard-launch" }
-tpt-yard-outfitting = { path = "crates/sea/tpt-yard-outfitting" }
-tpt-yard-sea-trials = { path = "crates/sea/tpt-yard-sea-trials" }
-tpt-yard-robotic-assembly = { path = "crates/space/tpt-yard-robotic-assembly" }
-tpt-yard-space-structural = { path = "crates/space/tpt-yard-space-structural" }
-tpt-yard-orbital-assembly = { path = "crates/space/tpt-yard-orbital-assembly" }
-tpt-yard-habitat = { path = "crates/space/tpt-yard-habitat" }
-tpt-yard-propellant = { path = "crates/space/tpt-yard-propellant" }
-tpt-yard-space-manufacturing = { path = "crates/space/tpt-yard-space-manufacturing" }
-tpt-yard-scheduling = { path = "crates/planning/tpt-yard-scheduling" }
-tpt-yard-quality = { path = "crates/planning/tpt-yard-quality" }
-tpt-yard-logistics = { path = "crates/planning/tpt-yard-logistics" }
-tpt-yard-facility = { path = "crates/planning/tpt-yard-facility" }
+tpt-yard-core = { path = "crates/core/tpt-yard-core", version = "0.1.0" }
+tpt-yard-assembly = { path = "crates/core/tpt-yard-assembly", version = "0.1.0" }
+tpt-yard-weight = { path = "crates/core/tpt-yard-weight", version = "0.1.0" }
+tpt-yard-digital-twin = { path = "crates/core/tpt-yard-digital-twin", version = "0.1.0" }
+tpt-yard-joints = { path = "crates/structural/tpt-yard-joints", version = "0.1.0" }
+tpt-yard-structural = { path = "crates/structural/tpt-yard-structural", version = "0.1.0" }
+tpt-yard-welding = { path = "crates/structural/tpt-yard-welding", version = "0.1.0" }
+tpt-yard-distortion = { path = "crates/structural/tpt-yard-distortion", version = "0.1.0" }
+tpt-yard-blocks = { path = "crates/sea/tpt-yard-blocks", version = "0.1.0" }
+tpt-yard-hull = { path = "crates/sea/tpt-yard-hull", version = "0.1.0" }
+tpt-yard-drydock = { path = "crates/sea/tpt-yard-drydock", version = "0.1.0" }
+tpt-yard-launch = { path = "crates/sea/tpt-yard-launch", version = "0.1.0" }
+tpt-yard-outfitting = { path = "crates/sea/tpt-yard-outfitting", version = "0.1.0" }
+tpt-yard-sea-trials = { path = "crates/sea/tpt-yard-sea-trials", version = "0.1.0" }
+tpt-yard-robotic-assembly = { path = "crates/space/tpt-yard-robotic-assembly", version = "0.1.0" }
+tpt-yard-space-structural = { path = "crates/space/tpt-yard-space-structural", version = "0.1.0" }
+tpt-yard-orbital-assembly = { path = "crates/space/tpt-yard-orbital-assembly", version = "0.1.0" }
+tpt-yard-habitat = { path = "crates/space/tpt-yard-habitat", version = "0.1.0" }
+tpt-yard-propellant = { path = "crates/space/tpt-yard-propellant", version = "0.1.0" }
+tpt-yard-space-manufacturing = { path = "crates/space/tpt-yard-space-manufacturing", version = "0.1.0" }
+tpt-yard-scheduling = { path = "crates/planning/tpt-yard-scheduling", version = "0.1.0" }
+tpt-yard-quality = { path = "crates/planning/tpt-yard-quality", version = "0.1.0" }
+tpt-yard-logistics = { path = "crates/planning/tpt-yard-logistics", version = "0.1.0" }
+tpt-yard-facility = { path = "crates/planning/tpt-yard-facility", version = "0.1.0" }
 # External
 wasm-bindgen = "=0.2.128"
 

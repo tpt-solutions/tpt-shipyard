@@ -1,8 +1,12 @@
 [package]
 name = "tpt-yard-welding"
 description = "Welding simulation and distortion control for ship construction."
+keywords = ["welding", "rosenthal", "heat-input", "distortion", "haz"]
+categories = ["science", "simulation"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

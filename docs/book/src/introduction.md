@@ -36,8 +36,10 @@ let project = VesselProject::from_json("container-ship.json").unwrap();
 let mut twin = DigitalTwin::new(project);
 
 // Advance through construction, tracking weight and CoG as you go.
-for activity in twin.vessel().build_phases[0].activities.clone() {
-    twin.advance_phase(&activity.id).unwrap();
-    println!("Weight: {} kg", twin.weight_model().total_weight());
+for phase in &twin.vessel.build_phases {
+    for activity in &phase.activities {
+        twin.advance_phase(&activity.id).unwrap();
+        println!("Weight: {} kg", twin.weight_model().total_weight());
+    }
 }
 ```

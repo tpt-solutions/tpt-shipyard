@@ -1,8 +1,12 @@
 [package]
 name = "tpt-yard-core"
 description = "Fundamental shipyard domain types for the TPT Shipyard construction engine."
+keywords = ["shipyard", "shipbuilding", "vessel", "digital-twin", "simulation"]
+categories = ["science", "simulation", "mathematics"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

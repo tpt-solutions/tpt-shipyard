@@ -1,8 +1,12 @@
 [package]
 name = "tpt-yard-outfitting"
 description = "Systems installation and routing for vessel outfitting."
+keywords = ["outfitting", "routing", "clash-detection", "piping", "installation"]
+categories = ["science", "simulation", "algorithms"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

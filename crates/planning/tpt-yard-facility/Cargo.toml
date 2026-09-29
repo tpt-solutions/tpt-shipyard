@@ -1,8 +1,12 @@
 [package]
 name = "tpt-yard-facility"
 description = "Shipyard and orbital-facility layout planning with capacity constraints."
+keywords = ["facility-layout", "capacity", "shipyard", "crane", "planning"]
+categories = ["science", "simulation"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

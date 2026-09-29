@@ -27,6 +27,9 @@ desktop.ini
 pkg/
 dist/
 
+# mdBook output
+docs/book/book/
+
 # Coverage / profiling
 /coverage
 *.profraw
