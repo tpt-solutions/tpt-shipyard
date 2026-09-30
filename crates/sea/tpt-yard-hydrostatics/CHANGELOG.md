@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- `damage_stability` (review 7H): added-weight one-compartment screen —
+  flood compartments to the sea line, re-solve the trim equilibrium,
+  report damaged GM and small-angle list against the 0.05 m floor.
+
 ### Added
 
 - `trim_equilibrium` (review 7H): prismatic even-keel-plus-trim solution

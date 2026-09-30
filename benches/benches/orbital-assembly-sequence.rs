@@ -48,7 +48,7 @@ fn bench_orbital(c: &mut Criterion) {
         c.bench_function(&format!("orbital/plan_sequence_{bays}_bays"), |b| {
             b.iter(|| {
                 let mut a = truss_with(bays);
-                std::hint::black_box(a.plan_sequence().len())
+                std::hint::black_box(a.plan_sequence().expect("acyclic").len())
             })
         });
     }
@@ -56,7 +56,7 @@ fn bench_orbital(c: &mut Criterion) {
     c.bench_function("orbital/simulate_full_15_bay_build", |b| {
         b.iter(|| {
             let mut a = truss_with(15);
-            let steps = a.plan_sequence();
+            let steps = a.plan_sequence().expect("acyclic");
             let mut state = AssemblyState::default();
             for step in &steps {
                 let r = a.simulate_step(step, &state).unwrap();

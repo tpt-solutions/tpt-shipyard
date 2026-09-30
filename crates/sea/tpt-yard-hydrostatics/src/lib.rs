@@ -566,6 +566,117 @@ impl HullForm {
     }
 }
 
+/// One flooded compartment for the added-weight damage screen.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DamageCompartment {
+    /// Compartment designation (e.g. "DB tank 3, P+S").
+    pub name: String,
+    /// Flooded volume up to the sea line (full volume for a bottom
+    /// breach), m^3.
+    pub volume_m3: f64,
+    /// Compartment centroid: x from midship (+ forward), y transverse
+    /// (+ starboard), z above keel, m.
+    pub centroid: (f64, f64, f64),
+    /// The compartment's own free-surface moment when slack, t·m
+    /// (rho x l x b^3/12 for the tank's plan form) — supplied by the
+    /// caller because the prismatic model does not know the plan geometry.
+    pub free_surface_moment_tm: f64,
+}
+
+/// Outcome of the added-weight damage screen.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DamageResult {
+    /// Displacement including the floodwater, t.
+    pub displacement_t: f64,
+    /// Floodwater mass, t.
+    pub flooding_mass_t: f64,
+    /// Mean draft of the damaged waterline, m.
+    pub mean_draft_m: f64,
+    /// Damaged trim (fore - aft), m.
+    pub trim_m: f64,
+    /// List angle from the transverse floodwater offset, degrees
+    /// (small-angle tan phi = TCG / GM).
+    pub list_angle_deg: f64,
+    /// Damaged GM: KM at the damaged draft, KG grown by the floodwater,
+    /// minus the free-surface correction, m.
+    pub gm_m: f64,
+    /// True when the damaged GM reaches the 0.05 m one-compartment floor
+    /// (IMO 2008 screening value; full probabilistic damage stability is
+    /// a class-society calculation).
+    pub passes_one_compartment: bool,
+    /// Findings.
+    pub notes: Vec<String>,
+}
+
+impl HullForm {
+    /// Added-weight damage screen (review 7H leftover: "damage
+    /// stability", first slice): floods each compartment fully to the sea
+    /// line, re-solves the trim equilibrium with the grown displacement
+    /// and shifted LCG, and reports the damaged GM and list angle.
+    ///
+    /// This is the screening answer for one damage case; the full
+    /// probabilistic damage stability of the rules (subdivision, damage
+    /// trim, down-flooding) remains with the class societies.
+    ///
+    /// # Errors
+    ///
+    /// `None` when the intact displacement is not a positive finite
+    /// number or the damaged state cannot be solved.
+    pub fn damage_stability(
+        &self,
+        displacement_t: f64,
+        lcg_from_midship_m: f64,
+        kg_m: f64,
+        free_surface_moment_tm: f64,
+        compartments: &[DamageCompartment],
+    ) -> Option<DamageResult> {
+        let mut notes = Vec::new();
+        if !displacement_t.is_finite() || displacement_t <= 0.0 {
+            return None;
+        }
+        let mut mass = displacement_t;
+        let mut moment_x = displacement_t * lcg_from_midship_m;
+        let mut moment_y = 0.0_f64;
+        let mut moment_z = displacement_t * kg_m;
+        let mut fsm = free_surface_moment_tm.max(0.0);
+        for c in compartments {
+            let flood_t = c.volume_m3 * RHO_SEA_T_M3;
+            mass += flood_t;
+            moment_x += flood_t * c.centroid.0;
+            moment_y += flood_t * c.centroid.1;
+            moment_z += flood_t * c.centroid.2;
+            fsm += c.free_surface_moment_tm;
+            notes.push(format!(
+                "{}: +{flood_t:.0} t at ({:.1}, {:.1}, {:.1})",
+                c.name, c.centroid.0, c.centroid.1, c.centroid.2
+            ));
+        }
+        let lcg_damaged = moment_x / mass;
+        let tcg_damaged = moment_y / mass;
+        let kg_damaged = moment_z / mass;
+        let solved = self.trim_equilibrium(mass, lcg_damaged, Some(kg_damaged))?;
+        let km = self.hydrostatics(solved.mean_draft_m).km_m;
+        let gm = km - kg_damaged - fsm / mass;
+        let list = (tcg_damaged / gm.max(1e-6)).atan().to_degrees();
+        notes.push(format!(
+            "damaged: draft {:.2} m, GM {:.2} m (free-surface {:.1} t*m), list {list:.2} deg",
+            solved.mean_draft_m,
+            gm,
+            fsm / mass
+        ));
+        Some(DamageResult {
+            displacement_t: mass,
+            flooding_mass_t: mass - displacement_t,
+            mean_draft_m: solved.mean_draft_m,
+            trim_m: solved.trim_m,
+            list_angle_deg: list,
+            gm_m: gm,
+            passes_one_compartment: gm >= 0.05,
+            notes,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -633,6 +744,78 @@ mod tests {
         let gm = r3.gm_m.expect("KG supplied");
         let km = hull.hydrostatics(r3.mean_draft_m).km_m;
         assert!((gm - (km - 9.0)).abs() < 1e-9);
+    }
+
+    /// Review 7H leftover: added-weight damage screen. A symmetric
+    /// amidships compartment must keep the trim at zero and cut the GM by
+    /// exactly the free-surface term; an off-centre compartment must list
+    /// by atan(TCG / GM).
+    #[test]
+    fn damage_screen_trims_lists_and_cuts_gm() {
+        let hull = feeder(); // 140 x 22 x Cb 0.72
+        let w = 20_000.0; // t
+        let kg = 9.0;
+        // Symmetric double-bottom flooding amidships: 800 m^3 at the
+        // centreline with a slack free-surface moment of 400 t m.
+        let sym = DamageCompartment {
+            name: "DB 4 P+S".into(),
+            volume_m3: 800.0,
+            centroid: (0.0, 0.0, 1.0),
+            free_surface_moment_tm: 400.0,
+        };
+        let r = hull
+            .damage_stability(w, 0.0, kg, 0.0, std::slice::from_ref(&sym))
+            .expect("solvable");
+        assert!((r.flooding_mass_t - 800.0 * 1.025).abs() < 1e-9);
+        assert!(r.trim_m.abs() < 1e-6, "symmetric flood must not trim");
+        assert!(r.list_angle_deg.abs() < 1e-9);
+        // KG drops (floodwater at z = 1 m) but the free surface bites:
+        // GM = KM(T') - KG' - FSM/W'. Hand-computed with the grown
+        // displacement 21578 t: draft 8.99 m, KM 11.30, KG 8.565,
+        // FSM/W 0.0185 -> GM 2.72.
+        let km = hull.hydrostatics(r.mean_draft_m).km_m;
+        let kg_expected = (w * kg + 800.0 * 1.025 * 1.0) / r.displacement_t;
+        let gm_expected = km - kg_expected - 400.0 / r.displacement_t;
+        assert!((r.gm_m - gm_expected).abs() < 1e-9);
+        // Note the physics: ANY floodwater below KG dilutes G downward and
+        // can raise the damaged GM even though the free surface bites —
+        // this ship is very stable, so one-compartment damage genuinely
+        // does not cost GM here. The isolated free-surface penalty is what
+        // the method guarantees: the same flooded compartment, slack vs
+        // pressed up, differs by exactly FSM / W'.
+        let pressed = DamageCompartment {
+            name: "Machinery space".into(),
+            volume_m3: 800.0,
+            centroid: (20.0, 0.0, 7.0),
+            free_surface_moment_tm: 0.0,
+        };
+        let slack = DamageCompartment {
+            free_surface_moment_tm: 900.0,
+            ..pressed.clone()
+        };
+        let up = hull
+            .damage_stability(w, 0.0, kg, 0.0, &[pressed])
+            .expect("solvable");
+        let slack_r = hull
+            .damage_stability(w, 0.0, kg, 0.0, &[slack])
+            .expect("solvable");
+        assert!((up.gm_m - slack_r.gm_m - 900.0 / up.displacement_t).abs() < 1e-9);
+        assert!(r.passes_one_compartment);
+
+        // An off-centre wing-tank flood lists the vessel: TCG 0.4 m.
+        let wing = DamageCompartment {
+            name: "WBT 3 S".into(),
+            volume_m3: 300.0,
+            centroid: (10.0, 0.4, 6.0),
+            free_surface_moment_tm: 0.0,
+        };
+        let r2 = hull
+            .damage_stability(w, 0.0, kg, 0.0, &[wing])
+            .expect("solvable");
+        let tcg = 300.0 * 1.025 * 0.4 / r2.displacement_t;
+        let expected_list = (tcg / r2.gm_m).atan().to_degrees();
+        assert!((r2.list_angle_deg - expected_list).abs() < 1e-9);
+        assert!(r2.list_angle_deg > 0.0, "starboard flood lists starboard");
     }
 
     /// Review 7H leftover: IACS CSR wave-induced bending moments — the

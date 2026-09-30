@@ -29,7 +29,7 @@
 //!     dimensions: Vector3::new(10.0, 3.0, 3.0),
 //!     target_position: Vector3::new(5.0, 0.0, 0.0),
 //! });
-//! let steps = assembly.plan_sequence();
+//! let steps = assembly.plan_sequence().unwrap();
 //! assert!(steps.len() >= 4); // grasp, translate, rotate, dock/bolt, release
 //! ```
 
@@ -261,6 +261,10 @@ pub enum AssemblyError {
     NoRobotAssigned,
     /// The step id is not part of the sequence.
     UnknownStep(StepId),
+    /// A dependency edge names a component that is not in the manifest.
+    UnknownDependency(ComponentId, ComponentId),
+    /// The dependency edges form a cycle, so no assembly order exists.
+    DependencyCycle,
 }
 
 impl fmt::Display for AssemblyError {
@@ -269,6 +273,10 @@ impl fmt::Display for AssemblyError {
             AssemblyError::UnknownComponent(c) => write!(f, "unknown component {c}"),
             AssemblyError::NoRobotAssigned => f.write_str("no robot assigned to the step"),
             AssemblyError::UnknownStep(s) => write!(f, "unknown step {s}"),
+            AssemblyError::UnknownDependency(a, b) => {
+                write!(f, "dependency edge ({a} -> {b}) names a missing component")
+            }
+            AssemblyError::DependencyCycle => f.write_str("component dependencies form a cycle"),
         }
     }
 }
@@ -297,6 +305,12 @@ pub struct OrbitalAssembly {
     pub chord_area_m2: f64,
     /// Truss bay height (chord separation), m (default 3.0).
     pub bay_height_m: f64,
+    /// Hard precedence edges `(before, after)` as component ids: `after`
+    /// may not be installed before `before` is released (e.g. the anchor
+    /// node before every boomed bay). Distance ordering still decides
+    /// among components whose dependencies are satisfied. (Review 7B
+    /// leftover: the planner used to be purely distance-ordered.)
+    pub component_dependencies: Vec<(ComponentId, ComponentId)>,
 }
 
 impl OrbitalAssembly {
@@ -312,6 +326,7 @@ impl OrbitalAssembly {
             docking_impulse_n: 20_000.0,
             chord_area_m2: 0.01,
             bay_height_m: 3.0,
+            component_dependencies: Vec::new(),
         }
     }
 
@@ -330,18 +345,54 @@ impl OrbitalAssembly {
     /// grasp -> translate -> rotate -> dock -> bolt -> release cycle, plus
     /// constraint tags. This is the graph-based planner's baseline output;
     /// time/energy optimisation belongs to Phase 5 scheduling.
-    pub fn plan_sequence(&mut self) -> Vec<AssemblyStep> {
-        let mut ordered: Vec<&ComponentSpec> = self.components.iter().collect();
-        ordered.sort_by(|a, b| {
-            let da = a.target_position.length();
-            let db = b.target_position.length();
-            da.total_cmp(&db).then(a.id.cmp(&b.id))
-        });
+    pub fn plan_sequence(&mut self) -> Result<Vec<AssemblyStep>, AssemblyError> {
+        // Precedence-feasible nearest-first ordering (review 7B leftover):
+        // at each pick the *eligible* components (every dependency already
+        // released in the sequence) compete by distance from the origin,
+        // nearest first, ties by id. Without edges this is exactly the old
+        // distance ordering.
+        use std::collections::HashMap;
+        let known: std::collections::HashSet<ComponentId> =
+            self.components.iter().map(|c| c.id).collect();
+        for (a, b) in &self.component_dependencies {
+            if !known.contains(a) || !known.contains(b) {
+                return Err(AssemblyError::UnknownDependency(*a, *b));
+            }
+        }
+        let mut pending: HashMap<ComponentId, usize> = HashMap::new();
+        for &(_, b) in &self.component_dependencies {
+            *pending.entry(b).or_insert(0) += 1;
+        }
+        let mut released: std::collections::HashSet<ComponentId> = std::collections::HashSet::new();
+        let mut ordered: Vec<ComponentSpec> = Vec::with_capacity(self.components.len());
+        while ordered.len() < self.components.len() {
+            let pick = self
+                .components
+                .iter()
+                .filter(|c| {
+                    !released.contains(&c.id) && pending.get(&c.id).copied().unwrap_or(0) == 0
+                })
+                .min_by(|a, b| {
+                    let da = a.target_position.length();
+                    let db = b.target_position.length();
+                    da.total_cmp(&db).then(a.id.cmp(&b.id))
+                });
+            let Some(component) = pick else {
+                return Err(AssemblyError::DependencyCycle);
+            };
+            released.insert(component.id);
+            for (a, b) in &self.component_dependencies {
+                if *a == component.id {
+                    *pending.entry(*b).or_insert(0) -= 1;
+                }
+            }
+            ordered.push(component.clone());
+        }
 
         let mut sequence = Vec::new();
         let mut step_no = 1u64;
         let robot_id = self.robots.first().map(|r| r.id);
-        for component in ordered {
+        for component in &ordered {
             let mut push = |action: AssemblyAction, duration: f64, robot: Option<RobotId>| {
                 sequence.push(AssemblyStep {
                     id: StepId(step_no),
@@ -378,7 +429,7 @@ impl OrbitalAssembly {
             push(AssemblyAction::Release, 0.1, robot_id);
         }
         self.assembly_sequence = sequence.clone();
-        sequence
+        Ok(sequence)
     }
 
     /// Simulates one step against the current state.
@@ -602,6 +653,46 @@ mod tests {
     use super::*;
     use tpt_yard_robotic_assembly::{EndEffector, Joint, Pose};
 
+    /// Review 7B leftover: dependency edges gate the nearest-first
+    /// ordering; cycles and dangling edges are typed errors.
+    #[test]
+    fn plan_sequence_respects_component_dependencies() {
+        let mut a = truss_assembly();
+        // 3 bays at increasing distance; make bay 3 (nearest) wait on the
+        // anchor setup (bay 1, farthest) — the pure distance order would
+        // install bay 3 first.
+        a.component_dependencies = vec![(ComponentId(1), ComponentId(3))];
+        let steps = a.plan_sequence().unwrap();
+        let install_order: Vec<ComponentId> = steps
+            .iter()
+            .filter(|s| matches!(s.action, AssemblyAction::Release))
+            .map(|s| s.component)
+            .collect();
+        assert_eq!(install_order.len(), 3);
+        let pos = |id: ComponentId| install_order.iter().position(|c| *c == id).unwrap();
+        assert!(
+            pos(ComponentId(1)) < pos(ComponentId(3)),
+            "{install_order:?}"
+        );
+
+        // Dangling edge.
+        a.component_dependencies = vec![(ComponentId(99), ComponentId(1))];
+        assert_eq!(
+            a.plan_sequence(),
+            Err(AssemblyError::UnknownDependency(
+                ComponentId(99),
+                ComponentId(1)
+            ))
+        );
+
+        // Cycle.
+        a.component_dependencies = vec![
+            (ComponentId(1), ComponentId(2)),
+            (ComponentId(2), ComponentId(1)),
+        ];
+        assert_eq!(a.plan_sequence(), Err(AssemblyError::DependencyCycle));
+    }
+
     fn truss_assembly() -> OrbitalAssembly {
         let mut a = OrbitalAssembly::new(
             SpaceStructure::Truss {
@@ -647,7 +738,7 @@ mod tests {
             dimensions: Vector3::new(10.0, 3.0, 3.0),
             target_position: Vector3::new(5.0, 0.0, 0.0),
         });
-        a.plan_sequence();
+        a.plan_sequence().unwrap();
         let state = AssemblyState {
             installed_components: vec![ComponentId(1)],
             ..AssemblyState::default()
@@ -673,7 +764,7 @@ mod tests {
     #[test]
     fn plan_sequence_builds_full_cycle() {
         let mut a = truss_assembly();
-        let steps = a.plan_sequence();
+        let steps = a.plan_sequence().unwrap();
         assert_eq!(steps.len(), 18); // 6 actions x 3 bays
         assert_eq!(steps[0].action, AssemblyAction::GraspComponent);
         assert!(matches!(steps[2].action, AssemblyAction::Rotate { .. }));
@@ -688,7 +779,7 @@ mod tests {
     #[test]
     fn handling_force_respects_limits() {
         let mut a = truss_assembly();
-        a.plan_sequence();
+        a.plan_sequence().unwrap();
         let state = AssemblyState::default();
         let translate = a
             .assembly_sequence
@@ -705,7 +796,7 @@ mod tests {
     fn over_mass_component_violates_force_limit() {
         let mut a = truss_assembly();
         a.components[0].mass_kg = 20_000.0; // 20 t bay: ~1000 N handling force
-        a.plan_sequence();
+        a.plan_sequence().unwrap();
         let state = AssemblyState::default();
         let translate = a
             .assembly_sequence
@@ -720,7 +811,7 @@ mod tests {
     #[test]
     fn structural_check_grows_with_deployed_length() {
         let mut a = truss_assembly();
-        a.plan_sequence();
+        a.plan_sequence().unwrap();
         let early = a.verify_structural_integrity(&StepId(6)).unwrap(); // bay 1 done
         let late = a.verify_structural_integrity(&StepId(18)).unwrap(); // all bays
         assert!(early.passed);
@@ -733,7 +824,7 @@ mod tests {
     #[test]
     fn docking_impulse_can_overstress() {
         let mut a = truss_assembly();
-        a.plan_sequence();
+        a.plan_sequence().unwrap();
         a.docking_impulse_n = 500_000.0; // violent docking
         let check = a.verify_structural_integrity(&StepId(18)).unwrap();
         assert!(!check.passed);
@@ -742,7 +833,7 @@ mod tests {
     #[test]
     fn unknown_step_is_rejected() {
         let mut a = truss_assembly();
-        a.plan_sequence();
+        a.plan_sequence().unwrap();
         assert_eq!(
             a.verify_structural_integrity(&StepId(999)),
             Err(AssemblyError::UnknownStep(StepId(999)))

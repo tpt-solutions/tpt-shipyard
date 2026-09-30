@@ -93,7 +93,7 @@ fn main() {
     assembly.bay_height_m = num(bay, "bay_height_m");
 
     // 2. Plan the sequence: anchor bay first, build outwards.
-    let steps = assembly.plan_sequence();
+    let steps = assembly.plan_sequence().expect("manifest plan is acyclic");
     println!(
         "Truss: {bays} bays x {pitch} m (from {manifest_path}), {} assembly steps",
         steps.len()

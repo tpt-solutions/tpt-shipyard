@@ -125,7 +125,7 @@ fn main() {
     robot.base = Pose::origin();
     assembly.add_robot(robot);
 
-    let steps = assembly.plan_sequence();
+    let steps = assembly.plan_sequence().expect("manifest plan is acyclic");
     let mut state = AssemblyState::default();
     let mut all_ok = true;
     for step in &steps {

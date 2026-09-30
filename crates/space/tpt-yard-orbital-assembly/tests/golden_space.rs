@@ -60,7 +60,7 @@ fn truss_from_golden(v: &Value) -> OrbitalAssembly {
 fn golden_orbital_assembly_sequence() {
     let v = golden("orbital-assembly-sequence.json");
     let mut a = truss_from_golden(&v);
-    let steps = a.plan_sequence();
+    let steps = a.plan_sequence().expect("acyclic plan");
 
     let exp = v.get("expected").expect("expected");
     let num = |o: &Value, k: &str| o.get(k).and_then(|n| n.as_f64()).expect(k);
@@ -138,7 +138,7 @@ fn golden_iss_truss_integrity_screening() {
             target_position: Vector3::new(pitch * i as f64 - pitch / 2.0, 0.0, 0.0),
         });
     }
-    let steps = a.plan_sequence();
+    let steps = a.plan_sequence().expect("acyclic plan");
     a.docking_impulse_n = num(p, "docking_impulse_n");
     a.allowable_stress_mpa = num(p, "allowable_stress_mpa");
     // Review 7B: the cross-section parameters come from the golden file
@@ -188,7 +188,7 @@ fn golden_iss_truss_integrity_screening() {
 fn unknown_steps_stay_rejected_in_golden_flow() {
     let v = golden("orbital-assembly-sequence.json");
     let mut a = truss_from_golden(&v);
-    a.plan_sequence();
+    a.plan_sequence().expect("acyclic plan");
     assert_eq!(
         a.verify_structural_integrity(&StepId(9999)),
         Err(AssemblyError::UnknownStep(StepId(9999)))

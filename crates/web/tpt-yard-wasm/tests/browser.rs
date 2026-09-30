@@ -99,7 +99,7 @@ fn twin_loads_advances_and_reports_in_browser() {
 fn orbital_assembly_steps_in_browser() {
     use tpt_yard_wasm::WasmOrbitalAssembly;
 
-    let mut assembly = WasmOrbitalAssembly::new(3);
+    let mut assembly = WasmOrbitalAssembly::new(3).expect("constructor");
     let mut steps = 0;
     while assembly.simulate_next_step().expect("step simulates") {
         steps += 1;

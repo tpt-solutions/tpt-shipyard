@@ -1,4 +1,9 @@
-# Changelog for tpt-yard-orbital-assembly
+# Changelog for
+- `component_dependencies` (review 7B leftover): hard (before, after)
+  edges gate the assembly plan; `plan_sequence` now returns
+  `Result<_, AssemblyError>` with `UnknownDependency` / `DependencyCycle`
+  and orders precedence-feasible components nearest-first.
+ tpt-yard-orbital-assembly
 
 All notable changes to this crate are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning

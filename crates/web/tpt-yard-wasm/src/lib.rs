@@ -236,8 +236,12 @@ pub struct WasmOrbitalAssembly {
 #[wasm_bindgen]
 impl WasmOrbitalAssembly {
     /// Builds a linear truss assembly of `bays` bays with one robot.
+    /// # Errors
+    ///
+    /// A `JsError` if the default truss plan cannot be built (a static
+    /// manifest — practically never).
     #[wasm_bindgen(constructor)]
-    pub fn new(bays: u32) -> WasmOrbitalAssembly {
+    pub fn new(bays: u32) -> Result<WasmOrbitalAssembly, JsError> {
         let mut inner = tpt_yard_orbital_assembly::OrbitalAssembly::new(
             tpt_yard_orbital_assembly::SpaceStructure::Truss {
                 segments: bays,
@@ -264,12 +268,14 @@ impl WasmOrbitalAssembly {
             tpt_yard_robotic_assembly::EndEffector::Gripper { force_n: 400.0 },
         );
         inner.add_robot(robot);
-        inner.plan_sequence();
-        WasmOrbitalAssembly {
+        inner
+            .plan_sequence()
+            .map_err(|e| JsError::new(&format!("assembly plan: {e}")))?;
+        Ok(WasmOrbitalAssembly {
             inner,
             state: tpt_yard_orbital_assembly::AssemblyState::default(),
             next_step: 0,
-        }
+        })
     }
 
     /// Simulates the next step of the sequence; returns false when the
@@ -444,7 +450,7 @@ mod tests {
 
     #[test]
     fn orbital_assembly_wasm_facade() {
-        let mut asm = WasmOrbitalAssembly::new(3);
+        let mut asm = WasmOrbitalAssembly::new(3).unwrap();
         assert_eq!(asm.get_installed().len(), 0);
         // 18 steps: 3 bays x 6 actions.
         for _ in 0..18 {
