@@ -677,6 +677,262 @@ impl HullForm {
     }
 }
 
+/// Half-breadth offsets of one station (review 7H leftover: hull offsets
+/// and Bonjean curves from real sections).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SectionOffsets {
+    /// Station longitudinal position from midship, m (+ forward).
+    pub x_from_midship_m: f64,
+    /// `(draft above keel, half-breadth)` pairs, draft ascending, last
+    /// pair at or above the maximum draught of interest. The section is
+    /// taken symmetric about the centreline, breadths in m.
+    pub half_breadths: Vec<(f64, f64)>,
+}
+
+impl SectionOffsets {
+    /// Half-breadth at a draft: linear between table points, zero below
+    /// the keel and beyond the table (a closed-ish top is the table's own
+    /// responsibility).
+    pub fn half_breadth_at(&self, draft_m: f64) -> f64 {
+        let t = draft_m.max(0.0);
+        let table = &self.half_breadths;
+        if table.is_empty() {
+            return 0.0;
+        }
+        if t <= table[0].0 {
+            return if t == table[0].0 { table[0].1 } else { 0.0 };
+        }
+        for w in table.windows(2) {
+            let (z0, y0) = w[0];
+            let (z1, y1) = w[1];
+            if t <= z1 {
+                let f = (t - z0) / (z1 - z0).max(1e-12);
+                return y0 + f * (y1 - y0);
+            }
+        }
+        table.last().expect("non-empty").1
+    }
+
+    /// Sectional area up to a draft: `2 int y(z) dz` by the trapezoidal
+    /// rule over the offset table (with the top point interpolated).
+    pub fn area_to(&self, draft_m: f64) -> f64 {
+        let t = draft_m.max(0.0);
+        let table = &self.half_breadths;
+        if table.is_empty() || t <= table[0].0 {
+            return 0.0;
+        }
+        let mut area = 0.0;
+        for w in table.windows(2) {
+            let (z0, y0) = w[0];
+            let (z1, y1) = w[1];
+            if t <= z1 {
+                let f = (t - z0) / (z1 - z0).max(1e-12);
+                let y_t = y0 + f * (y1 - y0);
+                area += 0.5 * (y0 + y_t) * (t - z0);
+                return 2.0 * area;
+            }
+            area += 0.5 * (y0 + y1) * (z1 - z0);
+        }
+        2.0 * area
+    }
+}
+
+/// Displacement and LCB of a trimmed waterline integrated over real
+/// offsets (the Bonjean-sheet calculation the prismatic model stands in
+/// for).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BonjeanSolution {
+    /// Displacement, t.
+    pub displacement_t: f64,
+    /// Longitudinal centre of buoyancy from midship, m.
+    pub lcb_m: f64,
+    /// Immersed volume, m^3.
+    pub volume_m3: f64,
+}
+
+/// Bonjean data from hull offsets: a set of stations, each with a
+/// half-breadth table. Displacement, LCB and cross-curve ordinates
+/// integrate the sectional areas over the length.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Bonjean {
+    /// Stations, any order; sorted internally on first use.
+    pub stations: Vec<SectionOffsets>,
+}
+
+impl Bonjean {
+    /// Sectional area at station position `x` and draft: linear between
+    /// the two neighbouring stations, zero outside the table.
+    pub fn section_area(&self, x_from_midship_m: f64, draft_m: f64) -> f64 {
+        let mut sorted: Vec<&SectionOffsets> = self.stations.iter().collect();
+        sorted.sort_by(|a, b| a.x_from_midship_m.total_cmp(&b.x_from_midship_m));
+        if sorted.is_empty() {
+            return 0.0;
+        }
+        if x_from_midship_m <= sorted[0].x_from_midship_m {
+            return if x_from_midship_m == sorted[0].x_from_midship_m {
+                sorted[0].area_to(draft_m)
+            } else {
+                0.0
+            };
+        }
+        for w in sorted.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            if x_from_midship_m <= b.x_from_midship_m {
+                let f = (x_from_midship_m - a.x_from_midship_m)
+                    / (b.x_from_midship_m - a.x_from_midship_m).max(1e-12);
+                return a.area_to(draft_m) * (1.0 - f) + b.area_to(draft_m) * f;
+            }
+        }
+        0.0
+    }
+
+    /// Volume and LCB of a waterline at `mean_draft` with trim slope
+    /// `trim_tan` (draft = mean + x tan): Simpson integration of the
+    /// sectional areas over the station span, 201 stations or the
+    /// station count if denser.
+    pub fn displacement(&self, mean_draft_m: f64, trim_tan: f64) -> BonjeanSolution {
+        let mut sorted: Vec<&SectionOffsets> = self.stations.iter().collect();
+        sorted.sort_by(|a, b| a.x_from_midship_m.total_cmp(&b.x_from_midship_m));
+        if sorted.len() < 2 {
+            return BonjeanSolution {
+                displacement_t: 0.0,
+                lcb_m: 0.0,
+                volume_m3: 0.0,
+            };
+        }
+        let x_min = sorted[0].x_from_midship_m;
+        let x_max = sorted[sorted.len() - 1].x_from_midship_m;
+        let n = (sorted.len() * 8 - 1).max(200);
+        let dx = (x_max - x_min) / n as f64;
+        let area = |i: usize| {
+            let x = x_min + i as f64 * dx;
+            self.section_area(x, mean_draft_m + x * trim_tan)
+        };
+        // Simpson needs an odd station count.
+        let (mut vol, mut moment) = (0.0_f64, 0.0_f64);
+        for i in 0..=n {
+            let a = area(i);
+            let x = x_min + i as f64 * dx;
+            let w = if i == 0 || i == n {
+                1.0
+            } else if i % 2 == 1 {
+                4.0
+            } else {
+                2.0
+            };
+            vol += w * a;
+            moment += w * a * x;
+        }
+        vol *= dx / 3.0;
+        moment *= dx / 3.0;
+        BonjeanSolution {
+            displacement_t: vol * RHO_SEA_T_M3,
+            lcb_m: if vol > 1e-9 { moment / vol } else { 0.0 },
+            volume_m3: vol,
+        }
+    }
+
+    /// Cross-curve ordinate KN at heel: the buoyancy point's arm from the
+    /// keel measured along the ship's centreline plane,
+    /// `KN = z_B cos phi + y_B sin phi`, from a strip integration of the
+    /// submerged width of every station under the inclined waterline. The
+    /// waterline rotates about the centreline point `(0, draft)` — the
+    /// classical cross-curve convention — so its plane is
+    /// `z cos phi + y sin phi = draft cos phi`. Returns
+    /// `(displacement_t, kn_m)`. GZ follows as `KN - KG sin phi`.
+    pub fn cross_curve_ordinate(&self, mean_draft_m: f64, heel_deg: f64) -> (f64, f64) {
+        let phi = heel_deg.to_radians();
+        let (sin, cos) = phi.sin_cos();
+        // Plane constant: the waterline passes through (0, draft).
+        let t_plane = mean_draft_m * cos;
+        let mut sorted: Vec<&SectionOffsets> = self.stations.iter().collect();
+        sorted.sort_by(|a, b| a.x_from_midship_m.total_cmp(&b.x_from_midship_m));
+        if sorted.len() < 2 {
+            return (0.0, 0.0);
+        }
+        let x_min = sorted[0].x_from_midship_m;
+        let x_max = sorted[sorted.len() - 1].x_from_midship_m;
+
+        let n = (sorted.len() * 8 - 1).max(200);
+        let dx = (x_max - x_min) / n as f64;
+        // Vertical strips: z up to a generous cap (deepest table point plus
+        // margin covers all realistic sections).
+        let z_cap = mean_draft_m
+            + 3.0
+                * sorted
+                    .iter()
+                    .map(|s| s.half_breadths.last().map(|(z, _)| *z).unwrap_or(0.0))
+                    .fold(0.0_f64, f64::max)
+            + 1.0;
+        let nz = 200;
+        let dz = z_cap / nz as f64;
+        let (mut vol, mut mx, mut my, mut mz) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
+        for i in 0..=n {
+            let x = x_min + i as f64 * dx;
+            // Nearest station for the section (linear interpolation between
+            // stations is already inside section_area for the Bonjean run;
+            // for heeled strips the nearest-station pick keeps the cost at
+            // O(stations) per x).
+            let st = sorted
+                .iter()
+                .min_by(|a, b| {
+                    (a.x_from_midship_m - x)
+                        .abs()
+                        .total_cmp(&(b.x_from_midship_m - x).abs())
+                })
+                .expect("non-empty");
+            let wx = if i == 0 || i == n {
+                1.0
+            } else if i % 2 == 1 {
+                4.0
+            } else {
+                2.0
+            };
+            for k in 0..=nz {
+                let z = k as f64 * dz;
+                let y = st.half_breadth_at(z);
+                if y <= 1e-12 {
+                    continue;
+                }
+                // Submerged set at height z is the ray y <= cut (the
+                // waterline is one straight line in section view), so the
+                // flooded width is min(y, cut) - (-y), and the strip
+                // centroid sits halfway between -y and min(y, cut).
+                let cut = (t_plane - z * cos) / sin.max(1e-9);
+                let y_star = y.min(cut);
+                let w = (y_star + y).max(0.0);
+                if w <= 0.0 {
+                    continue;
+                }
+                let wk = if k == 0 || k == nz {
+                    1.0
+                } else if k % 2 == 1 {
+                    4.0
+                } else {
+                    2.0
+                };
+                let d = wx * wk;
+                vol += d * w;
+                mx += d * w * x;
+                my += d * w * 0.5 * (y_star - y);
+                mz += d * w * z;
+            }
+        }
+        let f = dx * dz / 9.0; // two Simpson directions
+        vol *= f;
+        mx *= f;
+        my *= f;
+        mz *= f;
+        if vol <= 1e-9 {
+            return (0.0, 0.0);
+        }
+        let y_cb = my / vol;
+        let z_cb = mz / vol;
+        let _ = mx;
+        (vol * RHO_SEA_T_M3, z_cb * cos + y_cb * sin)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -744,6 +1000,148 @@ mod tests {
         let gm = r3.gm_m.expect("KG supplied");
         let km = hull.hydrostatics(r3.mean_draft_m).km_m;
         assert!((gm - (km - 9.0)).abs() < 1e-9);
+    }
+
+    /// Review 7H leftover: Bonjean integration from hull offsets. A box
+    /// hull's offsets must reproduce the closed-form prismatic values
+    /// exactly (volume, LCB, trim shift); a 45-degree V-section must give
+    /// the triangle area T^2.
+    #[test]
+    fn bonjean_integrates_box_and_v_sections() {
+        // Box: 140 x 22, offsets constant B/2 to 12 m, 15 stations.
+        let box_hull = Bonjean {
+            stations: (-7..=7)
+                .map(|i| SectionOffsets {
+                    x_from_midship_m: 10.0 * i as f64,
+                    half_breadths: (0..=12).map(|z| (z as f64, 11.0)).collect(),
+                })
+                .collect(),
+        };
+        let t = 8.0;
+        let sol = box_hull.displacement(t, 0.0);
+        let expected_vol = 140.0 * 22.0 * t * 1.0; // full box Cb = 1
+        assert!(
+            (sol.volume_m3 - expected_vol).abs() < 1.0,
+            "{} vs {expected_vol}",
+            sol.volume_m3
+        );
+        assert!(sol.lcb_m.abs() < 1e-9);
+
+        // Trim: volume unchanged (no emergence), LCB shifts by
+        // theta L^2 / (12 T) — the moment ratio theta L^3/12 divided by
+        // the waterplane integral T L.
+        let theta = 0.01;
+        let sol_t = box_hull.displacement(t, theta);
+        assert!((sol_t.volume_m3 - expected_vol).abs() < 1.0);
+        let lcb_shift = theta * 140.0_f64.powi(2) / (12.0 * t);
+        assert!(
+            (sol_t.lcb_m - lcb_shift).abs() < 0.02,
+            "{} vs {lcb_shift}",
+            sol_t.lcb_m
+        );
+
+        // V-section: y(z) = z -> area to draft T is T^2.
+        let v = SectionOffsets {
+            x_from_midship_m: 0.0,
+            half_breadths: (0..=10).map(|z| (z as f64, z as f64)).collect(),
+        };
+        assert!((v.area_to(5.0) - 25.0).abs() < 1e-9);
+        assert!((v.area_to(2.5) - 6.25).abs() < 1e-9);
+    }
+
+    /// Review 7H leftover: cross-curve ordinates from offsets. For the box
+    /// hull the buoyancy centroid sits at (0, T/2), so
+    /// KN = (T/2) cos(phi) for every heel angle.
+    #[test]
+    fn cross_curves_match_the_box_centroid() {
+        let box_hull = Bonjean {
+            stations: (-7..=7)
+                .map(|i| SectionOffsets {
+                    x_from_midship_m: 10.0 * i as f64,
+                    half_breadths: (0..=12).map(|z| (z as f64, 11.0)).collect(),
+                })
+                .collect(),
+        };
+        let t = 6.0;
+        // Box closed form (small heel, B tan(phi)/2 < T so the lost
+        // triangle stays clear of the keel): volume preserved (the
+        // gained/lost wall-sided triangles cancel), and the wedge pair
+        // moves the buoyancy centre to
+        //   z = T/2 + B^2 tan^2/(24 T),  y = -B^2 tan/(12 T),
+        // so KN = z cos(phi) + y sin(phi).
+        for &phi_deg in &[10.0, 25.0] {
+            let (disp, kn) = box_hull.cross_curve_ordinate(t, phi_deg);
+            let expected_disp = 140.0 * 22.0 * t * 1.025;
+            assert!(
+                (disp - expected_disp).abs() < 40.0,
+                "heel {phi_deg}: disp {disp} vs {expected_disp}"
+            );
+            let tan = phi_deg.to_radians().tan();
+            let z_bar = t / 2.0 + 22.0_f64.powi(2) * tan * tan / (24.0 * t);
+            let y_bar = -22.0_f64.powi(2) * tan / (12.0 * t);
+            let expected = z_bar * phi_deg.to_radians().cos() + y_bar * phi_deg.to_radians().sin();
+            assert!(
+                (kn - expected).abs() < 0.03 * expected.max(1.0),
+                "heel {phi_deg}: KN {kn} vs {expected}"
+            );
+        }
+        // At 45 deg the lost triangle clips on the keel (B tan(phi)/2 = 11
+        // > T): at fixed draft the volume grows past the upright value.
+        let (disp45, _) = box_hull.cross_curve_ordinate(t, 45.0);
+        assert!(
+            disp45 > 140.0 * 22.0 * t * 1.025,
+            "clipped loss must gain volume: {disp45}"
+        );
+        // GZ from KN requires the cross-curve at CONSTANT DISPLACEMENT:
+        // bisect for the heeled draft that restores the upright
+        // displacement, then GZ = KN - KG sin(phi).
+        let w_upright = 140.0 * 22.0 * t * 1.025;
+        let (mut lo, mut hi) = (1.0_f64, 12.0_f64);
+        for _ in 0..40 {
+            let mid = 0.5 * (lo + hi);
+            let (d, _) = box_hull.cross_curve_ordinate(mid, 45.0);
+            if d < w_upright {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let t_heel = 0.5 * (lo + hi);
+        // At 45 deg (tan = 1) the constant-volume waterline is z + y = T'
+        // with (T' + B/2)^2 / 2 = upright area: the flooded section is the
+        // exact triangle (−B/2, 0), (T', 0), (−B/2, T'+B/2), so
+        // KN = (z' + y')/sqrt(2) with (y', z') its centroid.
+        let expected_tri_area = t * 22.0; // upright section area, m^2
+        let t_heel_expected = (2.0 * expected_tri_area).sqrt() - 11.0;
+        assert!(
+            (t_heel - t_heel_expected).abs() < 0.02,
+            "constant-volume draft {t_heel} vs {t_heel_expected}"
+        );
+        let y_c = (5.248_f64 - 11.0 - 11.0) / 3.0;
+        let z_c = (t_heel_expected + 11.0) / 3.0;
+        let kn_expected = (z_c + y_c) / std::f64::consts::SQRT_2;
+        let (_, kn45) = box_hull.cross_curve_ordinate(t_heel, 45.0);
+        assert!(
+            (kn45 - kn_expected).abs() < 0.02,
+            "KN {kn45} vs triangle {kn_expected}"
+        );
+        // A KG = T/2 box has lost stability by 45 deg: GZ is negative —
+        // the screening says so honestly.
+        let gz = kn45 - 3.0 * 45.0_f64.to_radians().sin();
+        assert!(gz < 0.0, "KG=T/2 box must be unstable at 45 deg: {gz}");
+        // ...and still positive at 25 deg with the constant-volume draft.
+        let (mut lo, mut hi) = (1.0_f64, 12.0_f64);
+        for _ in 0..40 {
+            let mid = 0.5 * (lo + hi);
+            let (d, _) = box_hull.cross_curve_ordinate(mid, 25.0);
+            if d < w_upright {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let (_, kn25) = box_hull.cross_curve_ordinate(0.5 * (lo + hi), 25.0);
+        assert!(kn25 - 3.0 * 25.0_f64.to_radians().sin() > 0.0);
     }
 
     /// Review 7H leftover: added-weight damage screen. A symmetric

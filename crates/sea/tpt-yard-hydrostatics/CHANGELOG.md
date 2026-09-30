@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- `Bonjean` / `SectionOffsets` (review 7H): displacement and LCB from real
+  hull offsets at any draft and trim, plus `cross_curve_ordinate` (KN) by
+  strip integration under the inclined waterline (rotation about the
+  centreline point). Verified against box and V-section closed forms
+  including the exact constant-volume keel-clipped triangle at 45 deg.
+
 - `damage_stability` (review 7H): added-weight one-compartment screen —
   flood compartments to the sea line, re-solve the trim equilibrium,
   report damaged GM and small-angle list against the 0.05 m floor.
