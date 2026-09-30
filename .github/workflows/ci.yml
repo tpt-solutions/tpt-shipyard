@@ -98,7 +98,7 @@ jobs:
         run: |
           wasm-bindgen --out-dir www/pkg --target web \
             target/wasm32-unknown-unknown/debug/tpt_yard_wasm.wasm
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: tpt-yard-wasm-web
           path: www/pkg/
@@ -167,7 +167,7 @@ jobs:
       - name: Generate coverage
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info
       - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: lcov.info
