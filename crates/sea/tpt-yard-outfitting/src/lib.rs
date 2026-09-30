@@ -113,7 +113,34 @@ pub struct OutfittingPlan {
     pub systems: Vec<OutfitSystem>,
     /// Routes, one per (usually) system.
     pub routes: Vec<Route>,
+    /// Hard precedence edges `(before, after)` as system indices: the
+    /// installation of `after` must not start before `before` is complete
+    /// (e.g. a machinery unit before its exhaust ducting). Size ordering
+    /// still decides among systems whose dependencies are satisfied.
+    pub precedes: Vec<(usize, usize)>,
 }
+
+/// Why an installation sequence could not be built.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SequenceError {
+    /// A precedence edge names a system index that does not exist.
+    DanglingDependency(usize, usize),
+    /// The precedence edges form a cycle, so no order exists.
+    DependencyCycle,
+}
+
+impl fmt::Display for SequenceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SequenceError::DanglingDependency(a, b) => {
+                write!(f, "precedence edge ({a}, {b}) names a missing system")
+            }
+            SequenceError::DependencyCycle => f.write_str("precedence edges form a cycle"),
+        }
+    }
+}
+
+impl std::error::Error for SequenceError {}
 
 impl OutfittingPlan {
     /// Creates an empty plan.
@@ -197,17 +224,55 @@ impl OutfittingPlan {
         collisions
     }
 
-    /// Installation order: large systems first, smaller routing after.
-    /// Ties break by plan order (stable). Route order follows the same
-    /// rule.
-    pub fn installation_sequence(&self) -> Vec<usize> {
-        let mut order: Vec<usize> = (0..self.systems.len()).collect();
-        order.sort_by(|&a, &b| {
-            let sa = Self::system_size_m(&self.systems[a]);
-            let sb = Self::system_size_m(&self.systems[b]);
-            sb.total_cmp(&sa).then(a.cmp(&b))
-        });
-        order
+    /// Installation order (review 7B leftover): a precedence-feasible
+    /// serial schedule — at every step the *eligible* systems (all
+    /// `precedes` dependencies already installed) compete by size, largest
+    /// first, ties by plan order. Without edges this is exactly the old
+    /// large-first ordering.
+    ///
+    /// # Errors
+    ///
+    /// [`SequenceError::DanglingDependency`] when an edge names a missing
+    /// system, [`SequenceError::DependencyCycle`] when the edges form a
+    /// cycle (detected by stalling with systems left over).
+    pub fn installation_sequence(&self) -> Result<Vec<usize>, SequenceError> {
+        let n = self.systems.len();
+        for &(a, b) in &self.precedes {
+            if a >= n || b >= n {
+                return Err(SequenceError::DanglingDependency(a, b));
+            }
+        }
+        // Remaining dependency count per system.
+        let mut pending: Vec<usize> = vec![0; n];
+        for &(_, b) in &self.precedes {
+            pending[b] += 1;
+        }
+        let mut order = Vec::with_capacity(n);
+        let mut installed = vec![false; n];
+        while order.len() < n {
+            // Eligible: everything installed; pick the largest (ties by
+            // index for stability).
+            let size = |i: usize| Self::system_size_m(&self.systems[i]);
+            let pick = (0..n)
+                .filter(|i| !installed[*i] && pending[*i] == 0)
+                .min_by(|&a, &b| {
+                    // Descending size, ascending index: `min_by` wants
+                    // Less on the preferred side, i.e. a larger size.
+                    size(b).total_cmp(&size(a)).then(a.cmp(&b))
+                });
+            let Some(i) = pick else {
+                // Nothing eligible with systems left: a cycle.
+                return Err(SequenceError::DependencyCycle);
+            };
+            installed[i] = true;
+            for &(from, to) in &self.precedes {
+                if from == i {
+                    pending[to] -= 1;
+                }
+            }
+            order.push(i);
+        }
+        Ok(order)
     }
 }
 
@@ -399,8 +464,37 @@ mod tests {
     #[test]
     fn installation_sequence_large_first() {
         let p = plan(); // piping 0.2 m, electrical 0.2, machinery 3.0
-        let order = p.installation_sequence();
+        let order = p.installation_sequence().expect("no edges");
         assert_eq!(order, vec![2, 0, 1]); // machinery, piping, electrical
+    }
+
+    /// Review 7B leftover: hard precedence edges beat the size rule, and
+    /// cycles / dangling edges are errors rather than silent orders.
+    #[test]
+    fn installation_sequence_respects_dependencies() {
+        let mut p = plan(); // 0 piping (0.2), 1 electrical (0.2), 2 machinery (3.0)
+                            // The exhaust ducting (small) may only run after the machinery is
+                            // set; the machinery itself waits for the piping (hangers first).
+        p.precedes = vec![(1, 2), (0, 1)];
+        let order = p.installation_sequence().expect("acyclic");
+        // Eligible first step: only 0 (piping) — 1 and 2 are gated — even
+        // though 2 is by far the largest.
+        assert_eq!(order[0], 0);
+        assert_eq!(order, vec![0, 1, 2]);
+
+        // A cycle is detected.
+        p.precedes = vec![(0, 1), (1, 2), (2, 0)];
+        assert_eq!(
+            p.installation_sequence(),
+            Err(SequenceError::DependencyCycle)
+        );
+
+        // A dangling edge is detected.
+        p.precedes = vec![(0, 7)];
+        assert_eq!(
+            p.installation_sequence(),
+            Err(SequenceError::DanglingDependency(0, 7))
+        );
     }
 
     /// Regression (review 7B): two L-shaped routes whose bounding boxes

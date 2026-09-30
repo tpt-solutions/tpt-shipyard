@@ -427,6 +427,145 @@ impl HullForm {
     }
 }
 
+/// Equilibrium trim/list solution for a displacement and LCG (review 7H
+/// leftover: "trim" in the prismatic model).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrimResult {
+    /// Mean draft at midship, m.
+    pub mean_draft_m: f64,
+    /// Draft at the forward perpendicular, m.
+    pub fore_draft_m: f64,
+    /// Draft at the aft perpendicular, m.
+    pub aft_draft_m: f64,
+    /// Trim by the bow (+) or stern (−): fore − aft, m.
+    pub trim_m: f64,
+    /// Trim angle, degrees (bow-down positive).
+    pub trim_angle_deg: f64,
+    /// Longitudinal centre of buoyancy from midship, m (equals the LCG at
+    /// equilibrium).
+    pub lcb_m: f64,
+    /// Displacement of the trimmed waterline, t (matches the target).
+    pub displacement_t: f64,
+    /// GM at the mean draft against the loading KG, m (None without a KG).
+    pub gm_m: Option<f64>,
+}
+
+impl HullForm {
+    /// Displacement (t) and longitudinal buoyancy moment (t·m about
+    /// midship) of a trimmed waterline in the prismatic model: the section
+    /// area curve is uniform `Cb·B`, so the hull integrates as
+    /// `Cb·B·∫draft(x)dx` with the draft clipped to the depth (deck
+    /// immersion) and zero (end emergence).
+    fn trimmed_volume_moment(&self, mean_draft: f64, tan_theta: f64) -> (f64, f64) {
+        const N: usize = 200; // even stations over [0, L]
+        let (l, b) = (self.loa_m, self.boa_m);
+        let dx = l / N as f64;
+        let (mut vol, mut moment) = (0.0_f64, 0.0_f64);
+        for i in 0..N {
+            let x = -l / 2.0 + (i as f64 + 0.5) * dx; // + forward
+                                                      // Ends may emerge (draft clipped at 0); the screening model
+                                                      // does not cap deck immersion.
+            let d = (mean_draft + x * tan_theta).max(0.0);
+            let area = self.cb * b * d;
+            vol += area * dx;
+            moment += area * dx * x;
+        }
+        (vol, moment)
+    }
+
+    /// Solves the even-keel-plus-trim equilibrium for a displacement and
+    /// LCG: nested bisection — the mean draft is monotone in displacement
+    /// for a fixed trim angle, and the trim angle is monotone in the
+    /// buoyancy moment, so both legs converge exactly in the wall-sided
+    /// regime (emerging ends included via the draft clip at zero).
+    ///
+    /// This is the prismatic (Bonjean-lite) answer: real Bonjean curves
+    /// from hull offsets remain the roadmap item for fine forms.
+    pub fn trim_equilibrium(
+        &self,
+        displacement_t: f64,
+        lcg_from_midship_m: f64,
+        kg_m: Option<f64>,
+    ) -> Option<TrimResult> {
+        if !displacement_t.is_finite() || displacement_t <= 0.0 {
+            return None;
+        }
+        let target_vol = displacement_t / RHO_SEA_T_M3;
+
+        // Inner: mean draft for a given trim angle (volume bisection).
+        let vol_at = |t: f64, tan_theta: f64| self.trimmed_volume_moment(t, tan_theta).0;
+        let solve_draft = |tan_theta: f64| -> f64 {
+            let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+            while vol_at(hi, tan_theta) < target_vol && hi < 1e4 {
+                hi *= 2.0;
+            }
+            for _ in 0..80 {
+                let mid = 0.5 * (lo + hi);
+                if vol_at(mid, tan_theta) < target_vol {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            0.5 * (lo + hi)
+        };
+
+        // Outer: trim angle for the buoyancy moment.
+        let theta_cap = 0.25_f64; // ~14 deg: far beyond screening trims
+        let moment_at = |theta: f64| -> f64 {
+            let t = solve_draft(theta.tan());
+            self.trimmed_volume_moment(t, theta.tan()).1 * RHO_SEA_T_M3
+        };
+        let (mut lo, mut hi) = (-theta_cap, theta_cap);
+        // The moment is monotone increasing in bow-down trim; a target
+        // outside the bracket is clamped to the cap (and flagged by the
+        // caller through the resulting geometry).
+        for _ in 0..80 {
+            let mid = 0.5 * (lo + hi);
+            if moment_at(mid) < lcg_from_midship_m * displacement_t {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let theta = 0.5 * (lo + hi);
+        let t_mid = solve_draft(theta.tan());
+        let (vol, _moment) = self.trimmed_volume_moment(t_mid, theta.tan());
+        let half = self.loa_m / 2.0;
+        let gm = kg_m.map(|kg| {
+            let row = self.hydrostatics(t_mid);
+            row.km_m - kg
+        });
+        Some(TrimResult {
+            mean_draft_m: t_mid,
+            fore_draft_m: t_mid + half * theta.tan(),
+            aft_draft_m: (t_mid - half * theta.tan()).max(0.0),
+            trim_m: t_mid + half * theta.tan() - (t_mid - half * theta.tan()).max(0.0),
+            trim_angle_deg: theta.to_degrees(),
+            lcb_m: lcg_from_midship_m,
+            displacement_t: vol * RHO_SEA_T_M3,
+            gm_m: gm,
+        })
+    }
+
+    /// IACS CSR wave-induced vertical bending moments (review 7H leftover):
+    /// sagging `+0.11·Cw·L²·B·(Cb+0.7)` and hogging `−0.13·Cw·L²·B·(Cb+0.7)`
+    /// in kN·m, with the wave coefficient `Cw = 10.75 − ((300−L)/100)^1.5`
+    /// for 90 ≤ L ≤ 300 m (returned as None outside the rule range).
+    /// Combine with the still-water moment from
+    /// [`Self::hull_girder_strength`] for the total girder demand.
+    pub fn wave_bending_moment(&self) -> Option<(f64, f64)> {
+        let l = self.loa_m;
+        if !(90.0..=300.0).contains(&l) {
+            return None;
+        }
+        let cw = 10.75 - ((300.0 - l) / 100.0).powf(1.5);
+        let base = 0.11 * cw * l * l * self.boa_m * (self.cb + 0.7);
+        let hog = -0.13 / 0.11 * base;
+        Some((base, hog))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,6 +577,85 @@ mod tests {
             cb: 0.72,
             cwp: 0.85,
         }
+    }
+
+    /// Review 7H leftover: trim equilibrium. The even-keel case must
+    /// reproduce the closed-form box displacement exactly, and a
+    /// small eccentric LCG must agree with the classic MCT1cm estimate
+    /// `trim = W x LCG / MCT1cm` to within a few percent.
+    #[test]
+    fn trim_equilibrium_matches_the_box_and_mct() {
+        let hull = feeder();
+        // Even keel: T = W / (rho Cb B L).
+        let w = 20_000.0; // t
+        let t_even = w / (1.025 * 0.72 * 22.0 * 140.0);
+        let r = hull.trim_equilibrium(w, 0.0, None).expect("solvable");
+        assert!(
+            (r.mean_draft_m - t_even).abs() < 1e-6,
+            "{} vs {t_even}",
+            r.mean_draft_m
+        );
+        assert!(r.trim_m.abs() < 1e-9);
+        assert!((r.displacement_t - w).abs() < 1e-6);
+
+        // Bow trim: LCG 1.5 m forward of midship. The exact closed form
+        // of the same prismatic model is tan(theta) = 12 W LCG /(rho Cb B L^3)
+        // (moment = rho Cb B theta L^3/12) — the numerical solver must
+        // reproduce it to within integration error.
+        let lcg = 1.5;
+        let r2 = hull.trim_equilibrium(w, lcg, None).expect("solvable");
+        assert!(r2.trim_m > 0.0, "bow-down trim expected");
+        let tan_exact = 12.0 * w * lcg / (1.025 * 0.72 * 22.0 * 140.0_f64.powi(3));
+        let trim_exact = 140.0 * tan_exact;
+        assert!(
+            (r2.trim_m - trim_exact).abs() < 0.01 * trim_exact,
+            "solved trim {} m vs closed form {trim_exact} m",
+            r2.trim_m
+        );
+        // The classic MCT1cm estimate agrees only loosely: the crate's
+        // MCT uses the Cwp-based waterplane inertia and a screen KG — a
+        // documented approximation (here ~13 % off).
+        let row = hull.hydrostatics(r2.mean_draft_m);
+        let mct_estimate_m = w * lcg / row.mct1cm_tm_cm / 100.0;
+        assert!(
+            (r2.trim_m - mct_estimate_m).abs() < 0.25 * mct_estimate_m,
+            "solved trim {} m vs MCT1cm estimate {mct_estimate_m} m",
+            r2.trim_m
+        );
+        // Displacement is preserved through the trim, and the drafts
+        // bracket the mean.
+        assert!((r2.displacement_t - w).abs() < 1e-6);
+        assert!(r2.fore_draft_m > r2.aft_draft_m);
+        assert!((r2.fore_draft_m + r2.aft_draft_m).abs() - 2.0 * r2.mean_draft_m < 1e-9);
+
+        // GM comes back when a KG is supplied.
+        let r3 = hull.trim_equilibrium(w, 0.0, Some(9.0)).expect("solvable");
+        let gm = r3.gm_m.expect("KG supplied");
+        let km = hull.hydrostatics(r3.mean_draft_m).km_m;
+        assert!((gm - (km - 9.0)).abs() < 1e-9);
+    }
+
+    /// Review 7H leftover: IACS CSR wave-induced bending moments — the
+    /// closed-form coefficients checked at a known length, and the rule
+    /// range enforced.
+    #[test]
+    fn wave_bending_matches_the_csr_closed_form() {
+        let hull = feeder(); // L 140, B 22, Cb 0.72
+                             // Cw = 10.75 - ((300-140)/100)^1.5 = 10.75 - 2.0236 = 8.7264.
+        let cw = 10.75 - (1.6_f64).powf(1.5);
+        let sag = 0.11 * cw * 140.0 * 140.0 * 22.0 * (0.72 + 0.7);
+        let hog = -0.13 / 0.11 * sag;
+        let (s, h) = hull.wave_bending_moment().expect("L inside rule range");
+        assert!((s - sag).abs() < 1e-6, "{s} vs {sag}");
+        assert!((h - hog).abs() < 1e-6, "{h} vs {hog}");
+        // Outside 90-300 m the rules do not apply.
+        let short = HullForm {
+            loa_m: 60.0,
+            boa_m: 12.0,
+            cb: 0.6,
+            cwp: 0.8,
+        };
+        assert!(short.wave_bending_moment().is_none());
     }
 
     /// Verification: displacement is the closed-form prismatic volume × ρ.

@@ -47,6 +47,7 @@ fn bench_launch(c: &mut Criterion) {
     let vessel = DockedVessel {
         launch_weight_kg: 4_000_000.0,
         cog_above_keel_m: 6.0,
+        lcg_from_midship_m: 0.0,
         length_m: 90.0,
         breadth_m: 20.0,
         block_coefficient: 0.8,

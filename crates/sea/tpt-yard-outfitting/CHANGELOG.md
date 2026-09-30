@@ -6,6 +6,15 @@ follows [Semantic Versioning](https://semver.org/). The workspace versions as
 a single release train on a 6-week cadence — see the workspace
 [RELEASES.md](../../RELEASES.md).
 
+## [Unreleased]
+
+### Added
+
+- `OutfittingPlan.precedes` and a dependency-aware
+  `installation_sequence` (review 7B leftover): precedence-feasible serial
+  schedule among eligible systems (largest first, plan order on ties),
+  with typed `DanglingDependency` / `DependencyCycle` errors.
+
 ## [0.1.0] - 2026-09-28
 
 ### Added
