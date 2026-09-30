@@ -1,0 +1,16 @@
+{
+  "name": "tpt-shipyard",
+  "image": "mcr.microsoft.com/devcontainers/rust:1.98-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "postCreateCommand": "cargo build && cargo test --workspace",
+  "customizations": {
+    "vscode": {
+      "extensions": ["rust-lang.rust-analyzer", "vadimcn.vscode-lldb", "serayuzgur.crates"],
+      "settings": {
+        "rust-analyzer.check.command": "clippy"
+      }
+    }
+  }
+}

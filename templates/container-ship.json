@@ -1,0 +1,147 @@
+{
+  "id": 1,
+  "name": "Container ship 1400 TEU",
+  "vessel_type": {
+    "kind": "sea",
+    "value": {
+      "kind": "container_ship",
+      "teu_capacity": 1400
+    }
+  },
+  "construction_method": "sea_drydock",
+  "build_phases": [
+    {
+      "id": 1,
+      "name": "Steel prefabrication",
+      "activities": [
+        {
+          "id": 1,
+          "name": "Cut steel",
+          "activity_type": {
+            "kind": "join_block"
+          },
+          "dependencies": [],
+          "duration_hours": 8,
+          "resources": []
+        },
+        {
+          "id": 2,
+          "name": "Form panels",
+          "activity_type": {
+            "kind": "join_block"
+          },
+          "dependencies": [
+            1
+          ],
+          "duration_hours": 8,
+          "resources": []
+        }
+      ],
+      "structural_state": {
+        "kind": "not_started"
+      },
+      "weight_state": {
+        "design_kg": 4000000,
+        "installed_kg": 0
+      },
+      "duration_days": 28
+    },
+    {
+      "id": 2,
+      "name": "Block assembly",
+      "activities": [
+        {
+          "id": 3,
+          "name": "Assemble blocks",
+          "activity_type": {
+            "kind": "join_block"
+          },
+          "dependencies": [],
+          "duration_hours": 16,
+          "resources": []
+        }
+      ],
+      "structural_state": {
+        "kind": "not_started"
+      },
+      "weight_state": {
+        "design_kg": 2000000,
+        "installed_kg": 0
+      },
+      "duration_days": 21
+    },
+    {
+      "id": 3,
+      "name": "Dock erection",
+      "activities": [
+        {
+          "id": 4,
+          "name": "Erect tier 0",
+          "activity_type": {
+            "kind": "join_block"
+          },
+          "dependencies": [],
+          "duration_hours": 8,
+          "resources": []
+        },
+        {
+          "id": 5,
+          "name": "Erect tier 1",
+          "activity_type": {
+            "kind": "join_block"
+          },
+          "dependencies": [
+            4
+          ],
+          "duration_hours": 8,
+          "resources": []
+        }
+      ],
+      "structural_state": {
+        "kind": "not_started"
+      },
+      "weight_state": {
+        "design_kg": 1500000,
+        "installed_kg": 0
+      },
+      "duration_days": 30
+    },
+    {
+      "id": 4,
+      "name": "Outfitting & launch",
+      "activities": [
+        {
+          "id": 6,
+          "name": "Outfit",
+          "activity_type": {
+            "kind": "join_block"
+          },
+          "dependencies": [],
+          "duration_hours": 8,
+          "resources": []
+        },
+        {
+          "id": 7,
+          "name": "Launch",
+          "activity_type": {
+            "kind": "join_block"
+          },
+          "dependencies": [
+            6
+          ],
+          "duration_hours": 4,
+          "resources": []
+        }
+      ],
+      "structural_state": {
+        "kind": "not_started"
+      },
+      "weight_state": {
+        "design_kg": 900000,
+        "installed_kg": 0
+      },
+      "duration_days": 25
+    }
+  ],
+  "current_phase": 1
+}

@@ -15,3 +15,6 @@ authors.workspace = true
 tpt-yard-core = { workspace = true }
 tpt-yard-weight = { workspace = true }
 tpt-yard-assembly = { workspace = true }
+
+[lints]
+workspace = true

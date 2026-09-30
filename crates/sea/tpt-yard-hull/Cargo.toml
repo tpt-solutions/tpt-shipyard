@@ -14,3 +14,6 @@ authors.workspace = true
 [dependencies]
 tpt-yard-core = { workspace = true }
 tpt-yard-blocks = { workspace = true }
+
+[lints]
+workspace = true

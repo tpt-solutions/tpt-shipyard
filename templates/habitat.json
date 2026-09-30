@@ -1,0 +1,63 @@
+{
+  "id": 1,
+  "name": "Stanford torus habitat",
+  "vessel_type": {
+    "kind": "space",
+    "value": {
+      "kind": "space_station",
+      "modules": 8
+    }
+  },
+  "construction_method": "in_space_manufacturing",
+  "build_phases": [
+    {
+      "id": 1,
+      "name": "Habitat construction",
+      "activities": [
+        {
+          "id": 1,
+          "name": "Print ring sections",
+          "activity_type": {
+            "kind": "join_block"
+          },
+          "dependencies": [],
+          "duration_hours": 24,
+          "resources": []
+        },
+        {
+          "id": 2,
+          "name": "Close the ring",
+          "activity_type": {
+            "kind": "join_block"
+          },
+          "dependencies": [
+            1
+          ],
+          "duration_hours": 16,
+          "resources": []
+        },
+        {
+          "id": 3,
+          "name": "Spin-up checkout",
+          "activity_type": {
+            "kind": "join_block"
+          },
+          "dependencies": [
+            2
+          ],
+          "duration_hours": 8,
+          "resources": []
+        }
+      ],
+      "structural_state": {
+        "kind": "not_started"
+      },
+      "weight_state": {
+        "design_kg": 10000000,
+        "installed_kg": 0
+      },
+      "duration_days": 120
+    }
+  ],
+  "current_phase": 1
+}

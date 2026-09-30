@@ -74,6 +74,9 @@ pub enum CoreError {
     TypeError(String),
     /// File I/O failure while loading a project.
     Io(String),
+    /// The project loaded but is internally inconsistent (duplicate ids,
+    /// dangling dependencies, non-finite numbers, ...).
+    Validation(String),
 }
 
 impl CoreError {
@@ -95,6 +98,7 @@ impl fmt::Display for CoreError {
             CoreError::MissingField(m) => write!(f, "missing field: {m}"),
             CoreError::TypeError(m) => write!(f, "type error: {m}"),
             CoreError::Io(m) => write!(f, "io: {m}"),
+            CoreError::Validation(m) => write!(f, "invalid project: {m}"),
         }
     }
 }

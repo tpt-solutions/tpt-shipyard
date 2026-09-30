@@ -93,8 +93,13 @@ pub struct Acceptance {
 }
 
 impl Acceptance {
-    /// True if `value` lies inside the window.
+    /// True if `value` lies inside the window. A NaN measurement is never
+    /// accepted (an unconstrained window does not wave it through), and a
+    /// window with neither bound accepts any finite value.
     pub fn accepts(&self, value: f64) -> bool {
+        if value.is_nan() {
+            return false;
+        }
         let above = self.minimum.is_none_or(|min| value >= min);
         let below = self.maximum.is_none_or(|max| value <= max);
         above && below
@@ -197,7 +202,9 @@ impl TrialProgram {
         let total = self.trials.len();
         TrialReport {
             results,
-            all_passed: passed == total,
+            // An empty program has passed nothing — it must not claim
+            // "all passed" (a delivery gate on zero trials is vacuous).
+            all_passed: total > 0 && passed == total,
             passed_of: (passed, total),
         }
     }
@@ -291,6 +298,35 @@ mod tests {
         assert!(a.accepts(16.0));
         assert!(!a.accepts(14.999));
         assert!(!a.accepts(16.001));
+    }
+
+    /// Regression (review 7A/A12): a NaN measurement must not pass, even
+    /// through an unconstrained window.
+    #[test]
+    fn nan_measurement_is_never_accepted() {
+        let open = Acceptance {
+            metric: Metric::SpeedKn,
+            minimum: None,
+            maximum: None,
+        };
+        assert!(!open.accepts(f64::NAN));
+        let bounded = Acceptance {
+            metric: Metric::SpeedKn,
+            minimum: Some(0.0),
+            maximum: None,
+        };
+        assert!(!bounded.accepts(f64::NAN));
+        // Finite values still pass an unconstrained window.
+        assert!(open.accepts(12.5));
+    }
+
+    /// Regression (review 7A/A12): an empty program must not report
+    /// `all_passed = true` — it has passed nothing.
+    #[test]
+    fn empty_program_does_not_pass() {
+        let report = TrialProgram::new().evaluate();
+        assert!(!report.all_passed);
+        assert_eq!(report.passed_of, (0, 0));
     }
 
     #[test]

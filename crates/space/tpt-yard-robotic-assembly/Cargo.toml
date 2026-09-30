@@ -13,3 +13,9 @@ authors.workspace = true
 
 [dependencies]
 tpt-yard-core = { workspace = true }
+
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true

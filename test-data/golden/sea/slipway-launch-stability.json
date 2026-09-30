@@ -17,12 +17,16 @@
   "expected": {
     "sliding_velocity_ms": 8.729,
     "full_contact_pressure_mpa": 0.16328,
-    "pivot_pressure_mpa": 0.48983,
+    "pivot_pressure_mpa": 0.46393,
     "tip_up_risk": false,
     "entry_angle_deg": 3.0,
-    "slamming_pressure_mpa": 0.15620,
-    "launch_draft_m": 2.7100,
+    "slamming_pressure_mpa": 0.0004278,
+    "launch_draft_m": 2.71,
     "safe": true
   },
-  "tolerance": { "relative": 0.002, "note": "closed-form statics: exact within rounding" }
+  "tolerance": {
+    "relative": 0.002,
+    "note": "closed-form statics: exact within rounding"
+  },
+  "description": "Regenerated after the review 7B physics fixes, verified by hand: the pivot pressure now relieves buoyancy built up to the way end (F_b = 0.5 rho g Cb B t^2 sin(theta) = 20.63 MN, 52.6% of the weight at t = 70 m) and divides by the total way width only (the old value double-counted the way count); the slamming pressure uses the vertical entry velocity component v*sin(theta). Sliding velocity, full-contact pressure and launch draft are unchanged closed-form statics."
 }

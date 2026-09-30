@@ -49,10 +49,11 @@ model.add_item(WeightItem {
     status: ItemStatus::Installed,
     margin_pct: 2.0,
     installed_by: None,
-});
+})
+.expect("valid weight item");
 
 assert_eq!(model.installed_weight(), 15_000.0);
-assert_eq!(model.weight_deviation(), 0.0); // vs design on creation
+assert_eq!(model.weight_deviation(), -175_000.0); // vs the 190 t design
 ```
 
 ## How it works

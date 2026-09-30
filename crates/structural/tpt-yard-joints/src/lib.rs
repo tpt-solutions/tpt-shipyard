@@ -223,22 +223,44 @@ impl JointGeometry {
         let face = self.root_face_mm.min(t);
         let groove_depth = (t - face).max(0.0);
         let half_angle = self.groove_angle_deg.to_radians() / 2.0;
-        let triangular = match self.groove {
-            GrooveType::Square => 0.0,
-            GrooveType::V | GrooveType::Bevel | GrooveType::J | GrooveType::U => {
-                groove_depth * groove_depth * half_angle.tan()
-            }
-            GrooveType::DoubleV | GrooveType::K => {
-                // Both sides share the depth symmetrically.
-                groove_depth * groove_depth * half_angle.tan()
-            }
-        };
         // The root gap fills across the root-face height: area = gap × face.
         let gap_area = self.root_gap_mm * face;
         // Deep penetration extends the fused zone below the root; its added
         // area is the penetration depth continuing through the gap channel.
         let penetration_area = self.penetration_mm * self.root_gap_mm;
-        triangular + gap_area + penetration_area
+        let profile = match self.groove {
+            GrooveType::Square => 0.0,
+            // V and Bevel: a single sharp wedge of the full groove depth.
+            GrooveType::V | GrooveType::Bevel => {
+                groove_depth * groove_depth * half_angle.tan()
+            }
+            // DoubleV / K: two opposing faces share the depth — each side
+            // is welded over half the thickness (the root gap is common).
+            GrooveType::DoubleV | GrooveType::K => {
+                let per_side = groove_depth / 2.0;
+                2.0 * per_side * per_side * half_angle.tan()
+            }
+            // J and U grooves have a rounded root, not a sharp wedge: a
+            // radius slot (root radius ≈ groove_depth/3, typical per
+            // ISO 9692-1) plus a narrow flare. J has one vertical face and
+            // a quarter-round root; U has a half-round root flaring both
+            // ways. (J/U preparations pair with much smaller included
+            // angles than V — the caller supplies the real prep angle.)
+            GrooveType::U => {
+                let r = (groove_depth / 3.0).max(1.0);
+                let flare = (groove_depth - r).max(0.0);
+                let top = 2.0 * r + 2.0 * flare * half_angle.tan();
+                std::f64::consts::FRAC_PI_2 * r * r + (2.0 * r + top) * 0.5 * flare
+            }
+            GrooveType::J => {
+                let r = (groove_depth / 3.0).max(1.0);
+                let flare = (groove_depth - r).max(0.0);
+                std::f64::consts::FRAC_PI_4 * r * r
+                    + r * flare
+                    + (r + flare * half_angle.tan()) * 0.5 * flare
+            }
+        };
+        profile + gap_area + penetration_area
     }
 
     /// Volume of weld metal for the whole seam, mm³ (single side).
@@ -278,6 +300,37 @@ mod tests {
         );
     }
 
+    /// Regression (review 7B): the groove families must have distinct
+    /// geometry — DoubleV/K weld half the depth per side (≈¼ the wedge area
+    /// of a V), and J/U have rounded roots instead of a sharp V wedge.
+    #[test]
+    fn groove_families_differ() {
+        let base = || {
+            JointGeometry::new(JointKind::Butt)
+                .with_thickness_mm(20.0)
+                .with_groove_angle_deg(60.0)
+                .with_root_face_mm(2.0)
+                .with_root_gap_mm(3.0)
+        };
+        let v = base().with_groove(GrooveType::V).weld_area_mm2();
+        let double_v = base().with_groove(GrooveType::DoubleV).weld_area_mm2();
+        let k = base().with_groove(GrooveType::K).weld_area_mm2();
+        // Wedge share: V = d²·tan, DoubleV = d²/2·tan (d = 18); the root
+        // gap (6 mm²) is common to both.
+        let gap = 6.0;
+        assert!(
+            close(double_v - gap, (v - gap) / 2.0, 1e-6),
+            "{double_v} vs {v}"
+        );
+        assert!(close(k, double_v, 1e-9));
+        // Rounded roots differ from the sharp V wedge.
+        let u = base().with_groove(GrooveType::U).weld_area_mm2();
+        let j = base().with_groove(GrooveType::J).weld_area_mm2();
+        assert!((u - v).abs() > 1.0, "U must not equal V: {u} vs {v}");
+        assert!((j - v).abs() > 1.0, "J must not equal V: {j} vs {v}");
+        assert!((u - j).abs() > 1.0, "U and J must differ: {u} vs {j}");
+    }
+
     #[test]
     fn square_groove_is_gap_only() {
         let j = JointGeometry::new(JointKind::Butt)
@@ -306,9 +359,12 @@ mod tests {
             .with_thickness_mm(20.0)
             .with_groove(GrooveType::V)
             .with_groove_angle_deg(60.0);
-        let single = v.weld_area_mm2();
-        let x = v.with_groove(GrooveType::DoubleV);
-        assert!(close(x.weld_area_mm2_total(), 2.0 * single, 1e-12));
+        let x = v.clone().with_groove(GrooveType::DoubleV);
+        // Double-sided work doubles the DoubleV single-side area (which,
+        // correctly, is *less* metal than two V welds of the same angle).
+        let x_single = x.weld_area_mm2();
+        assert!(close(x.weld_area_mm2_total(), 2.0 * x_single, 1e-12));
+        assert!(x.weld_area_mm2_total() < 2.0 * v.weld_area_mm2());
     }
 
     #[test]

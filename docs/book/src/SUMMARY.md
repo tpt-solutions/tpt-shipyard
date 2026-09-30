@@ -2,6 +2,8 @@
 
 [Introduction](introduction.md)
 
+[Getting Started in 10 Minutes](getting-started.md)
+
 # Core & Digital Twin
 
 - [Core Types](core-types.md)
@@ -34,6 +36,8 @@
 # Planning
 
 - [Scheduling](scheduling.md)
+- [Material & Resource Logistics](logistics.md)
+- [Facility Planning](facility.md)
 - [Quality & Inspection](quality.md)
 
 # Integration

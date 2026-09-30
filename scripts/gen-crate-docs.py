@@ -74,7 +74,7 @@ assert_eq!(same, project);""",
             "Numbers follow shipyard convention: metres, kilograms, hours, days; vessel dimensions use LOA / breadth / depth nomenclature.",
         ],
         "verification": [
-            "JSON round-trip tests over every enum variant (compact and pretty writers)",
+            "JSON round-trip tests for the project model (compact and pretty writers)",
             "Geometry tests: box/cylinder bounds, centroids, rotation length preservation",
             "Rosenthal-relevant material diffusivity and shear-modulus consistency checks",
         ],
@@ -158,10 +158,11 @@ model.add_item(WeightItem {
     status: ItemStatus::Installed,
     margin_pct: 2.0,
     installed_by: None,
-});
+})
+.expect("valid weight item");
 
 assert_eq!(model.installed_weight(), 15_000.0);
-assert_eq!(model.weight_deviation(), 0.0); // vs design on creation""",
+assert_eq!(model.weight_deviation(), -175_000.0); // vs the 190 t design""",
         "model": [
             "`total_weight()` counts every non-replaced item: installed items at as-built mass, the rest at predicted mass (the lightship best estimate).",
             "`installed_weight()` counts only what is physically aboard — the launch officer's number.",
@@ -261,7 +262,7 @@ console.log(report.installed_kg, report.cog);""",
         "verification": [
             "Native tests: JSON round-trip, dependency-gated advance, geometry buffer sizes",
             "Orbital façade: full 18-step sequence simulated step by step",
-            "Browser smoke test documented in the book (WASM chapter); reference dashboard in `www/`",
+            "Reference dashboard page in `www/` (2-D plan view); the interactive 3-D WASM mesh demo is on the roadmap",
         ],
         "keywords": ["wasm", "webassembly", "digital-twin", "dashboard", "shipyard"],
         "categories": ["web-programming::wasm", "science", "simulation", "graphics"],

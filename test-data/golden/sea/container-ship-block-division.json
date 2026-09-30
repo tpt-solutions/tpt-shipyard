@@ -9,18 +9,26 @@
   },
   "constraints": {
     "crane_capacity_kn": 40000.0,
-    "workshop": { "length_m": 24.0, "breadth_m": 30.0, "depth_m": 14.0 }
+    "workshop": {
+      "length_m": 24.0,
+      "breadth_m": 30.0,
+      "depth_m": 14.0
+    }
   },
   "expected": {
     "n_blocks": 12,
     "n_longitudinal_bands": 6,
     "block_length_m": 23.333333,
-    "block_weight_kg": 142800.0,
-    "max_block_load_kn": 1400.868,
-    "total_steel_kg": 1713600.0,
+    "block_weight_kg": 571200.0,
+    "max_block_load_kn": 5603.472,
+    "total_steel_kg": 6854400.0,
     "keel_tier_blocks": 6,
     "min_block_cog_z_m": 3.0,
     "first_join_seam": "DockJoint"
   },
-  "tolerance": { "relative": 0.001, "note": "closed-form division: exact within rounding" }
+  "tolerance": {
+    "relative": 0.001,
+    "note": "closed-form division: exact within rounding"
+  },
+  "description": "Regenerated after the review 7B weight fix: the pre-design estimate now applies an internal-structure factor of 4 to the shell envelope (a bare shell runs ~4x light against real cargo-ship steel), giving ~6.85e3 t for the 140 m reference hull. Values hand-verified."
 }

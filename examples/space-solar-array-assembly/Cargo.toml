@@ -14,3 +14,6 @@ tpt-yard-core = { workspace = true }
 tpt-yard-space-manufacturing = { workspace = true }
 tpt-yard-orbital-assembly = { workspace = true }
 tpt-yard-robotic-assembly = { workspace = true }
+
+[lints]
+workspace = true

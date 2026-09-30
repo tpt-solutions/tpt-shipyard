@@ -13,3 +13,6 @@ authors.workspace = true
 tpt-yard-core = { workspace = true }
 tpt-yard-habitat = { workspace = true }
 tpt-yard-space-structural = { workspace = true }
+
+[lints]
+workspace = true

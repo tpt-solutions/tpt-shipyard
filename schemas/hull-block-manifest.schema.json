@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tpt-solutions.github.io/tpt-shipyard/schemas/hull-block-manifest.schema.json",
+  "title": "Hull block-division manifest",
+  "description": "Input manifest for `tpt-yard plan` and HullConstruction::block_division (see test-data/hull-blocks/).",
+  "type": "object",
+  "required": ["vessel", "hull", "yard_capabilities"],
+  "properties": {
+    "vessel": { "type": "string", "minLength": 1 },
+    "hull": {
+      "type": "object",
+      "required": ["loa_m", "boa_m", "depth_m", "areal_density_kg_m2", "depth_bands"],
+      "properties": {
+        "loa_m": { "type": "number", "exclusiveMinimum": 0 },
+        "boa_m": { "type": "number", "exclusiveMinimum": 0 },
+        "depth_m": { "type": "number", "exclusiveMinimum": 0 },
+        "areal_density_kg_m2": { "type": "number", "exclusiveMinimum": 0 },
+        "depth_bands": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "yard_capabilities": {
+      "type": "object",
+      "required": ["crane_capacity_kn", "workshop"],
+      "properties": {
+        "crane_capacity_kn": { "type": "number", "exclusiveMinimum": 0 },
+        "transport_limit_t": { "type": "number", "minimum": 0 },
+        "workshop": {
+          "type": "object",
+          "required": ["length_m", "breadth_m", "depth_m"],
+          "properties": {
+            "length_m": { "type": "number", "exclusiveMinimum": 0 },
+            "breadth_m": { "type": "number", "exclusiveMinimum": 0 },
+            "depth_m": { "type": "number", "exclusiveMinimum": 0 }
+          }
+        }
+      }
+    },
+    "construction": {
+      "type": "object",
+      "properties": {
+        "method": { "type": "string" },
+        "notes": { "type": "string" }
+      }
+    }
+  }
+}

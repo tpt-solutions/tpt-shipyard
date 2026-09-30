@@ -124,7 +124,8 @@ pub struct TankSpec {
     pub volume_m3: f64,
     /// Ullage fraction held for vapour (0.02–0.05 typical).
     pub ullage_frac: f64,
-    /// Heat leak into the tank through insulation and supports, W.
+    /// Heat leak into the tank through insulation and supports, W
+    /// (non-negative, finite).
     pub heat_leak_w: f64,
 }
 
@@ -180,8 +181,9 @@ pub struct BoilOffReport {
     /// True when the heat leak is small enough to call ZBO
     /// (< 0.1 %/day).
     pub zero_boil_off_achieved: bool,
-    /// Cryocooler power needed to intercept the full heat leak, W
-    /// (assuming a 100:1 heat-lift ratio at cryogenic temperature).
+    /// Cryocooler input power needed to intercept the full heat leak, W
+    /// (Carnot-limited at the propellant boiling temperature; see
+    /// [`LoadingPlanner::cooler_input_power_w`]).
     pub cooler_power_w: f64,
 }
 
@@ -211,16 +213,16 @@ pub struct LoadingPlanner {
     /// Tank thermal-mass coefficient for chilldown (kg of steel-equivalent
     /// per m³ of tank), ~35 for a launch-class tank.
     pub tank_thermal_mass_kg_m3: f64,
-    /// Cryocooler heat-lift ratio (W of heat lifted per W of input at
-    /// 20-90 K): ~100 for Stirling-class coolers, ~250 for Brayton.
-    pub cooler_specific_power: f64,
+    /// Cryocooler efficiency as a fraction of the Carnot COP (Stirling and
+    /// Brayton coolers land around 5-10 % of Carnot at 20-90 K).
+    pub cooler_carnot_fraction: f64,
 }
 
 impl Default for LoadingPlanner {
     fn default() -> Self {
         Self {
             tank_thermal_mass_kg_m3: 35.0,
-            cooler_specific_power: 100.0,
+            cooler_carnot_fraction: 0.07,
         }
     }
 }
@@ -242,10 +244,14 @@ impl LoadingPlanner {
         tank: &TankSpec,
         fill_rate_kg_s: f64,
     ) -> Result<PropellantLoadingPlan, LoadingError> {
-        if fill_rate_kg_s <= 0.0 {
+        if !(fill_rate_kg_s > 0.0) {
             return Err(LoadingError::InvalidFillRate);
         }
-        if tank.volume_m3 <= 0.0 || tank.ullage_frac < 0.0 || tank.ullage_frac >= 1.0 {
+        if tank.volume_m3 <= 0.0
+            || tank.ullage_frac < 0.0
+            || tank.ullage_frac >= 1.0
+            || !(tank.heat_leak_w >= 0.0)
+        {
             return Err(LoadingError::InvalidTank);
         }
         let loaded_mass_kg =
@@ -266,10 +272,16 @@ impl LoadingPlanner {
         };
 
         let policy = if propellant.cryogenic {
-            if tank.heat_leak_w <= self.zbo_heat_leak_w(propellant, tank) {
+            let zbo = self.zbo_heat_leak_w(propellant, tank);
+            // Within ZBO: no hardware needed. Moderately above ZBO: a
+            // cryocooler intercepts the leak (`Recooled`). More than 20×
+            // the ZBO leak: active cooling is impractical — vent.
+            if tank.heat_leak_w <= zbo {
                 BoilOffPolicy::ZeroBoilOff
-            } else {
+            } else if tank.heat_leak_w > 20.0 * zbo {
                 BoilOffPolicy::Vented
+            } else {
+                BoilOffPolicy::Recooled
             }
         } else {
             // Storable propellants: no boil-off problem.
@@ -310,8 +322,24 @@ impl LoadingPlanner {
             boil_off_pct_day: pct_day,
             time_to_vent_days,
             zero_boil_off_achieved: pct_day < 0.1,
-            cooler_power_w: tank.heat_leak_w * self.cooler_specific_power,
+            cooler_power_w: self
+                .cooler_input_power_w(tank.heat_leak_w, propellant.boiling_point_k),
         }
+    }
+
+    /// Cryocooler *input* power (W) to lift `heat_leak_w` at a cold-side
+    /// temperature `t_cold_k`, from the Carnot COP scaled by
+    /// [`LoadingPlanner::cooler_carnot_fraction`]:
+    /// `P_in = Q · (T_hot/T_cold − 1) / fraction` with T_hot = 300 K.
+    ///
+    /// (The previous version multiplied the leak by a flat 100:1 — inverted
+    /// and identical for 20 K hydrogen and 90 K oxygen.)
+    pub fn cooler_input_power_w(&self, heat_leak_w: f64, t_cold_k: f64) -> f64 {
+        if !(heat_leak_w > 0.0) || !(t_cold_k > 0.0) {
+            return 0.0;
+        }
+        let carnot_ratio = 300.0 / t_cold_k - 1.0;
+        heat_leak_w * carnot_ratio / self.cooler_carnot_fraction.max(1e-6)
     }
 
     /// Heat leak (W) below which the tank qualifies as zero-boil-off.
@@ -373,7 +401,21 @@ mod tests {
             report.boil_off_kg_day
         );
         assert!(!report.zero_boil_off_achieved);
-        assert_eq!(plan.thermal_control.policy, BoilOffPolicy::Vented);
+        // 2000 W is ~2.4x the ZBO leak: a cryocooler can intercept it
+        // (`Recooled`). A leak 20x beyond ZBO is impractical to cool: vent.
+        assert_eq!(plan.thermal_control.policy, BoilOffPolicy::Recooled);
+        let huge = TankSpec {
+            heat_leak_w: 20_000.0,
+            ..tank
+        };
+        assert_eq!(
+            planner
+                .plan_loading(&lox, &huge, 50.0)
+                .unwrap()
+                .thermal_control
+                .policy,
+            BoilOffPolicy::Vented
+        );
         // The ZBO threshold heat leak is far below 2000 W here.
         assert!(planner.zbo_heat_leak_w(&lox, &tank) < 2_000.0);
         // The 800 W tank from the other test is a borderline-ZBO case:
@@ -429,8 +471,17 @@ mod tests {
                 .policy,
             BoilOffPolicy::ZeroBoilOff
         );
-        // Cooler sized from the specific power.
-        assert!((report.cooler_power_w - good_tank.heat_leak_w * 100.0).abs() < 1e-6);
+        // Cooler input power is Carnot-scaled at the LOX boiling point
+        // (review 7B: the old flat 100:1 multiplier was inverted and
+        // temperature-blind).
+        let expected =
+            planner.cooler_input_power_w(good_tank.heat_leak_w, lox.boiling_point_k);
+        assert!((report.cooler_power_w - expected).abs() < 1e-6);
+        // Hydrogen (20 K) needs far more input power per watt lifted than
+        // LOX (90 K) — the ratio must be temperature-dependent.
+        let h2_leak = planner.cooler_input_power_w(1.0, 20.0);
+        let o2_leak = planner.cooler_input_power_w(1.0, 90.0);
+        assert!(h2_leak > o2_leak * 2.0, "{h2_leak} vs {o2_leak}");
     }
 
     #[test]

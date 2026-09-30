@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tpt-solutions.github.io/tpt-shipyard/schemas/vessel-project.schema.json",
+  "title": "VesselProject",
+  "description": "Wire format of a tpt-shipyard vessel project (schema_version 1). See crates/core/tpt-yard-core; the loader validates this shape and the project's internal consistency.",
+  "type": "object",
+  "required": ["id", "name", "vessel_type", "construction_method", "build_phases", "current_phase"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Wire-format version; the loader accepts 1."
+    },
+    "id": { "type": "integer", "minimum": 0 },
+    "name": { "type": "string", "minLength": 1 },
+    "vessel_type": { "$ref": "#/$defs/vesselType" },
+    "construction_method": {
+      "enum": [
+        "sea_block_construction",
+        "sea_slipway_launch",
+        "sea_drydock",
+        "orbital_assembly",
+        "in_space_manufacturing",
+        "lunar_surface_construction"
+      ]
+    },
+    "current_phase": { "type": "integer", "minimum": 1 },
+    "build_phases": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/buildPhase" }
+    }
+  },
+  "$defs": {
+    "vesselType": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": ["sea", "space", "offshore", "land"]
+        },
+        "value": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "enum": [
+                "container_ship", "tanker", "lng_carrier", "bulk_carrier",
+                "fishing_vessel", "naval_vessel", "submarine", "offshore_vessel",
+                "barge", "space_station", "spacecraft", "orbital_habitat",
+                "lunar_base", "fpso", "wind_turbine_installation_vessel"
+              ]
+            },
+            "teu_capacity": { "type": "integer", "minimum": 0 },
+            "deadweight_tonnes": { "type": "number", "minimum": 0 },
+            "cargo_volume_m3": { "type": "number", "minimum": 0 },
+            "classification": { "type": "string" },
+            "hull_type": { "enum": ["SingleHull", "DoubleHull"] },
+            "modules": { "type": "integer", "minimum": 1 },
+            "crew_capacity": { "type": "integer", "minimum": 0 },
+            "passengers": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "buildPhase": {
+      "type": "object",
+      "required": ["id", "name", "activities", "structural_state", "weight_state", "duration_days"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1 },
+        "name": { "type": "string" },
+        "activities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/activity" }
+        },
+        "structural_state": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "enum": [
+                "not_started", "keel_laid", "partially_connected",
+                "structurally_complete", "outfitted", "delivered"
+              ]
+            },
+            "connected_fraction": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        },
+        "weight_state": {
+          "type": "object",
+          "required": ["design_kg", "installed_kg"],
+          "properties": {
+            "design_kg": { "type": "number", "minimum": 0 },
+            "installed_kg": { "type": "number", "minimum": 0 }
+          }
+        },
+        "duration_days": { "type": "number", "minimum": 0 }
+      }
+    },
+    "activity": {
+      "type": "object",
+      "required": ["id", "name", "activity_type", "dependencies", "duration_hours", "resources"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1 },
+        "name": { "type": "string" },
+        "activity_type": { "$ref": "#/$defs/activityType" },
+        "dependencies": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 }
+        },
+        "duration_hours": { "type": "number", "exclusiveMinimum": 0 },
+        "resources": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/resource" }
+        }
+      }
+    },
+    "activityType": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "cut_steel", "fabricate", "weld_block", "join_block", "outfit",
+            "paint", "inspect", "test", "move", "custom"
+          ]
+        },
+        "system": { "$ref": "#/$defs/outfitSystem" },
+        "test_type": { "enum": ["pressure", "hydrostatic", "ndt", "functional"] }
+      }
+    },
+    "outfitSystem": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": ["piping", "electrical", "hvac", "structural", "machinery", "navigation"]
+        },
+        "fluid": {
+          "enum": ["sea_water", "fresh_water", "fuel", "lube_oil", "hydraulic", "steam", "gas", "ballast"]
+        },
+        "diameter_mm": { "type": "number", "minimum": 0 },
+        "voltage_v": { "type": "number" },
+        "cable_type": { "type": "string" },
+        "duct_size_mm": { "type": "number", "minimum": 0 },
+        "equipment": { "type": "string" }
+      }
+    },
+    "resource": {
+      "type": "object",
+      "required": ["name", "kind", "capacity"],
+      "properties": {
+        "name": { "type": "string" },
+        "kind": {
+          "enum": ["crane", "workshop", "drydock", "welding_station", "robot", "crew", "transport"]
+        },
+        "capacity": { "type": "number", "minimum": 0 }
+      }
+    }
+  }
+}

@@ -15,3 +15,6 @@ tpt-yard-hull = { workspace = true }
 tpt-yard-structural = { workspace = true }
 tpt-yard-welding = { workspace = true }
 tpt-yard-joints = { workspace = true }
+
+[lints]
+workspace = true

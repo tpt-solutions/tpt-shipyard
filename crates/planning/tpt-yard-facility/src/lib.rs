@@ -19,6 +19,7 @@
 //!     capacity: 1_200.0,
 //!     position: Vector3::new(0.0, 0.0, 0.0),
 //!     footprint_m: (30.0, 30.0),
+//!     height_m: 40.0,
 //! });
 //! // A demand of 900 t of crane work fits; 1,500 t does not.
 //! assert!(plan.check_capacity(FacilityKind::Crane, 900.0));
@@ -70,10 +71,13 @@ pub struct Facility {
     pub kind: FacilityKind,
     /// Capacity (units per [`FacilityKind::unit`]).
     pub capacity: f64,
-    /// Plan-view centre position, m.
+    /// Centre position, m (z matters: stacked or elevated facilities do
+    /// not collide with ground-level ones).
     pub position: Vector3,
     /// Plan-view footprint (width, depth), m.
     pub footprint_m: (f64, f64),
+    /// Vertical extent, m (0 for ground-level pads).
+    pub height_m: f64,
 }
 
 /// Errors from facility planning.
@@ -116,13 +120,25 @@ impl FacilityPlan {
         self.facilities.push(facility);
     }
 
-    /// Total capacity of a kind.
+    /// Capacity of a kind.
+    ///
+    /// Cranes do **not** aggregate: two cranes of 1200 t and 50 t cannot
+    /// jointly lift a 600 t unit (a single pick runs on one crane; tandem
+    /// lifts need an explicit engineering case). For cranes this returns
+    /// the largest single capacity; for workshops, docks and bays — where
+    /// demand genuinely pools — it returns the sum.
     pub fn capacity_of(&self, kind: FacilityKind) -> f64 {
-        self.facilities
+        let capacities: Vec<f64> = self
+            .facilities
             .iter()
             .filter(|f| f.kind == kind)
             .map(|f| f.capacity)
-            .sum()
+            .collect();
+        if kind == FacilityKind::Crane {
+            capacities.iter().cloned().fold(0.0, f64::max)
+        } else {
+            capacities.iter().sum()
+        }
     }
 
     /// Capacity check: does peak demand of a kind fit?
@@ -164,7 +180,13 @@ fn overlaps(a: &Facility, b: &Facility, clearance: f64) -> bool {
     let (bw, bd) = b.footprint_m;
     let dx = (a.position.x - b.position.x).abs();
     let dy = (a.position.y - b.position.y).abs();
-    dx < (aw + bw) / 2.0 + clearance && dy < (ad + bd) / 2.0 + clearance
+    // Vertical separation counts too: a platform 10 m above a pad is not
+    // in conflict with it.
+    let dz = (a.position.z - b.position.z).abs();
+    let vz = (a.height_m + b.height_m) / 2.0;
+    dx < (aw + bw) / 2.0 + clearance
+        && dy < (ad + bd) / 2.0 + clearance
+        && dz < vz + clearance
 }
 
 #[cfg(test)]
@@ -179,6 +201,7 @@ mod tests {
             capacity: 1_200.0,
             position: Vector3::new(0.0, 0.0, 0.0),
             footprint_m: (30.0, 30.0),
+            height_m: 40.0,
         });
         plan.add(Facility {
             name: "Workshop A".into(),
@@ -186,6 +209,7 @@ mod tests {
             capacity: 5_000.0,
             position: Vector3::new(200.0, 0.0, 0.0),
             footprint_m: (120.0, 60.0),
+            height_m: 12.0,
         });
         plan.add(Facility {
             name: "Dock 1".into(),
@@ -193,6 +217,7 @@ mod tests {
             capacity: 2.0,
             position: Vector3::new(0.0, 300.0, 0.0),
             footprint_m: (200.0, 60.0),
+            height_m: 0.0,
         });
         plan
     }
@@ -206,6 +231,77 @@ mod tests {
         // Two dock slots: one vessel in dock, a second fits, a third waits.
         assert!(plan.check_capacity(FacilityKind::Drydock, 2.0));
         assert!(!plan.check_capacity(FacilityKind::Drydock, 3.0));
+
+        // Regression (review 7B): crane capacities do not aggregate — a
+        // second small crane cannot help lift a single heavy unit, while
+        // workshop area does pool.
+        let mut plan = FacilityPlan::new();
+        plan.add(Facility {
+            name: "Goliath".into(),
+            kind: FacilityKind::Crane,
+            capacity: 800.0,
+            position: Vector3::ZERO,
+            footprint_m: (30.0, 30.0),
+            height_m: 40.0,
+        });
+        plan.add(Facility {
+            name: "Jib".into(),
+            kind: FacilityKind::Crane,
+            capacity: 200.0,
+            position: Vector3::new(100.0, 0.0, 0.0),
+            footprint_m: (10.0, 10.0),
+            height_m: 12.0,
+        });
+        assert_eq!(plan.capacity_of(FacilityKind::Crane), 800.0);
+        assert!(!plan.check_capacity(FacilityKind::Crane, 900.0),
+            "800 t + 200 t cranes cannot make a 900 t single pick");
+        plan.add(Facility {
+            name: "W1".into(),
+            kind: FacilityKind::Workshop,
+            capacity: 3_000.0,
+            position: Vector3::new(200.0, 0.0, 0.0),
+            footprint_m: (100.0, 50.0),
+            height_m: 12.0,
+        });
+        plan.add(Facility {
+            name: "W2".into(),
+            kind: FacilityKind::Workshop,
+            capacity: 2_000.0,
+            position: Vector3::new(320.0, 0.0, 0.0),
+            footprint_m: (100.0, 50.0),
+            height_m: 12.0,
+        });
+        assert_eq!(plan.capacity_of(FacilityKind::Workshop), 5_000.0,
+            "workshop area pools");
+    }
+
+    /// Regression (review 7B): facilities at different elevations do not
+    /// conflict in plan view.
+    #[test]
+    fn vertical_separation_avoids_conflict() {
+        let mut plan = FacilityPlan::new();
+        plan.add(Facility {
+            name: "pad".into(),
+            kind: FacilityKind::Workshop,
+            capacity: 1.0,
+            position: Vector3::ZERO,
+            footprint_m: (50.0, 50.0),
+            height_m: 0.0,
+        });
+        let elevated = Facility {
+            name: "platform".into(),
+            kind: FacilityKind::OrbitalBay,
+            capacity: 1.0,
+            position: Vector3::ZERO,
+            footprint_m: (50.0, 50.0),
+            height_m: 5.0,
+        };
+        // Centred 20 m above the pad: clear of it.
+        let mut above = elevated.clone();
+        above.position = Vector3::new(0.0, 0.0, 20.0 + 2.5);
+        assert!(plan.can_place(&above, 1.0));
+        // At the same elevation: clash.
+        assert!(!plan.can_place(&elevated, 1.0));
     }
 
     #[test]
@@ -218,6 +314,7 @@ mod tests {
             capacity: 10.0,
             position: Vector3::new(5.0, 5.0, 0.0),
             footprint_m: (20.0, 20.0),
+            height_m: 12.0,
         };
         assert!(!plan.can_place(&bad, 2.0));
         // Far enough away.
@@ -237,6 +334,7 @@ mod tests {
             capacity: 1.0,
             position: Vector3::new(210.0, 0.0, 0.0),
             footprint_m: (120.0, 60.0),
+            height_m: 12.0,
         });
         // Workshop B overlaps Workshop A (200 vs 210 centres, 120 wide).
         assert_eq!(

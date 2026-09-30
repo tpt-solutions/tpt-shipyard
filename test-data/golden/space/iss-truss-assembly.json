@@ -1,6 +1,6 @@
 {
   "case": "ISS-integrated-truss-class deployment integrity (RFC 0003 screening case)",
-  "description": "15-bay truss deployed one bay at a time; docking impulse at the tip; root stress grows linearly with deployed length.",
+  "description": "15-bay truss deployed one bay at a time; docking impulse at the tip; root stress grows linearly with deployed length. Regenerated after the review 7B fixes: chord area and bay height are read from these parameters (no longer hard-coded), and deployed length is the tip extent: 72.5 m centre + 2.5 m half-bay = 75 m, giving 50.0 MPa root stress.",
   "parameters": {
     "n_bays": 15,
     "bay_pitch_m": 5.0,
@@ -10,10 +10,13 @@
     "allowable_stress_mpa": 250.0
   },
   "expected": {
-    "root_stress_at_72_5_m_mpa": 48.333333333333336,
-    "utilization_at_72_5_m": 0.19333333333333338,
     "stress_growth_linear": true,
-    "structural_passed": true
+    "structural_passed": true,
+    "root_stress_at_75_m_mpa": 50.0,
+    "utilization_at_75_m": 0.2
   },
-  "tolerance": { "relative": 1e-09, "note": "cantilever closed form sigma = P*L/(A*h)" }
+  "tolerance": {
+    "relative": 1e-09,
+    "note": "cantilever closed form sigma = P*L/(A*h)"
+  }
 }

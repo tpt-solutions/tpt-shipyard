@@ -125,6 +125,7 @@ impl Value {
         let mut p = Parser {
             bytes: input.as_bytes(),
             pos: 0,
+            depth: 0,
         };
         p.skip_ws();
         let v = p.value()?;
@@ -229,7 +230,11 @@ fn write_escaped(out: &mut String, s: &str) {
 struct Parser<'a> {
     bytes: &'a [u8],
     pos: usize,
+    depth: usize,
 }
+
+/// Maximum container nesting the parser accepts.
+const MAX_DEPTH: usize = 128;
 
 impl<'a> Parser<'a> {
     fn err(&self, msg: &str) -> JsonError {
@@ -265,7 +270,13 @@ impl<'a> Parser<'a> {
     }
 
     fn value(&mut self) -> Result<Value, JsonError> {
-        match self
+        // Recursion guard: deeply nested input must be rejected, not blow
+        // the stack (untrusted input can be adversarially nested).
+        if self.depth >= MAX_DEPTH {
+            return Err(self.err("maximum nesting depth exceeded"));
+        }
+        self.depth += 1;
+        let out = match self
             .peek()
             .ok_or_else(|| self.err("unexpected end of input"))?
         {
@@ -276,7 +287,9 @@ impl<'a> Parser<'a> {
             b'f' => self.literal("false", Value::Bool(false)),
             b'n' => self.literal("null", Value::Null),
             _ => self.number(),
-        }
+        };
+        self.depth -= 1;
+        out
     }
 
     fn object(&mut self) -> Result<Value, JsonError> {
@@ -409,20 +422,50 @@ impl<'a> Parser<'a> {
 
     fn number(&mut self) -> Result<Value, JsonError> {
         let start = self.pos;
+        // Strict RFC 8259 grammar: `-? ( 0 | [1-9][0-9]* ) ( . digits )?
+        // ( [eE] [+-]? digits )?`. Rejects `+1`, `.5`, `1.`, `01`.
         if self.peek() == Some(b'-') {
             self.pos += 1;
         }
-        while matches!(
-            self.peek(),
-            Some(b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')
-        ) {
+        match self.peek() {
+            Some(b'0') => self.pos += 1,
+            Some(b'1'..=b'9') => {
+                while matches!(self.peek(), Some(b'0'..=b'9')) {
+                    self.pos += 1;
+                }
+            }
+            _ => return Err(self.err("invalid number")),
+        }
+        if self.peek() == Some(b'.') {
             self.pos += 1;
+            if !matches!(self.peek(), Some(b'0'..=b'9')) {
+                return Err(self.err("digit expected after decimal point"));
+            }
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.pos += 1;
+            }
+        }
+        if matches!(self.peek(), Some(b'e' | b'E')) {
+            self.pos += 1;
+            if matches!(self.peek(), Some(b'+' | b'-')) {
+                self.pos += 1;
+            }
+            if !matches!(self.peek(), Some(b'0'..=b'9')) {
+                return Err(self.err("digit expected in exponent"));
+            }
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.pos += 1;
+            }
         }
         let text = std::str::from_utf8(&self.bytes[start..self.pos])
             .map_err(|_| self.err("invalid number"))?;
-        text.parse::<f64>()
-            .map(Value::Number)
-            .map_err(|_| self.err(&format!("invalid number '{text}'")))
+        let n: f64 = text
+            .parse()
+            .map_err(|_| self.err(&format!("invalid number '{text}'")))?;
+        if !n.is_finite() {
+            return Err(self.err(&format!("number out of range '{text}'")));
+        }
+        Ok(Value::Number(n))
     }
 }
 

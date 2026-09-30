@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tpt-solutions.github.io/tpt-shipyard/schemas/weld-procedure.schema.json",
+  "title": "WeldProcedure (WPS record)",
+  "description": "Wire format of a tpt-shipyard WPS record (see test-data/welding-procedures/).",
+  "type": "object",
+  "required": ["process", "heat_input_kj_mm", "travel_speed_mm_s", "preheat_temp_c", "interpass_temp_c", "filler_metal"],
+  "properties": {
+    "process": {
+      "enum": ["SMAW", "GMAW", "GTAW", "SAW", "FCAW", "EBW", "LaserWeld"]
+    },
+    "heat_input_kj_mm": { "type": "number", "exclusiveMinimum": 0 },
+    "travel_speed_mm_s": { "type": "number", "exclusiveMinimum": 0 },
+    "preheat_temp_c": { "type": "number" },
+    "interpass_temp_c": { "type": "number" },
+    "filler_metal": { "type": "string" }
+  }
+}

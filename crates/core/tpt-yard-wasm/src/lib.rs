@@ -14,10 +14,14 @@
 //! # Usage from JS (after `wasm-bindgen` bundling)
 //!
 //! ```js
-//! const twin = WasmDigitalTwin.new(projectJson);
-//! const ok = twin.advance_phase(0);   // erect the first block
-//! const verts = twin.get_geometry();  // Float64Array triples
-//! const report = JSON.parse(twin.get_weight_report());
+//! try {
+//!   const twin = new WasmDigitalTwin(projectJson); // throws on bad JSON
+//!   const ok = twin.advance_phase(0);   // erect the first block
+//!   const verts = twin.get_geometry();  // Float64Array triples
+//!   const report = JSON.parse(twin.get_weight_report());
+//! } catch (e) {
+//!   // malformed input arrives as a catchable error, never a WASM abort
+//! }
 //! ```
 
 use std::collections::HashSet;
@@ -48,12 +52,11 @@ impl WasmDigitalTwin {
     ///
     /// # Errors
     ///
-    /// Panics with a message on malformed JSON — the JS side is expected to
-    /// validate first via `TryFrom`-style handling in its own loader.
+    /// A `JsError` (thrown to JS) on malformed JSON.
     #[wasm_bindgen(constructor)]
-    pub fn new(project_json: &str) -> WasmDigitalTwin {
+    pub fn new(project_json: &str) -> Result<WasmDigitalTwin, JsError> {
         let project = VesselProject::from_json_str(project_json)
-            .unwrap_or_else(|e| panic!("invalid project json: {e}"));
+            .map_err(|e| JsError::new(&format!("invalid project json: {e}")))?;
 
         // One activity + weight item per erection step, laid out along +X.
         let n: usize = project
@@ -85,7 +88,7 @@ impl WasmDigitalTwin {
                     status: ItemStatus::Design,
                     margin_pct: 0.0,
                     installed_by: Some(aid),
-                });
+                }).expect("valid weight item");
                 seq += 1;
             }
         }
@@ -103,7 +106,7 @@ impl WasmDigitalTwin {
                 ],
             },
         );
-        WasmDigitalTwin { twin, activity_ids }
+        Ok(WasmDigitalTwin { twin, activity_ids })
     }
 
     /// Advances construction by completing the next activity in plan
@@ -137,6 +140,28 @@ impl WasmDigitalTwin {
     /// erection step contributes one box in the plan layout — a dashboard
     /// uploads this straight into a WebGL buffer.
     pub fn get_geometry(&self) -> Vec<f32> {
+        self.build_geometry()
+            .vertices
+            .iter()
+            .flat_map(|v| [v.x as f32, v.y as f32, v.z as f32])
+            .collect()
+    }
+
+    /// Vertex indices of the geometry (flat, 3 per triangle), referencing
+    /// the vertex buffer returned by [`WasmDigitalTwin::get_geometry`].
+    /// These are the real box face indices (shared corners), not a
+    /// triangle-soup expansion — every index stays inside the buffer.
+    pub fn get_geometry_indices(&self) -> Vec<u32> {
+        self.build_geometry()
+            .faces
+            .iter()
+            .flat_map(|f| [f[0], f[1], f[2]])
+            .collect()
+    }
+
+    /// The demo geometry: one box per completed erection step, laid out
+    /// along +X in plan order.
+    fn build_geometry(&self) -> Geometry3D {
         let mut geometry = Geometry3D::new();
         let completed: HashSet<ActivityId> = self
             .twin
@@ -154,37 +179,6 @@ impl WasmDigitalTwin {
             geometry.merge(&block, Vector3::ZERO);
         }
         geometry
-            .vertices
-            .iter()
-            .flat_map(|v| [v.x as f32, v.y as f32, v.z as f32])
-            .collect()
-    }
-
-    /// Vertex indices of the geometry (flat, 3 per triangle).
-    pub fn get_geometry_indices(&self) -> Vec<u32> {
-        let completed: HashSet<ActivityId> = self
-            .twin
-            .assembly_state
-            .completed_activities
-            .iter()
-            .copied()
-            .collect();
-        let mut count = 0u32;
-        for aid in &self.activity_ids {
-            if completed.contains(aid) {
-                count += 1;
-            }
-        }
-        // 12 triangles per box, 3 indices each.
-        let mut indices = Vec::with_capacity(count as usize * 36);
-        for b in 0..count {
-            for t in 0..12u32 {
-                indices.push(b * 8 + t * 3);
-                indices.push(b * 8 + t * 3 + 1);
-                indices.push(b * 8 + t * 3 + 2);
-            }
-        }
-        indices
     }
 
     /// Weight and CoG report as a JSON string.
@@ -278,17 +272,23 @@ impl WasmOrbitalAssembly {
 
     /// Simulates the next step of the sequence; returns false when the
     /// sequence is exhausted or the step violates constraints.
-    pub fn simulate_next_step(&mut self) -> bool {
+    ///
+    /// # Errors
+    ///
+    /// A `JsError` (thrown to JS) if the step cannot be simulated at all
+    /// (malformed sequence entry), instead of panicking inside the WASM
+    /// boundary.
+    pub fn simulate_next_step(&mut self) -> Result<bool, JsError> {
         let Some(step) = self.inner.assembly_sequence.get(self.next_step) else {
-            return false;
+            return Ok(false);
         };
         let step = step.clone();
         let result = self
             .inner
             .simulate_step(&step, &self.state)
-            .expect("step is valid");
+            .map_err(|e| JsError::new(&format!("step simulation failed: {e}")))?;
         if !result.ok {
-            return false;
+            return Ok(false);
         }
         if matches!(
             step.action,
@@ -298,7 +298,7 @@ impl WasmOrbitalAssembly {
         }
         self.state.completed_steps.push(step.id);
         self.next_step += 1;
-        true
+        Ok(true)
     }
 
     /// Number of steps simulated so far.
@@ -382,7 +382,7 @@ mod tests {
     #[test]
     fn twin_advances_and_reports() {
         let json = sample_project_json();
-        let mut twin = WasmDigitalTwin::new(&json);
+        let mut twin = WasmDigitalTwin::new(&json).unwrap();
         assert_eq!(twin.completed_count(), 0);
         assert!(twin.advance_next());
         assert_eq!(twin.completed_count(), 1);
@@ -391,7 +391,11 @@ mod tests {
         let geometry = twin.get_geometry();
         // One box = 8 vertices = 24 floats.
         assert_eq!(geometry.len(), 24);
-        assert_eq!(twin.get_geometry_indices().len(), 36);
+        let indices = twin.get_geometry_indices();
+        assert_eq!(indices.len(), 36);
+        // Regression (review 7A/A4): indices must reference the real face
+        // table — every index inside the 8-vertex buffer.
+        assert!(indices.iter().all(|i| (*i as usize) < 8), "{indices:?}");
 
         let report = twin.get_weight_report();
         assert!(report.contains("\"installed_kg\":1000.0"), "{report}");
@@ -408,11 +412,29 @@ mod tests {
     #[test]
     fn specific_phase_advance_gated() {
         let json = sample_project_json();
-        let mut twin = WasmDigitalTwin::new(&json);
+        let mut twin = WasmDigitalTwin::new(&json).unwrap();
         // Activity 2 depends on 1: gated.
         assert!(!twin.advance_phase(2));
         assert!(twin.advance_phase(1));
         assert!(twin.advance_phase(2));
+    }
+
+    /// Regression (review 7A/A10): malformed input throws a catchable
+    /// `JsError` instead of panicking inside the WASM boundary.
+    /// (`JsError::new` only works on wasm targets, so the error path runs
+    /// under the `wasm-pack test` job; native gets the source-level check.)
+    #[cfg(target_arch = "wasm32")]
+    #[test]
+    fn malformed_input_is_a_js_error_not_a_panic() {
+        let Err(err) = WasmDigitalTwin::new("{ not json }") else {
+            panic!("malformed JSON must be rejected");
+        };
+        assert!(format!("{err:?}").contains("invalid project json"), "{err:?}");
+    }
+
+    #[test]
+    fn malformed_project_json_rejected_at_source() {
+        assert!(VesselProject::from_json_str("{ not json }").is_err());
     }
 
     #[test]
@@ -421,9 +443,9 @@ mod tests {
         assert_eq!(asm.get_installed().len(), 0);
         // 18 steps: 3 bays x 6 actions.
         for _ in 0..18 {
-            assert!(asm.simulate_next_step());
+            assert!(asm.simulate_next_step().unwrap());
         }
-        assert!(!asm.simulate_next_step()); // exhausted
+        assert!(!asm.simulate_next_step().unwrap()); // exhausted
         assert_eq!(asm.steps_done(), 18);
         assert_eq!(asm.get_installed().len(), 12); // 4 floats x 3 bays
         assert_eq!(asm.get_robot_pose().len(), 4);

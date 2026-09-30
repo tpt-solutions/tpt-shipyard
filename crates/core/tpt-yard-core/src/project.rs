@@ -8,7 +8,7 @@ use crate::ids::ProjectId;
 use crate::json::Value;
 use crate::phase::BuildPhase;
 use crate::{CoreError, PhaseId};
-use tpt_yard_assembly::{ActivityGraph, GraphError};
+use tpt_yard_assembly::{ActivityGraph, ActivityId, GraphError};
 
 /// What kind of vessel is being constructed.
 #[derive(Debug, Clone, PartialEq)]
@@ -187,6 +187,83 @@ impl VesselProject {
         self.build_phases.iter().find(|p| p.id == id)
     }
 
+    /// Checks the project for internal consistency.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Validation`] describing the first inconsistency found:
+    /// duplicate phase/activity ids, a dependency that does not resolve,
+    /// `current_phase` not naming a phase of this project, empty phase
+    /// activity lists, non-finite or negative numbers, or installed weight
+    /// above design.
+    pub fn validate(&self) -> Result<(), CoreError> {
+        let err = |msg: String| Err(CoreError::Validation(msg));
+
+        if self.name.trim().is_empty() {
+            return err("project name is empty".into());
+        }
+        if self.build_phases.is_empty() {
+            return err("project has no build phases".into());
+        }
+        if !self.build_phases.iter().any(|p| p.id == self.current_phase) {
+            return err(format!(
+                "current_phase {:?} is not one of the project's phases",
+                self.current_phase
+            ));
+        }
+
+        let mut phase_ids = std::collections::BTreeSet::new();
+        let mut activity_ids = std::collections::BTreeSet::new();
+        let mut dependencies: Vec<(ActivityId, Vec<ActivityId>)> = Vec::new();
+        for phase in &self.build_phases {
+            if !phase_ids.insert(phase.id) {
+                return err(format!("duplicate phase id {:?}", phase.id));
+            }
+            if !(phase.duration_days >= 0.0) || !phase.duration_days.is_finite() {
+                return err(format!(
+                    "phase {:?} has non-finite or negative duration {}",
+                    phase.id, phase.duration_days
+                ));
+            }
+            if !(phase.weight_state.design_kg >= 0.0)
+                || !phase.weight_state.design_kg.is_finite()
+                || !(phase.weight_state.installed_kg >= 0.0)
+                || !phase.weight_state.installed_kg.is_finite()
+            {
+                return err(format!(
+                    "phase {:?} has non-finite or negative weight state",
+                    phase.id
+                ));
+            }
+            if phase.weight_state.installed_kg > phase.weight_state.design_kg + 1e-9 {
+                return err(format!("phase {:?} installed kg exceeds design kg", phase.id));
+            }
+            if phase.activities.is_empty() {
+                return err(format!("phase {:?} has no activities", phase.id));
+            }
+            for a in &phase.activities {
+                if !activity_ids.insert(a.id) {
+                    return err(format!("duplicate activity id {}", a.id));
+                }
+                if !(a.duration_hours > 0.0) || !a.duration_hours.is_finite() {
+                    return err(format!(
+                        "activity {} has non-finite or non-positive duration",
+                        a.id
+                    ));
+                }
+                dependencies.push((a.id, a.dependencies.clone()));
+            }
+        }
+        for (id, deps) in dependencies {
+            for d in &deps {
+                if !activity_ids.contains(d) {
+                    return err(format!("activity {} depends on unknown activity {}", id, d));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Index of a phase in `build_phases`.
     pub fn phase_index(&self, id: PhaseId) -> Option<usize> {
         self.build_phases.iter().position(|p| p.id == id)
@@ -197,17 +274,15 @@ impl VesselProject {
     /// # Errors
     ///
     /// [`GraphError`] if the declared dependency network is malformed
-    /// (unknown reference or cycle).
+    /// (duplicate activity id, unknown reference or cycle).
     pub fn activity_graph(&self) -> Result<ActivityGraph, GraphError> {
         let mut g = ActivityGraph::new();
         for phase in &self.build_phases {
             for a in &phase.activities {
-                if g.contains(a.id) {
-                    continue; // duplicate id: keep the first occurrence
-                }
                 g.add_activity(a.id, a.name.clone(), a.duration_hours, &a.dependencies)?;
             }
         }
+        g.validate()?;
         Ok(g)
     }
 
@@ -219,6 +294,10 @@ impl VesselProject {
     }
 
     // ------------------------------------------------------------------- JSON
+
+    /// Wire-format schema version of the serialized project (bumped on
+    /// breaking JSON changes; see `schemas/vessel-project.schema.json`).
+    pub const SCHEMA_VERSION: u64 = 1;
 
     /// Serializes to a JSON value.
     pub fn to_json(&self) -> Value {
@@ -328,6 +407,11 @@ impl VesselProject {
             .to_string(),
         );
         Value::Object(vec![
+        (
+            "schema_version".to_string(),
+            Value::Number(Self::SCHEMA_VERSION as f64),
+        ),
+
             ("id".into(), Value::Number(self.id.0 as f64)),
             ("name".into(), Value::String(self.name.clone())),
             ("vessel_type".into(), vessel_type),
@@ -472,14 +556,19 @@ impl VesselProject {
                 .ok_or_else(|| err("current_phase must be u64"))?,
         );
 
-        Ok(Self {
+        let project = Self {
             id,
             name,
             vessel_type,
             construction_method,
             build_phases,
             current_phase,
-        })
+        };
+        // Loaded projects must be internally consistent — a file with
+        // dangling dependencies or non-finite numbers must not enter the
+        // engine silently.
+        project.validate()?;
+        Ok(project)
     }
 
     /// Deserializes from a JSON string.
@@ -509,6 +598,88 @@ mod tests {
     use super::*;
     use crate::phase::{ActivityType, AssemblyActivity, WeightState};
     use tpt_yard_assembly::ActivityId;
+
+    /// Helper: a minimal valid project for validation tests.
+    fn valid_project() -> VesselProject {
+        let mut phase = BuildPhase::new(PhaseId(1), "P1", 3.0);
+        phase
+            .activities
+            .push(crate::AssemblyActivity::new(
+                ActivityId(1),
+                "a",
+                crate::ActivityType::CutSteel,
+                4.0,
+            ));
+        phase.weight_state = super::super::phase::WeightState {
+            design_kg: 100.0,
+            installed_kg: 0.0,
+        };
+        VesselProject::new(
+            ProjectId(1),
+            "test",
+            VesselType::Sea(SeaVesselType::FishingVessel),
+            ConstructionMethod::SeaDrydock,
+            vec![phase],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn validate_accepts_a_consistent_project() {
+        valid_project().validate().unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_inconsistencies() {
+        // Dangling dependency.
+        let mut p = valid_project();
+        p.build_phases[0].activities[0].dependencies = vec![ActivityId(99)];
+        assert!(matches!(
+            p.validate(),
+            Err(CoreError::Validation(_))
+        ));
+
+        // current_phase not a phase of the project.
+        let mut p = valid_project();
+        p.current_phase = PhaseId(9);
+        assert!(matches!(p.validate(), Err(CoreError::Validation(_))));
+
+        // Empty phase.
+        let mut p = valid_project();
+        p.build_phases[0].activities.clear();
+        assert!(matches!(p.validate(), Err(CoreError::Validation(_))));
+
+        // Non-finite duration.
+        let mut p = valid_project();
+        p.build_phases[0].duration_days = f64::NAN;
+        assert!(matches!(p.validate(), Err(CoreError::Validation(_))));
+
+        // Installed weight above design.
+        let mut p = valid_project();
+        p.build_phases[0].weight_state.installed_kg = 150.0;
+        assert!(matches!(p.validate(), Err(CoreError::Validation(_))));
+
+        // Duplicate activity id across phases.
+        let mut p = valid_project();
+        let mut phase2 = BuildPhase::new(PhaseId(2), "P2", 3.0);
+        phase2.activities.push(crate::AssemblyActivity::new(
+            ActivityId(1),
+            "dup",
+            crate::ActivityType::CutSteel,
+            4.0,
+        ));
+        p.build_phases.push(phase2);
+        assert!(matches!(p.validate(), Err(CoreError::Validation(_))));
+    }
+
+    #[test]
+    fn json_loading_rejects_inconsistent_projects() {
+        // A project JSON with a dangling dependency must not load.
+        let mut p = valid_project();
+        p.build_phases[0].activities[0].dependencies = vec![ActivityId(99)];
+        let json = p.to_json().to_string_compact();
+        assert!(VesselProject::from_json_str(&json).is_err());
+    }
 
     fn sample() -> VesselProject {
         let mut p1 = BuildPhase::new(PhaseId(1), "Steel prefabrication", 30.0);

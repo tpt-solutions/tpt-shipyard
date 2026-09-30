@@ -55,7 +55,7 @@ console.log(report.installed_kg, report.cog);
 
 - Native tests: JSON round-trip, dependency-gated advance, geometry buffer sizes
 - Orbital façade: full 18-step sequence simulated step by step
-- Browser smoke test documented in the book (WASM chapter); reference dashboard in `www/`
+- Reference dashboard page in `www/` (2-D plan view); the interactive 3-D WASM mesh demo is on the roadmap
 
 ## Crate metadata
 

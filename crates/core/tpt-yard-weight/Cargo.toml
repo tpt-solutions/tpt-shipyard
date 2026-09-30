@@ -14,3 +14,6 @@ authors.workspace = true
 [dependencies]
 tpt-yard-assembly = { workspace = true }
 tpt-yard-core = { workspace = true }
+
+[lints]
+workspace = true

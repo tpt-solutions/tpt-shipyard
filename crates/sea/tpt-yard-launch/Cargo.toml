@@ -16,3 +16,6 @@ tpt-yard-core = { workspace = true }
 tpt-yard-weight = { workspace = true }
 tpt-yard-drydock = { workspace = true }
 tpt-yard-blocks = { workspace = true }
+
+[lints]
+workspace = true

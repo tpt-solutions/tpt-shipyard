@@ -12,3 +12,9 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true

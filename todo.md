@@ -257,11 +257,11 @@ A fully open-source computational engine for vehicle construction: sea shipyards
   - [x] Rustdoc + `docs/book` chapter "Earth/Weather Integration"
 - [x] `tpt-yard-wasm` — WebAssembly bindings for interactive dashboards
   - [x] Scaffold crate with `wasm-bindgen`
-  - [x] Implement `WasmDigitalTwin` (`new`, `advance_phase`, `get_current_geometry`, `get_weight_report`, `structural_check`)
+  - [x] Implement `WasmDigitalTwin` (`new`, `advance_phase`, `get_geometry`, `get_weight_report`, `structural_check`) *(claim corrected 2026-09-30: the method is `get_geometry`)*
   - [x] Implement `WasmOrbitalAssembly` (`simulate_next_step`, `get_robot_pose`)
-  - [x] Browser smoke test: load WASM module, advance a phase, render geometry
+  - [ ] Browser smoke test: load WASM module, advance a phase, render geometry *(claim corrected 2026-09-30: never delivered — see the 7D `wasm-bindgen-test` item)*
   - [x] Rustdoc + usage guide for WASM dashboard integration
-- [x] **Milestone:** interactive 3D shipyard dashboard running in browser (WASM demo)
+- [ ] **Milestone:** interactive 3D shipyard dashboard running in browser (WASM demo) *(not delivered: `www/index.html` draws 2-D rectangles and ignores the WASM mesh; roadmap)*
 
 ---
 
@@ -271,3 +271,127 @@ A fully open-source computational engine for vehicle construction: sea shipyards
 - [x] Keep crate `Status` table in `README.md` up to date (Planned → In Progress → Done)
 - [x] Each new crate registered in workspace `Cargo.toml` members
 - [x] Each new public API documented in `docs/book/`
+
+---
+
+## Phase 7: Review Follow-ups (2026-09-29 platform review)
+
+Source: code review of the whole workspace. Line numbers are approximate. Fix each item with a regression test that fails before the fix. Only regenerate golden values after an independent hand or reference calculation.
+
+### 7A. Correctness bugs (highest priority)
+
+- [x] A1 `tpt-yard-welding`: Rosenthal temperatures subtract 273.15 from a °C value (`peak_temperature_at`, `thermal_cycle`). Fixed; arc efficiency η now applied to net plate power; sampling window widens until the 800→500 °C leg fits; `thermal_cycle(0.0)` clamps off the singularity. Golden regenerated and independently verified (closed-form 3D Rykalin t8/5 = 29.08 s; analytic Rosenthal peak scan 9605 °C at ξ = −10.9 mm).
+- [x] A2 `tpt-yard-launch/tests/golden_sea.rs:48,115`: two-sided relative tolerance now enforced (`.abs()`)
+- [x] A3 `tpt-yard-digital-twin` `advance_phase`: every fallible step (support check, mass-properties computation) now runs before any mutation; fresh `DigitalTwin::new` twins (no wired items) advance with zero mass properties. Regression tests: fresh twin advances; failed advances leave the twin untouched.
+- [x] A4 `tpt-yard-wasm` `get_geometry_indices`: returns the real `Geometry3D` face table via a shared `build_geometry` helper; test asserts every index is inside the vertex buffer.
+- [x] A5 `tpt-yard-robotic-assembly`: two-link IK wraps angles total-order (no hang on narrow ranges); DLS IK now solves the proper n×n `(JᵀJ + λI)⁻¹Jᵀe` in joint space with a pivoting Gaussian solver (4+ joints converge); FK/Jacobian handle prismatic joints (extension along heading). Repro tests: narrow ranges, 4-link, behind-the-arm, prismatic FK.
+- [x] A6 `tpt-yard-scheduling`: levelling uses a precedence-feasible serial schedule generation scheme (priority among *eligible* activities only); clash scan uses exact breakpoint times (no 10 000 h cap / silent clash); real mutual-dependency cycle test across all objectives; order-feasibility asserted for every objective.
+- [x] A7 `tpt-yard-hull` `erection_sequence`: `midship_distance` measures from LOA/2 (midship-outward order, was origin-ordered); first block of an upper tier lands on the block below (`onto` set); test asserts every upper-tier block has support.
+- [x] A8 `tpt-yard-structural` FEM: orphan nodes condensed before assembly (displacements mapped back to model indexing; a *load* on an unconnected node is rejected); pivot threshold relative to matrix scale; penalty scaled to model stiffness. (Dense O(n³) solver remains a documented limitation — sparse solver stays on the 7H roadmap.)
+- [x] A9 `tpt-yard-structural`/`tpt-yard-blocks` lifting: hook rides over the CoG projection (statically correct pick); 2-point lever rule via scalar projection (Euclidean, was Manhattan); tip check uses a real convex hull (was AABB — would pass notch CoGs); crane overload, sling-angle guideline and leg utilization all fail the pick; `lifting_analysis` takes `crane_capacity_kn`; `allowable_load_kn` checkable via `legs_within_allowable`; `launch_analysis` applies cos(slope) to slipway way pressure and returns `NotScreenable` (not a fake pass) for drydock/side-launch/shiplift.
+- [x] A10 Panics on user input: `Geometry3D::bounding_box` empty mesh no longer panics; JSON parser has a 128-level nesting limit; `WasmDigitalTwin::new` and `simulate_next_step` return `Result<_, JsError>` (throw, not abort); `thermal_cycle(0.0)` finite; NaN fails the welding and sea-trial guards.
+- [x] A11 Graph construction: `add_activity` accepts out-of-order networks with an explicit `validate()`; duplicate ids rejected (`DuplicateActivity`); duplicate dependencies collapsed (no false cycles); `topological_order` validates first (a dangling dependency from `activity_mut` is an error, not a phantom-id panic); scheduling/logistics builders propagate errors instead of silently dropping duplicates.
+- [x] A12 `tpt-yard-sea-trials`: empty program reports `all_passed = false`; NaN never accepted by any acceptance window.
+
+### 7B. Physics and model fixes (medium)
+
+*(2026-09-30: first pass applied. Golden values were regenerated only after
+independent hand/reference calculations; each fix carries a regression test.
+Remaining sub-items are marked inline.)*
+
+- [x] Welding: arc efficiency now applied to the net plate power (was dead code); thermal sampling window widens until the 800-500 C leg fits; `thermal_cycle(0.0)` clamped off the point-source singularity. Golden regenerated and independently verified. Panel width, bow arm, mechanical-response fraction and panel section are builder parameters (were hard-coded); `distortion_of_sequence` scales transverse with heat but shrinkage/rotation with deposited weld area (pass count); `thin_plate_warning` flags thermally thin plates via the melting isotherm. Goldens hand-verified.
+- [x] GM formula (drydock, launch) uses the fineness-corrected `Cwp*B^2/(12*Cb*T)` with `Cwp = (1+2Cb)/3`; drydock goldens hand-verified. The exact float-off instant is always sampled; aground steps state that stability is judged at float-off instead of claiming it vacuously; `virtual_gm_touchdown_m` implements the classical docking virtual GM (`dGM = P*KM/W` with the keel-block reaction share), verified to stiffen the vessel on the blocks, scale with the reaction share, and collapse to the afloat GM exactly at float-off.
+- [x] Slipway launch: cos(theta) on way loads; buoyancy relief at the pivot (parabolic immersion growth); slamming uses the vertical entry-velocity component; pivot pressure divides by total way width only (the times-ways double-count is gone); SideLaunch/Shiplift no longer fake slipway statics (explicit non-result); `drydock_flooding` validates the computed draft against the dock depth. Golden hand-verified.
+- [x] Hull block division: internal-structure factor (x4, documented pre-design estimate) so a 140 m hull no longer estimates an implausible 1714 t of steel; `depth_bands == 0` returns no blocks; the upward length clamp that could hide crane overload is gone; crane-binding exercised in tests. *(remaining: surface an explicit workshop-width check)*
+- [x] Joints: J/U use rounded-root geometry instead of the sharp V wedge; DoubleV/K weld half the depth per side (~1/4 the wedge area); fillet throat + penetration retained (correct).
+- [x] Distortion: `deviation_map_form` removes the best-fit rigid-body motion (translation + small rotation, reported in the field) before differencing; `correction_plan` works on the form deviation, thresholds are explicit configured parameters (`reject_factor`, `rework_fraction`), and an optional `StraighteningModel` sizes straightening heat from the plate's contraction physics instead of a flat placeholder
+- [x] Outfitting: collision checks run segment-to-segment (closest-points distance with a `clearance_m` parameter) after a clearance-inflated bbox screen — L-shaped routes whose boxes overlap but whose runs never approach no longer falsely clash. *(remaining: install ordering still size-only — the model has no dependency data; documented)*
+- [x] Propellant: cooler input power is Carnot-scaled and temperature-dependent (was an inverted flat 100:1); NaN fill rates rejected; `Recooled` produced for moderate leaks (<=20x ZBO, vent beyond); heat leak validated non-negative/finite.
+- [x] Habitat: the shell rounds up to a configurable fabrication minimum gauge so `utilization` is a real margin (was tautologically 1); the torus hoop load is carried on the *tube* circumference, not the major ring; `HabitatType::Custom` without an explicit radius (`with_custom_radius_m`) reports an empty design instead of silently assuming 100 m
+- [x] Orbital assembly: `deployed_length` is the tip extent (centre + projected half-bay; goldens hand-verified at 30 m / 75 m); `chord_area_m2`/`bay_height_m` are plan fields driven from the golden JSON (were hard-coded); `simulate_step` returns `NoRobotAssigned` for robot-less steps. *(remaining: sequence ordering is still distance-based — `ComponentSpec` has no dependency data to plan from)*
+- [x] Space-structural: shield proportions calibrated to published ISS dual-wall sets (bumper d/8, standoff 10d, rear wall 0.4d — replaces the invented /6-/10-/12 split; full Christiansen ballistic-limit equations remain roadmap); `cycles = 0` and zero-swing cases verified finite and safe with regression tests
+- [x] Space-manufacturing: energy constants documented as literature screening values with an overridable public field; `eclipse_pauses` follows the power source (solar pauses, nuclear prints through); radiator area uses the net flux `eps*sigma*(T_rad^4 - T_sink^4)` with configurable sink temperature and an environment-heat duty term
+- [x] Scheduling: `critical_path` walks an actual zero-float chain (start, then earliest-finishing critical dependents) instead of an id-sorted set; levelling uses exact clash breakpoints (the 10 000 h cap and silent clash are gone). *(remaining: resource `capacity`-aware levelling; objectives beyond the two-way path split)*
+- [x] Robotic assembly: docs say RRT (correct — no RRT* claims remain); `collision_free` is verified over the final chain rather than hard-coded; the IK goal wraps to the start's 2-pi branch so paths stop spinning joints the long way; grasp planning picks the long-axis faces, sizes force through a friction coefficient (`m*a*SF/(2*mu)`), and filters grasp points by reachability *(the 3x3 DLS and prismatic-joint bugs were fixed under 7A/A5)*
+- [x] Facility: crane capacities no longer aggregate (`capacity_of` returns the largest single crane; workshops/slots pool); `overlaps` respects z with vertical extents.
+- [x] Logistics: the CPM schedule is expanded from working days to calendar days (5-day week) before lead-time arithmetic; `schedule_deliveries` takes `max_dwell_days` and rejects over-dwell deliveries (`DwellExceeded`); deliveries carry their tonnage (`quantity_t`)
+- [x] Quality: the inspection plan honours its documented coverage policy (structural butts sampled at 30%, pressure boundaries at 100%), timings reflect the activity kind (post-weld / post-erection / post-install / on completion), and methods degrade to the yard's available-method list; golden regenerated
+- [x] Integration crates: process-link dead `* 0.0` arithmetic removed (the 1-atm saturation value is documented as the normal-boiling-point definition); transport-link projects derive their id from the design (was hard-coded 1) and the module count/TEU proxies are documented and derived from the mass; earth-link launch windows use `min(method limit, site.max_sea_state)` — the site limit is enforced with a regression test. All three remain stand-ins for the `tpt-*` substrates (by design)
+- [x] Digital twin: `advance_phase` rejects activities from phases ahead of the current one (`ActivityNotInCurrentPhase`); the phase pointer only moves forward; the transverse support check uses true containment within the (possibly asymmetric) support track.
+- [x] Weight model: NaN/negative weights rejected (`InvalidWeight`), duplicate `ItemId` rejected (`DuplicateItem`), margins reachable in totals (`total_with_margin_kg`, reported), `design_cog` surfaced in the weight report.
+- [x] `Geometry3D`: `from_cylinder` clamps segments to >=3 (no assert on input); `merge` guards u32 index saturation; zero density/heat materials give zero diffusivity instead of a division by zero.
+
+### 7C. Validation, schema and data integrity
+
+- [x] `VesselProject::validate()`: duplicate phase/activity ids, dependency existence, `current_phase` membership, non-empty phases, finite non-negative numbers/durations, and installed-vs-design weight sanity; JSON loading (`from_json_value`) validates before returning, so inconsistent files cannot enter the engine silently. *(remaining: the deeper silent-defaulting cleanup, schema publication, persistence, constructor `Result` conversion)*
+- [ ] Stop silent defaulting in JSON loading (`unwrap_or(0.0) as u32`, unknown enums, dropped malformed dependency/resource entries, wrong type reported as `MissingField`)
+- [~] `schema_version: 1` serialized in every project (`VesselProject::SCHEMA_VERSION`); draft-2020-12 schemas published in `schemas/` for the VesselProject and WPS wire formats with a README explaining validation plus the loader's stricter consistency checks. *(remaining: hull-block and orbital-structure manifest schemas)*
+- [x] JSON parser: strict RFC 8259 number grammar (`+1`, `.5`, `1.`, `01` rejected); `1e999` rejected as out of range; 128-level nesting limit; NaN/inf serialization already maps to `null` (`as_u64` range check pre-existing)
+- [x] Persistence (JSON): `WeightModel::to_json`/`from_json_value` (exact round-trip, duplicate/invalid rejections), `DigitalTwin::to_json`/`from_json_value` (vessel + weight model + progress sets + mass properties; derived render geometry documented as rebuilt; malformed state rejected with `TwinError::Malformed`) — both doctested and unit-tested
+- [ ] Constructors return errors (`VesselProject::new` returns `Option`, `add_item` returns `()`)
+
+### 7D. Tests and verification quality
+
+- [ ] Replace tautological golden files (`welding-distortion-panel`, `slipway-launch-stability`, `drydock-flooding-sequence`, `iss-truss-assembly`) with independent references (Rykalin t8/5, Eurocode/AWS shrinkage, hydrostatic tables, σ = ρω²r²)
+- [x] Deleted `robotic-assembly/tests/dls_probe.rs` (superseded by the assertion-carrying IK tests added under 7A/A5)
+- [x] Duplicate grasp tests merged into one comprehensive test; the launch sliding-velocity test now asserts an independent hand-computed constant; the hull erection test verifies the midship-outward order with inline arithmetic; habitat utilization assertions are meaningful after the tautology fix (7B)
+- [x] `rrt_paths_around_obstacle` asserts the path is collision-free, has bounded Cartesian length (< 3x the straight-line span) and stays inside every joint range
+- [ ] Add tests: IK with narrow ranges, behind-the-arm targets and 4+ joints; levelling precedence; true cycle detection; FEM singular-but-nonzero; JSON round-trip for every enum variant
+- [x] Property-based tests shipped: `proptest_graph` (random out-of-order DAGs topologically sort with every dependency first; makespan bounded; cycle detection agrees with topo-sort), `proptest_fem` (two-bar equilibrium sum-Fz = load for any geometry; closed-form bar displacement for any area/load), `proptest_ik` (FK is the exact vector sum for any angles; IK solutions reproduce their targets inside the workspace annulus and stay in-range) - 256/128 cases each
+- [ ] Add `wasm-bindgen-test` browser tests; the "browser smoke test" box in Phase 6 was ticked without one
+
+### 7E. Honesty and hygiene
+
+- [ ] README status table: split "Done" into Done / Simplified model / Stand-in
+- [ ] Correct todo.md claims: Phase 6 `get_current_geometry` is actually `get_geometry`; browser smoke test and 3D dashboard are not delivered (`www/index.html` draws 2D rectangles and ignores the WASM mesh)
+- [x] Applied `[lints] workspace = true` in all 35 member manifests; workspace builds warning-clean
+- [x] Fixed false claims in `scripts/gen-crate-docs.py` (weight deviation example now states the real number; core round-trip claim scoped to the project model; wasm claim no longer asserts a browser smoke test) and regenerated all crate READMEs *(the twin "failures leave the twin untouched" claim is now true after 7A/A3, so it stays)*
+- [ ] `tpt-yard-wasm` in `crates/core` depends on `crates/space`; fix the layering
+- [x] README wording aligned: crates are `MIT OR Apache-2.0`; cargo-deny enforces the permissive allow-list and denies copyleft
+- [x] Removed the `.kilo/worktrees/` scratch checkout and added `.kilo/` to `.gitignore`
+- [x] Book logistics/facility chapters added with plain prose (no unresolvable intra-doc links); README snippets compile and are asserted by a real test. *(remaining: full mdBook doctest pass over the older chapters)*
+- [x] Added logistics and facility chapters to `docs/book/src/SUMMARY.md` (with honest status notes)
+- [x] `www/index.html`: "Run" disables itself while running (no double timers); the interval stops on completion AND on a failed step; Reset clears the timer before replacing the twin; the old twin is `free()`d on reset and unload; a missing `pkg/` build shows an actionable message with the build command instead of a bare module error
+
+### 7F. Adoption and onboarding
+
+- [x] README Quick Start rewritten (activity ids collected before `&mut twin` use; no phantom file; mass-tracking path documented); kept compiling and asserted by `tpt-yard-digital-twin/tests/readme_quickstart.rs` so it cannot rot
+- [ ] Compile-test every README and book snippet in CI (`include_str!` doctests or `mdbook test`)
+- [x] Facade crate `tpt-yard` (in `crates/facade/`): re-exports every domain crate as a module, a curated `prelude` (doctested), and `sea`/`space`/`planning`/`wasm` feature flags with the default build covering all three domain layers
+- [ ] CLI `tpt-yard-cli`: `new <sea|space>` scaffold, `validate | plan | schedule | report FILE.json`, text/JSON/HTML output
+- [x] `orbital-station-truss` reads `test-data/orbital-structures/iss-truss-manifest.json` (the file is now consumed) and accepts a manifest path argument; the truss geometry, orbit, robot and cross-section all come from the manifest. *(remaining: the other five examples take path arguments)*
+- [x] Project templates: `tpt-yard new container-ship|submarine|orbital-truss|habitat|solar-array` scaffolds a validating project; the same five JSONs ship in `templates/` for copy-into-repo workflows (every template passes `tpt-yard validate` — which caught two template bugs during development)
+-x  placeholder
+- [ ] Deploy mdBook to GitHub Pages; add `[package.metadata.docs.rs]`
+- [x] README badges added (CI, license, docs.rs, MSRV)
+- [x] `justfile` with `check | test | wasm | book | docs` recipes; `.devcontainer` and a multi-stage CLI `Dockerfile`
+- [ ] Deployed WASM demo on Pages that draws the WASM mesh in 3D (three.js or wgpu)
+
+### 7G. CI and release automation
+
+- [x] `Cargo.lock` tracked (removed from `.gitignore`); CI clippy/test/docs and the release publish all run `--locked`
+- [x] The license workflow runs the FULL `cargo deny check` (licenses, bans, advisories, sources) weekly on a cron in addition to every PR; Dependabot config added for cargo + GitHub Actions ecosystems (weekly, grouped minor/patch)
+- [x] DCO job added to CI: every commit in the PR/push range must carry `Signed-off-by:`, matching what CONTRIBUTING and the PR template promise
+- [x] Release workflow: a `verify-tag` job fails unless the tag matches the workspace version; publish runs a `--dry-run` first and is `--locked` (no `--allow-dirty`); the WASM package is built with pinned `wasm-bindgen-cli` and attached to the GitHub release; notes are generated by the release action. *(remaining: release-plz/git-cliff changelog generation — release notes currently come from GitHub)*
+- [ ] Real wasm job: `wasm-pack test --headless`, build `www/pkg`, pin matching `wasm-bindgen-cli` for `=0.2.128`
+- [x] MSRV job runs `cargo test --workspace --locked`
+- [x] Coverage CI job: cargo-llvm-cov over the workspace, lcov artifact uploaded
+- [x] Benchmarks: all four benches converted to criterion (grouped benchmarks like `welding/thermal_cycle_8mm`); the benchmark workflow saves a criterion baseline on master pushes and gates PRs with critcmp at a 20 % threshold; a smoke `--quick` run happens on every PR
+- [x] `cargo-semver-checks` job added to CI; docs build with `-D warnings` via the workspace `RUSTFLAGS: -D warnings` env (warnings fail the doc step)
+- [x] `examples` CI job runs all six example binaries
+
+### 7H. New features (after 7A-7D)
+
+- [~] Hydrostatics and stability — **first slice shipped** as `tpt-yard-hydrostatics`: prismatic hydrostatic table (displacement, KB, KM, TPC, MCT1cm, LCB/LCF=0 for the prismatic model), wall-sided GZ curve, free-surface correction, and the IMO 2008 IS Code general criteria (A30/A40 areas, max-GZ angle, min GM) — closed-form-verified with tests. *(remaining: hull offsets & Bonjean curves, trim/list, damage stability, cross-curves from real sections)*
+- [~] Dynamic slipway launch simulation — **shipped** in `tpt-yard-launch` as `dynamic_launch()`: time-stepped along-ways equation of motion (gravity, grease friction with static breakaway, buoyancy relief with the same immersion model as the static float-off screen, immersion-growing quadratic drag), sampled trajectory (t, travel, velocity, buoyancy, way reaction), and end conditions Afloat / Stuck / TipUp with a pivot moment. Verified against the closed-form energy balance (buoyancy-free run), stuck-ways, reference float-off with the classical checking phase, and tip-up detection. *(remaining: stern-lift/poppet load split as separate series, end-of-ways moment as a time series rather than the pivot instant)*
+- [ ] Drydock: virtual GM at touchdown, keel-block reactions, ballast sequencing
+- [~] Lifting lug/padeye checks — **shipped** in `tpt-yard-blocks`: `padeye_check` covers pin bearing (0.9 sigma_y), net-section across the hole (sigma_y/1.5), tear-out (double shear to the edge, 0.6 sigma_u/1.5), root out-of-plane bending + tension interaction, and fillet-weld throat shear, all against the DAF-amplified design load. *(remaining: CoG uncertainty envelope, spreader beam checks, pin bending)*
+- [~] Member buckling and slenderness - **shipped** in `tpt-yard-structural` as `check_member_buckling`: slenderness ratio `K*L/r` with the four end-fixity factors, Euler critical stress, the bilinear governing curve (Euler slender / yield stocky) and the 200 slenderness practice limit - the Euler closed form is verified against `pi^2 E I / L^2` including the fixed-fixed x4 factor; a demand-units bug in the first cut was caught by its own tests. *(remaining: beam/shell elements and the sparse solver remain roadmap)*
+- [~] Hull-girder still-water bending/shear - **shipped** in `tpt-yard-hydrostatics`: `hull_girder_strength` computes the load (prismatic buoyancy minus lumped/spread weights), shear and moment curves with free-end trim correction, and screens the peak SWBM against a CSR-style `C*L^2*B*Cb` allowable. Verified: midship weights sag, end weights hog, the shear zero-crossing sits at the peak moment, both curve ends are free, and plausible loadings land at realistic utilizations (0.05-0.5). *(remaining: class-society scantling checks per DNV/ABS/LR/IACS CSR; wave-induced bending moment)*
+- [ ] Weld procedure advisor: carbon equivalent, preheat and t8/5 limits (EN 1011 / AWS D1.1), WPS/PQR mapping (ISO 15614 / ASME IX)
+- [x] `tpt-yard plan` end-to-end (in the CLI): block division → erection order → heaviest-block lift check (with notes) → erection schedule → critical path, one text or JSON report. *(the drydock/launch legs remain pointers to the dedicated crates)*
+- [~] Monte Carlo schedule and weight risk — **schedule risk shipped** in `tpt-yard-scheduling`: `monte_carlo_risk` samples triangular duration distributions, runs the CPM per sample, and reports P50/P90/mean makespans plus per-activity criticality frequencies (seed-deterministic, verified against the closed-form makespan at zero uncertainty). *(remaining: weight-risk roll-up, weather windows from earth-link, delivery-slippage coupling)*
+- [ ] Design-for-construction optimizer over block division and sequence
+- [x] Live digital-twin ingest: `DigitalTwin::ingest_telemetry` accepts a sensor/scan-deviation JSON batch (`test-data/telemetry/sample-batch.json` documents the schema), stores readings in `sensor_data`, and flags scan deviations beyond a 5 mm tolerance as *rejected quality records* (corrections are flagged for heat-straightening, never auto-executed); malformed batches are rejected whole, not partially applied
+- [~] Report generator: `tpt-yard html-report <project.json> [--out file.html]` produces a styled HTML calculation package - weights (design/best-estimate/margin), by-group table, per-phase table, structural-check verdict. *(remaining: per-phase FEM sections inside the package; PDF output)*
+- [~] glTF export - **shipped** in the `tpt-yard` facade: `export::geometry_to_gltf` emits a glTF 2.0 document (embedded base64 buffer, TRIANGLES, required POSITION min/max accessors) that any three.js/Babylon/Blender viewer loads; the test decodes the buffer back and checks byte-level layout. *(remaining: PyO3 Python bindings; IFC export)*

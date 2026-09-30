@@ -195,29 +195,55 @@ impl Default for QualityManagement {
 impl QualityManagement {
     /// Generates the inspection plan for the given build phases.
     ///
-    /// Method selection by criticality (class-society practice):
-    /// - `WeldBlock` / `JoinBlock` (structural butts): I — UT with RT
-    ///   sample, 100 % coverage on pressure boundaries, 30 % otherwise;
-    /// - `Outfit { Piping {..} }`: II — PT or ET at joints, 100 % on
-    ///   pressure tests;
-    /// - everything else: III — visual only.
+    /// Method, coverage and timing per criticality (class-society
+    /// practice), honouring the yard's *available* method list:
+    /// - `WeldBlock` / `JoinBlock` (structural butts): I — UT, 30 %
+    ///   coverage (100 % is reserved for pressure boundaries);
+    /// - `Outfit { Piping {..} }`: II — PT, 100 % (pressure boundary);
+    /// - pressure/hydro tests: I — pressure test, 100 %;
+    /// - everything else: III — visual, 100 % (presence, not sampling).
+    ///
+    /// A method the yard does not have falls back down the list (UT ->
+    /// RT -> MT -> PT -> visual); the timing reflects the activity kind
+    /// instead of a blanket "post-weld".
     pub fn generate_inspection_plan(&self, build_phases: &[BuildPhase]) -> Vec<InspectionPoint> {
         let mut plan = Vec::new();
         let mut id = 1u64;
         for phase in build_phases {
             for a in &phase.activities {
-                let (method, coverage, criticality): (NdtMethod, f64, u8) = match &a.activity_type {
-                    ActivityType::WeldBlock | ActivityType::JoinBlock => {
-                        (NdtMethod::UltrasonicTesting, 100.0, 1)
-                    }
-                    ActivityType::Outfit {
-                        system: tpt_yard_core::OutfitSystem::Piping { .. },
-                    } => (NdtMethod::DyePenetrantTesting, 100.0, 2),
-                    ActivityType::Test {
-                        test_type:
-                            tpt_yard_core::TestType::Pressure | tpt_yard_core::TestType::Hydrostatic,
-                    } => (NdtMethod::PressureTesting, 100.0, 1),
-                    _ => (NdtMethod::VisualInspection, 100.0, 3),
+                let (method, coverage, criticality, timing): (NdtMethod, f64, u8, &str) =
+                    match &a.activity_type {
+                        ActivityType::WeldBlock => {
+                            (NdtMethod::UltrasonicTesting, 30.0, 1, "post-weld")
+                        }
+                        ActivityType::JoinBlock => {
+                            (NdtMethod::UltrasonicTesting, 30.0, 1, "post-erection")
+                        }
+                        ActivityType::Outfit {
+                            system: tpt_yard_core::OutfitSystem::Piping { .. },
+                        } => (NdtMethod::DyePenetrantTesting, 100.0, 2, "post-install"),
+                        ActivityType::Test {
+                            test_type:
+                                tpt_yard_core::TestType::Pressure
+                                | tpt_yard_core::TestType::Hydrostatic,
+                        } => (NdtMethod::PressureTesting, 100.0, 1, "on completion"),
+                        _ => (NdtMethod::VisualInspection, 100.0, 3, "on completion"),
+                    };
+                // Only prescribe methods the yard can actually perform;
+                // degrade to the best available (visual always is).
+                let method = if self.ndt_methods.contains(&method) {
+                    method
+                } else {
+                    [
+                        NdtMethod::UltrasonicTesting,
+                        NdtMethod::RadiographicTesting,
+                        NdtMethod::MagneticParticleTesting,
+                        NdtMethod::DyePenetrantTesting,
+                        NdtMethod::VisualInspection,
+                    ]
+                    .into_iter()
+                    .find(|m| self.ndt_methods.contains(m))
+                    .unwrap_or(NdtMethod::VisualInspection)
                 };
                 plan.push(InspectionPoint {
                     id,
@@ -226,7 +252,7 @@ impl QualityManagement {
                     method,
                     coverage_pct: coverage,
                     criticality,
-                    timing: "post-weld".into(),
+                    timing: timing.to_string(),
                 });
                 id += 1;
             }

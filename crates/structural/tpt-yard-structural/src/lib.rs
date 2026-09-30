@@ -275,6 +275,9 @@ pub enum StructuralError {
     TooFewLiftPoints,
     /// A lift point or node index is out of range.
     OutOfRange,
+    /// The load case has no screening model here — run the detailed
+    /// `tpt-yard-launch` analysis for it.
+    NotScreenable,
 }
 
 impl fmt::Display for StructuralError {
@@ -285,6 +288,9 @@ impl fmt::Display for StructuralError {
                 f.write_str("at least two lift points are required")
             }
             StructuralError::OutOfRange => f.write_str("index out of range"),
+            StructuralError::NotScreenable => {
+                f.write_str("not screenable here: use the detailed tpt-yard-launch analysis")
+            }
         }
     }
 }
@@ -444,12 +450,17 @@ impl ConstructionStructuralSolver {
 
     /// Crane pick statics for a block.
     ///
-    /// Sling legs run from each lift point to a hook above the *centroid of
-    /// the lift points* at `hook_height_above_lifts_m`. Load shares follow
-    /// the lever rule for 2 points and an inverse-distance weighted statics
-    /// approximation above that; leg tension = share / sin(angle from
-    /// horizontal). Checks: CoG projection inside the lift-point hull (tip),
-    /// leg utilization, crane utilization.
+    /// The hook sits directly above the **CoG projection** (a statically
+    /// correct pick); legs run from each lift point up to the hook at
+    /// `hook_height_above_lifts_m`. Load shares follow the exact lever rule
+    /// for 2 points (scalar projection of the CoG onto the lift line) and an
+    /// inverse-distance weighted statics approximation above that; leg
+    /// tension = share / sin(angle from horizontal).
+    ///
+    /// Checks (any failure makes `safe = false`): CoG projection inside the
+    /// lift-point **convex hull** (tip), leg utilization, crane utilization
+    /// (hook load + 5 % rigging against `crane_capacity_kn`), and the 30°
+    /// minimum sling-angle practice guideline.
     ///
     /// # Errors
     ///
@@ -459,37 +470,33 @@ impl ConstructionStructuralSolver {
         &self,
         body: &LiftableBody,
         sling_capacity_kn: f64,
+        crane_capacity_kn: f64,
         lift_points: &[Vector3],
         hook_height_above_lifts_m: f64,
     ) -> Result<LiftingResult, StructuralError> {
         if lift_points.len() < 2 {
             return Err(StructuralError::TooFewLiftPoints);
         }
-        if body.mass_properties.mass_kg <= 0.0 {
+        if !(body.mass_properties.mass_kg > 0.0)
+            || !(sling_capacity_kn > 0.0)
+            || !(crane_capacity_kn > 0.0)
+            || !(hook_height_above_lifts_m > 0.0)
+        {
             return Err(StructuralError::OutOfRange);
         }
         let weight_n = body.mass_properties.mass_kg * 9.81;
         let cog = body.mass_properties.cog;
+        let n = lift_points.len();
 
-        // Hook XY over the centroid of the lift points.
-        let mut hook_xy = Vector3::ZERO;
-        for p in lift_points {
-            hook_xy = hook_xy + *p;
-        }
-        hook_xy = hook_xy / lift_points.len() as f64;
+        // Statically correct pick: hook over the CoG projection.
+        let hook_xy = Vector3::new(cog.x, cog.y, 0.0);
 
-        // Tip check: CoG projection must lie inside the lift-point hull. For
-        // the general case we check the axis-aligned box of the points
-        // (conservative superset of the convex hull for tip purposes).
-        let (min_x, max_x) = lift_points
-            .iter()
-            .fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.x), b.max(p.x)));
-        let (min_y, max_y) = lift_points
-            .iter()
-            .fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.y), b.max(p.y)));
+        // Tip check: the CoG projection must lie inside the convex hull of
+        // the lift points (the AABB is a superset and would let corners
+        // pass that would actually tip).
         let mut notes = Vec::new();
         let mut safe = true;
-        if cog.x < min_x || cog.x > max_x || cog.y < min_y || cog.y > max_y {
+        if !cog_in_convex_hull(cog, lift_points) {
             safe = false;
             notes.push(
                 "CoG projects outside the lift points: the block would tip on the pick".to_string(),
@@ -497,17 +504,29 @@ impl ConstructionStructuralSolver {
         }
 
         // Load shares: exact lever rule for 2 points, inverse-distance
-        // weighting beyond (documented approximation; measured in RFC 0004).
-        let n = lift_points.len();
+        // weighting beyond (documented approximation; statically
+        // indeterminate without sling stiffnesses).
         let mut shares = vec![1.0 / n as f64; n];
         if n == 2 {
-            let d0 = (cog.x - lift_points[0].x).abs() + (cog.y - lift_points[0].y).abs();
-            let d1 = (cog.x - lift_points[1].x).abs() + (cog.y - lift_points[1].y).abs();
-            let span = d0 + d1;
-            if span > 1e-9 {
-                shares[0] = d1 / span;
-                shares[1] = d0 / span;
+            let u = lift_points[1] - lift_points[0];
+            let span_sq = u.dot(u);
+            if span_sq > 1e-9 {
+                let t = ((cog - lift_points[0]).dot(u) / span_sq).clamp(0.0, 1.0);
+                shares[0] = 1.0 - t;
+                shares[1] = t;
             }
+        } else {
+            let weights: Vec<f64> = lift_points
+                .iter()
+                .map(|p| {
+                    let d = ((p.x - cog.x) * (p.x - cog.x) + (p.y - cog.y) * (p.y - cog.y))
+                        .sqrt()
+                        .max(1e-3);
+                    1.0 / d
+                })
+                .collect();
+            let total: f64 = weights.iter().sum();
+            shares = weights.iter().map(|w| w / total).collect();
         }
 
         let mut sling_loads_kn = Vec::with_capacity(n);
@@ -528,14 +547,16 @@ impl ConstructionStructuralSolver {
         }
         // Crane utilization: hook load + a 5% rigging allowance.
         let hook_kn = weight_n / 1000.0 * 1.05;
-        let crane_util = hook_kn / (sling_capacity_kn * n as f64 * 0.5);
+        let crane_util = hook_kn / crane_capacity_kn;
         if crane_util > 1.0 {
+            safe = false;
             notes.push(format!(
-                "crane group utilization {crane_util:.2} exceeds 1.0"
+                "crane utilization {crane_util:.2} exceeds 1.0 (hook {hook_kn:.0} kN vs crane {crane_capacity_kn:.0} kN)"
             ));
         }
         for (i, a) in angles.iter().enumerate() {
             if *a < 30.0 {
+                safe = false;
                 notes.push(format!(
                     "sling {i} at {a:.0}° from horizontal: below the 30° practice guideline"
                 ));
@@ -554,12 +575,17 @@ impl ConstructionStructuralSolver {
 
     /// Launch load-case screening (detailed physics in `tpt-yard-launch`).
     ///
-    /// Slipway: average way pressure `P = W/(L_way · b_way)` against the
-    /// screening limit and the CoG at mid-ways for tipping margin.
+    /// Slipway: normal way pressure `P = W·cos(slope)/(L_way · b_way)`
+    /// against the screening limit, with the CoG-centred resting tipping
+    /// assumption stated in the notes. Other launch cases have no
+    /// screening model here — they return
+    /// [`StructuralError::NotScreenable`] rather than a made-up pass.
     ///
     /// # Errors
     ///
-    /// [`StructuralError::OutOfRange`] for degenerate way geometry.
+    /// [`StructuralError::OutOfRange`] for degenerate way geometry,
+    /// [`StructuralError::NotScreenable`] for cases this screening pass
+    /// does not model.
     pub fn launch_analysis(
         &self,
         vessel: &VesselProject,
@@ -569,21 +595,27 @@ impl ConstructionStructuralSolver {
         let mut notes = Vec::new();
         match case {
             LaunchCase::Slipway {
-                slope_deg: _,
+                slope_deg,
                 way_length_m,
                 way_width_m,
             } => {
-                if way_length_m <= 0.0 || way_width_m <= 0.0 {
+                if !(way_length_m > 0.0) || !(way_width_m > 0.0) {
                     return Err(StructuralError::OutOfRange);
                 }
                 let weight_kn = weight.mass_kg * 9.81 / 1000.0;
-                let pressure_kpa = weight_kn / (way_length_m * way_width_m);
+                // Only the normal component loads the ways.
+                let slope_rad = slope_deg.to_radians();
+                let normal_kn = weight_kn * slope_rad.cos();
+                let pressure_kpa = normal_kn / (way_length_m * way_width_m);
                 let pressure_mpa = pressure_kpa / 1000.0;
                 notes.push(format!(
-                    "'{}' on ways: {weight_kn:.0} kN over {:.0} m² → {pressure_kpa:.0} kPa",
+                    "'{}' on ways at {slope_deg:.1}°: {normal_kn:.0} kN normal over {:.0} m² → {pressure_kpa:.0} kPa",
                     vessel.name,
                     way_length_m * way_width_m
                 ));
+                notes.push(
+                    "screening assumes the CoG centred at rest; end-of-ways tipping needs the launch simulation".into(),
+                );
                 let within = pressure_mpa <= self.allowable_ground_pressure_mpa;
                 Ok(LaunchResult {
                     case,
@@ -593,41 +625,69 @@ impl ConstructionStructuralSolver {
                     notes,
                 })
             }
-            LaunchCase::DrydockFlooding => {
-                notes.push("float-out: buoyancy carries the load; verify ballast schedule".into());
-                Ok(LaunchResult {
-                    case,
-                    max_pressure_mpa: 0.0,
-                    tipping_margin: 1.0,
-                    within_limits: true,
-                    notes,
-                })
-            }
-            LaunchCase::SideLaunch => {
-                notes.push(
-                    "side launch: transverse tipping controls; detailed check in tpt-yard-launch"
-                        .into(),
-                );
-                Ok(LaunchResult {
-                    case,
-                    max_pressure_mpa: 0.0,
-                    tipping_margin: 0.5,
-                    within_limits: true,
-                    notes,
-                })
-            }
-            LaunchCase::Shiplift => {
-                notes.push("shiplift: check block-by-block platform loads".into());
-                Ok(LaunchResult {
-                    case,
-                    max_pressure_mpa: 0.0,
-                    tipping_margin: 1.0,
-                    within_limits: true,
-                    notes,
-                })
+            LaunchCase::DrydockFlooding | LaunchCase::SideLaunch | LaunchCase::Shiplift => {
+                Err(StructuralError::NotScreenable)
             }
         }
     }
+}
+
+/// True when the CoG's XY projection lies inside the convex hull of the
+/// lift points (the pick-tipping test). Andrew's monotone chain hull, then
+/// a ray-crossing point test; a degenerate (collinear) point set falls back
+/// to the bounding box, which is exact for a line segment.
+fn cog_in_convex_hull(cog: Vector3, points: &[Vector3]) -> bool {
+    if points.is_empty() {
+        return false;
+    }
+    // Monotone chain on (x, y); duplicates collapse naturally.
+    let mut pts: Vec<(f64, f64)> = points.iter().map(|p| (p.x, p.y)).collect();
+    pts.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    pts.dedup();
+    if pts.len() < 3 {
+        // Collinear or duplicated lifts: the tip region is the segment's
+        // bounding box.
+        let (min_x, max_x) = pts.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.0), b.max(p.0)));
+        let (min_y, max_y) = pts.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.1), b.max(p.1)));
+        return cog.x >= min_x && cog.x <= max_x && cog.y >= min_y && cog.y <= max_y;
+    }
+    let cross = |o: (f64, f64), a: (f64, f64), b: (f64, f64)| {
+        (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
+    };
+    let mut lower: Vec<(f64, f64)> = Vec::new();
+    for &p in &pts {
+        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], p) <= 0.0 {
+            lower.pop();
+        }
+        lower.push(p);
+    }
+    let mut upper: Vec<(f64, f64)> = Vec::new();
+    for &p in pts.iter().rev() {
+        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], p) <= 0.0 {
+            upper.pop();
+        }
+        upper.push(p);
+    }
+    lower.pop();
+    upper.pop();
+    let hull: Vec<(f64, f64)> = lower.into_iter().chain(upper).collect();
+    if hull.len() < 3 {
+        return false;
+    }
+    // Ray-crossing point-in-polygon (the guard condition guarantees
+    // yi != yj, so the division is safe).
+    let (px, py) = (cog.x, cog.y);
+    let mut inside = false;
+    let mut j = hull.len() - 1;
+    for i in 0..hull.len() {
+        let (xi, yi) = hull[i];
+        let (xj, yj) = hull[j];
+        if ((yi > py) != (yj > py)) && px < (xj - xi) * (py - yi) / (yj - yi) + xi {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
 }
 
 #[cfg(test)]
@@ -768,7 +828,9 @@ mod tests {
             },
         };
         let lifts = [Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)];
-        let r = solver.lifting_analysis(&body, 1000.0, &lifts, 4.0).unwrap();
+        let r = solver
+            .lifting_analysis(&body, 1000.0, 2000.0, &lifts, 4.0)
+            .unwrap();
         assert!(r.safe);
         let w_kn = 100_000.0 * 9.81 / 1000.0;
         // Legs at atan(4/5) from horizontal.
@@ -779,8 +841,11 @@ mod tests {
             r.sling_loads_kn[0]
         );
         assert!((r.sling_loads_kn[1] - expected).abs() < 1.0);
+        // Crane utilization against the crane capacity parameter.
+        let hook_kn = w_kn * 1.05;
+        assert!((r.crane_utilization - hook_kn / 2000.0).abs() < 1e-9);
 
-        // Offset CoG: nearer point takes more.
+        // Offset CoG: nearer point takes more (lever rule, 80/20).
         let offset = LiftableBody {
             mass_properties: MassProperties {
                 mass_kg: 100_000.0,
@@ -788,9 +853,86 @@ mod tests {
             },
         };
         let r2 = solver
-            .lifting_analysis(&offset, 1000.0, &lifts, 4.0)
+            .lifting_analysis(&offset, 1000.0, 2000.0, &lifts, 4.0)
             .unwrap();
         assert!(r2.sling_loads_kn[1] > r2.sling_loads_kn[0]);
+        // Vertical components of the leg tensions are the 20/80 shares
+        // (tension differs per leg because the angles differ when the hook
+        // rides over the CoG).
+        let th0 = 4.0f64.atan2(8.0).sin();
+        let th1 = 4.0f64.atan2(2.0).sin();
+        assert!(
+            (r2.sling_loads_kn[0] * th0 / (r2.sling_loads_kn[1] * th1) - 0.25).abs() < 1e-9,
+            "vertical shares must be 20/80"
+        );
+    }
+
+    /// Regression (review 7A/A9): crane overload, shallow slings and an
+    /// out-of-hull CoG must all fail the pick, and the tip check must use
+    /// the convex hull (an AABB would pass a CoG outside the hull corner).
+    #[test]
+    fn lifting_failures_fail_safe() {
+        let solver = ConstructionStructuralSolver::new(PartialStructure::default(), 355.0);
+        let lifts = [Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)];
+        let body = LiftableBody {
+            mass_properties: MassProperties {
+                mass_kg: 100_000.0,
+                cog: Vector3::new(5.0, 0.0, 0.0),
+            },
+        };
+
+        // Crane overload: 500 t hook on a 300 t crane.
+        let heavy = LiftableBody {
+            mass_properties: MassProperties {
+                mass_kg: 500_000.0,
+                cog: Vector3::new(5.0, 0.0, 0.0),
+            },
+        };
+        let r = solver
+            .lifting_analysis(&heavy, 5000.0, 3000.0, &lifts, 4.0)
+            .unwrap();
+        assert!(!r.safe, "crane overload must fail the pick");
+        assert!(r.crane_utilization > 1.0);
+        assert!(r.notes.iter().any(|n| n.contains("crane utilization")));
+
+        // Shallow slings: 1 m hook height on a 10 m span → ~11°.
+        let r = solver
+            .lifting_analysis(&body, 1000.0, 2000.0, &lifts, 1.0)
+            .unwrap();
+        assert!(!r.safe, "below-guideline sling angles must fail the pick");
+        assert!(r.notes.iter().any(|n| n.contains("30°")));
+
+        // Convex hull, not AABB: an L of lifts (three points) leaves a notch
+        // that the AABB covers but the hull does not; a CoG in the notch tips.
+        let l_lifts = [
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(10.0, 0.0, 0.0),
+            Vector3::new(0.0, 10.0, 0.0),
+        ];
+        // (9, 9) is inside the AABB [0,10]² but outside the triangle hull.
+        let notch = LiftableBody {
+            mass_properties: MassProperties {
+                mass_kg: 10_000.0,
+                cog: Vector3::new(9.0, 9.0, 0.0),
+            },
+        };
+        let r = solver
+            .lifting_analysis(&notch, 1000.0, 2000.0, &l_lifts, 8.0)
+            .unwrap();
+        assert!(!r.safe, "CoG outside the convex hull must tip the pick");
+        assert!(r.notes.iter().any(|n| n.contains("tip")));
+
+        // And a CoG inside the triangle passes the tip check.
+        let inside = LiftableBody {
+            mass_properties: MassProperties {
+                mass_kg: 10_000.0,
+                cog: Vector3::new(2.0, 2.0, 0.0),
+            },
+        };
+        let r = solver
+            .lifting_analysis(&inside, 1000.0, 2000.0, &l_lifts, 8.0)
+            .unwrap();
+        assert!(!r.notes.iter().any(|n| n.contains("tip")));
     }
 
     #[test]
@@ -804,7 +946,9 @@ mod tests {
             },
         };
         let lifts = [Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)];
-        let r = solver.lifting_analysis(&body, 1000.0, &lifts, 8.0).unwrap();
+        let r = solver
+            .lifting_analysis(&body, 1000.0, 2000.0, &lifts, 8.0)
+            .unwrap();
         assert!(!r.safe);
         assert!(r.notes.iter().any(|n| n.contains("tip")));
 
@@ -818,6 +962,7 @@ mod tests {
                     }
                 },
                 100.0,
+                200.0,
                 &[Vector3::ZERO],
                 4.0
             ),

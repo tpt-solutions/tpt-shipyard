@@ -75,7 +75,7 @@ fn main() {
             status: ItemStatus::Design,
             margin_pct: 2.0,
             installed_by: Some(activity_id),
-        });
+        }).expect("valid weight item");
         phases.push(phase);
     }
 

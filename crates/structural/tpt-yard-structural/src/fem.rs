@@ -1,9 +1,17 @@
 //! Minimal 3D truss finite-element solver.
 //!
-//! Direct stiffness method, dense solver, penalty boundary conditions —
-//! deliberately small and dependency-free. It exists to give the construction
-//! solvers an auditable load path; replace with `tpt-fem` when that substrate
-//! ships (the [`TrussModel`] types map 1:1 onto bar/truss elements).
+//! Direct stiffness method, dense solver, scaled penalty boundary
+//! conditions — deliberately small and dependency-free. It exists to give
+//! the construction solvers an auditable load path; replace with `tpt-fem`
+//! when that substrate ships (the [`TrussModel`] types map 1:1 onto
+//! bar/truss elements).
+//!
+//! Known limitations (documented, on the roadmap): the direct solver is
+//! dense O(n³) — fine for construction-staging models of thousands of DOFs,
+//! not for full-ship FEM (see the project roadmap for the sparse-solver
+//! item). Orphan nodes (no active element, no support) are condensed away
+//! before assembly, so intermediate erection phases with not-yet-connected
+//! nodes solve normally; a *load* on an unconnected node is rejected.
 //!
 //! Verification lives in the crate tests: a single axial bar against the
 //! closed form `delta = FL/EA`, and a two-bar truss against `σ = F/(2A sinθ)`.
@@ -99,7 +107,8 @@ pub enum FemError {
     /// under-constrained load path), which for construction staging usually
     /// means a support is missing at this phase.
     SingularSystem,
-    /// A node or element index is out of range.
+    /// A node or element index is out of range — including a load applied
+    /// to a node that no active element connects (it has no load path).
     OutOfRange,
     /// No active elements: nothing to analyse (the phase precedes any
     /// erected steel).
@@ -145,17 +154,80 @@ impl TrussModel {
         if self.elements.is_empty() {
             return Err(FemError::NoActiveElements);
         }
-        let dof = 3 * n;
         for e in &self.elements {
             if e.nodes[0] >= n || e.nodes[1] >= n {
                 return Err(FemError::OutOfRange);
             }
         }
+
+        // Condense to participating nodes. Intermediate erection phases
+        // carry nodes whose members are not erected yet; leaving them in
+        // would assemble all-zero rows — a singular matrix by construction,
+        // not a physical mechanism. Displacements are mapped back at the
+        // end so the solution stays indexed like the model.
+        let mut used = vec![false; n];
+        for e in &self.elements {
+            used[e.nodes[0]] = true;
+            used[e.nodes[1]] = true;
+        }
+        for s in &self.supports {
+            if s.node >= n {
+                return Err(FemError::OutOfRange);
+            }
+            used[s.node] = true;
+        }
         for l in &self.loads {
             if l.node >= n {
                 return Err(FemError::OutOfRange);
             }
+            if !used[l.node] {
+                return Err(FemError::OutOfRange); // load without a load path
+            }
         }
+        let mut remap = vec![usize::MAX; n];
+        let mut kept = 0usize;
+        for i in 0..n {
+            if used[i] {
+                remap[i] = kept;
+                kept += 1;
+            }
+        }
+        let remap2 = |i: usize| remap[i];
+        let condensed = TrussModel {
+            nodes: (0..n)
+                .filter(|&i| used[i])
+                .map(|i| Node {
+                    position: self.nodes[i].position,
+                })
+                .collect(),
+            elements: self
+                .elements
+                .iter()
+                .map(|e| Element {
+                    nodes: [remap2(e.nodes[0]), remap2(e.nodes[1])],
+                    ..*e
+                })
+                .collect(),
+            supports: self
+                .supports
+                .iter()
+                .map(|s| Support {
+                    node: remap2(s.node),
+                    ..*s
+                })
+                .collect(),
+            loads: self
+                .loads
+                .iter()
+                .map(|l| NodalLoad {
+                    node: remap2(l.node),
+                    ..*l
+                })
+                .collect(),
+        };
+
+        let n = kept;
+        let dof = 3 * n;
 
         // Dense symmetric stiffness matrix (row-major).
         let mut k = vec![0.0f64; dof * dof];
@@ -165,8 +237,18 @@ impl TrussModel {
             k[i * dof + j] += v;
         };
 
-        for e in &self.elements {
-            let (na, nb) = (self.nodes[e.nodes[0]], self.nodes[e.nodes[1]]);
+        // Stiffness scale of the model: drives both the penalty magnitude
+        // and the singularity threshold, so the solver behaves the same for
+        // a rubber gasket and a main-tower member.
+        let mut k_scale = 0.0f64;
+        for e in &condensed.elements {
+            let (na, nb) = (condensed.nodes[e.nodes[0]], condensed.nodes[e.nodes[1]]);
+            k_scale = k_scale.max(e.axial_stiffness(&na, &nb));
+        }
+        let penalty = k_scale * 1e6;
+
+        for e in &condensed.elements {
+            let (na, nb) = (condensed.nodes[e.nodes[0]], condensed.nodes[e.nodes[1]]);
             let dx = nb.position - na.position;
             let l = dx.length();
             if l <= 0.0 {
@@ -201,27 +283,26 @@ impl TrussModel {
             }
         }
 
-        for load in &self.loads {
+        for load in &condensed.loads {
             f[3 * load.node] += load.force.x;
             f[3 * load.node + 1] += load.force.y;
             f[3 * load.node + 2] += load.force.z;
         }
 
-        // Penalty boundary conditions.
-        const PENALTY: f64 = 1e13;
-        for s in &self.supports {
-            if s.node >= n {
-                return Err(FemError::OutOfRange);
-            }
+        // Penalty boundary conditions, scaled to the model stiffness.
+        for s in &condensed.supports {
             for (fixed, axis) in [(s.fix_x, 0), (s.fix_y, 1), (s.fix_z, 2)] {
                 if fixed {
                     let i = 3 * s.node + axis;
-                    k[i * dof + i] += PENALTY;
+                    k[i * dof + i] += penalty;
                 }
             }
         }
 
-        // Gaussian elimination with partial pivoting.
+        // Gaussian elimination with partial pivoting. Singularity is judged
+        // *relative* to the matrix scale (an absolute threshold means
+        // completely different things at k ~ 1 N/m and k ~ 1e9 N/m).
+        let scale = k.iter().fold(0.0f64, |m, v| m.max(v.abs()));
         let mut a = k;
         let mut x = f;
         for col in 0..dof {
@@ -235,7 +316,7 @@ impl TrussModel {
                     piv = r;
                 }
             }
-            if best < 1e-9 {
+            if best <= scale * 1e-12 {
                 return Err(FemError::SingularSystem);
             }
             if piv != col {
@@ -264,8 +345,16 @@ impl TrussModel {
             x[r] = sum / a[r * dof + r];
         }
 
-        let displacements: Vec<Vector3> = (0..n)
-            .map(|i| Vector3::new(x[3 * i], x[3 * i + 1], x[3 * i + 2]))
+        // Map displacements back to the model's node indexing (orphan nodes
+        // carry nothing and stay at zero).
+        let mut global_x = vec![0.0f64; 3 * self.nodes.len()];
+        for i in 0..n {
+            for axis in 0..3 {
+                global_x[3 * i + axis] = x[3 * i + axis];
+            }
+        }
+        let displacements: Vec<Vector3> = (0..self.nodes.len())
+            .map(|i| Vector3::new(global_x[3 * i], global_x[3 * i + 1], global_x[3 * i + 2]))
             .collect();
         let mut axial_forces = Vec::with_capacity(self.elements.len());
         for e in &self.elements {
@@ -283,6 +372,114 @@ impl TrussModel {
             axial_forces,
             max_displacement_m,
         })
+    }
+}
+
+/// Member-level buckling and slenderness checks (review 7H roadmap item).
+///
+/// A truss element carries axial force only — but a *compression* member
+/// can fail long before its axial stress reaches yield, by Euler
+/// instability. These checks take the member's effective length, radius of
+/// gyration and end-fixity and compare the Euler critical stress against
+/// the demand, alongside the classic slenderness ratio limits.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MemberSection {
+    /// Cross-section area, m².
+    pub area_m2: f64,
+    /// Radius of gyration of the section, m (`sqrt(I/A)`).
+    pub radius_of_gyration_m: f64,
+}
+
+/// End-fixity factor `K` in `L_eff = K·L`: 1.0 pinned-pinned, 0.7
+/// fixed-pinned, 0.5 fixed-fixed, 2.0 fixed-free (cantilever).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EndFixity {
+    /// Pinned at both ends (truss default).
+    PinnedPinned,
+    /// Fixed-pinned.
+    FixedPinned,
+    /// Fixed at both ends.
+    FixedFixed,
+    /// Fixed-free (cantilever).
+    FixedFree,
+}
+
+impl EndFixity {
+    /// The Euler `K` factor.
+    pub fn k(self) -> f64 {
+        match self {
+            EndFixity::PinnedPinned => 1.0,
+            EndFixity::FixedPinned => 0.7,
+            EndFixity::FixedFixed => 0.5,
+            EndFixity::FixedFree => 2.0,
+        }
+    }
+}
+
+/// Outcome of the member buckling check.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BucklingCheck {
+    /// Slenderness ratio `K·L / r`.
+    pub slenderness_ratio: f64,
+    /// Euler critical stress `sigma_cr = pi²·E/(K·L/r)²`, MPa.
+    pub euler_critical_stress_mpa: f64,
+    /// Governing compressive capacity, MPa: Euler below the slenderness
+    /// transition, yield above it.
+    pub governing_capacity_mpa: f64,
+    /// Demand / capacity.
+    pub utilization: f64,
+    /// True when the utilization is at or below 1.
+    pub passed: bool,
+    /// Findings.
+    pub notes: Vec<String>,
+}
+
+/// Checks a compression member.
+///
+/// `compression_n` is the axial demand in newtons (positive = compression). The
+/// governing capacity is the Euler critical stress for slender members and
+/// yield for stocky ones (the classic bilinear column curve, screening
+/// grade — no residual-stress or imperfection knock-downs).
+pub fn check_member_buckling(
+    section: &MemberSection,
+    material: &tpt_yard_core::Material,
+    member_length_m: f64,
+    fixity: EndFixity,
+    compression_n: f64,
+) -> BucklingCheck {
+    let mut notes = Vec::new();
+    let l_eff = fixity.k() * member_length_m.max(1e-6);
+    let slenderness = l_eff / section.radius_of_gyration_m.max(1e-6);
+    let e_mpa = material.youngs_modulus_gpa * 1000.0;
+    let sigma_y = material.yield_mpa;
+    let euler_mpa = std::f64::consts::PI * std::f64::consts::PI * e_mpa / (slenderness * slenderness);
+    // Transition slenderness where Euler stress = yield: lambda_p =
+    // pi·sqrt(E/sigma_y).
+    let lambda_p = std::f64::consts::PI * (e_mpa / sigma_y).sqrt();
+    let (governing, mode) = if slenderness > lambda_p {
+        (euler_mpa, "Euler buckling governs")
+    } else {
+        (sigma_y, "yield governs (stocky member)")
+    };
+    // Demand: N over area in m^2 -> Pa -> MPa.
+    let demand_mpa = compression_n.abs() / (section.area_m2.max(1e-9) * 1.0e6);
+    let utilization = demand_mpa / governing.max(1e-9);
+    let passed = utilization <= 1.0;
+    if !passed {
+        notes.push(format!(
+            "compression {demand_mpa:.1} MPa exceeds {mode} capacity {governing:.1} MPa (lambda = {slenderness:.0})"
+        ));
+    }
+    if slenderness > 200.0 {
+        notes.push(format!("slenderness {slenderness:.0} exceeds the 200 practice limit"));
+    }
+    BucklingCheck {
+        slenderness_ratio: slenderness,
+        euler_critical_stress_mpa: euler_mpa,
+        governing_capacity_mpa: governing,
+        utilization,
+        passed: passed && slenderness <= 200.0,
+        notes,
     }
 }
 
@@ -425,6 +622,73 @@ mod tests {
         assert!(sol.displacements[2].z < 0.0);
     }
 
+    /// Verification (review 7H): Euler critical load for a pinned-pinned
+    /// member, P_cr = pi^2 E I / L^2 — via the stress form with the exact
+    /// radius of gyration I/A.
+    #[test]
+    fn euler_buckling_matches_closed_form() {
+        let material = tpt_yard_core::Material::ah36();
+        // Rectangular section 100 mm x 20 mm: I = b h^3 / 12,
+        // r = h / sqrt(12) for bending about the weak axis.
+        let (b_mm, h_mm) = (100.0, 20.0);
+        let area_m2 = b_mm * h_mm * 1e-6;
+        let r_m = h_mm / 1000.0 / 12.0f64.sqrt();
+        let section = MemberSection {
+            area_m2,
+            radius_of_gyration_m: r_m,
+        };
+        let length = 4.0; // m: lambda = 4000 / (20/sqrt(12)) = 692 — slender
+        let check = check_member_buckling(&section, &material, length, EndFixity::PinnedPinned, 1.0);
+        assert!(check.slenderness_ratio > lambda_p_for(&material), "must be slender: {}", check.slenderness_ratio);
+        // P_cr = pi^2 E I / L^2; stress form = P_cr / A = pi^2 E r^2 / L^2.
+        let expected_mpa = std::f64::consts::PI.powi(2) * material.youngs_modulus_gpa * 1000.0
+            * r_m * r_m
+            / (length * length);
+        assert!(
+            (check.euler_critical_stress_mpa - expected_mpa).abs() < 1e-6,
+            "{} vs {}",
+            check.euler_critical_stress_mpa,
+            expected_mpa
+        );
+        // Utilization against the Euler capacity for a known demand.
+        let p_cr_n = expected_mpa * 1.0e6 * area_m2; // MPa -> Pa, x m^2 -> N
+        let at_capacity = check_member_buckling(&section, &material, length, EndFixity::PinnedPinned, p_cr_n);
+        assert!((at_capacity.utilization - 1.0).abs() < 1e-9);
+        assert!(!at_capacity.passed || at_capacity.utilization <= 1.0);
+        // Fixed-fixed quadruples the capacity (K = 0.5 -> lambda /2 -> 4x stress).
+        let fixed = check_member_buckling(&section, &material, length, EndFixity::FixedFixed, 1.0);
+        assert!((fixed.euler_critical_stress_mpa - 4.0 * expected_mpa).abs() < 1e-6);
+    }
+
+    fn lambda_p_for(material: &tpt_yard_core::Material) -> f64 {
+        std::f64::consts::PI * (material.youngs_modulus_gpa * 1000.0 / material.yield_mpa).sqrt()
+    }
+
+    /// Stocky members are yield-governed; the slenderness limit (200)
+    /// flags spindly members even when the demand is tiny.
+    #[test]
+    fn stocky_is_yield_governed_and_slender_flags() {
+        let material = tpt_yard_core::Material::ah36();
+        // Compact section, short member: lambda < lambda_p (~86 for steel).
+        let section = MemberSection {
+            area_m2: 0.01,
+            radius_of_gyration_m: 0.05,
+        };
+        let check = check_member_buckling(&section, &material, 2.0, EndFixity::PinnedPinned, 100.0);
+        assert!(check.slenderness_ratio < lambda_p_for(&material));
+        assert!((check.governing_capacity_mpa - material.yield_mpa).abs() < 1e-9, "{:?}", check.notes);
+        assert!(check.passed);
+        // Spindly member: lambda > 200, flagged even at no load.
+        let spindly = MemberSection {
+            area_m2: 0.001,
+            radius_of_gyration_m: 0.002,
+        };
+        let flagged = check_member_buckling(&spindly, &material, 2.0, EndFixity::PinnedPinned, 1.0);
+        assert!(flagged.slenderness_ratio > 200.0);
+        assert!(!flagged.passed);
+        assert!(flagged.notes.iter().any(|n| n.contains("200")));
+    }
+
     #[test]
     fn unconstrained_structure_is_singular() {
         let model = TrussModel {
@@ -454,6 +718,130 @@ mod tests {
             }],
         };
         assert_eq!(model.solve(), Err(FemError::SingularSystem));
+    }
+
+    /// Regression (review 7A/A8): intermediate erection phases carry nodes
+    /// whose members are not erected yet. They must be condensed away, not
+    /// make the matrix singular.
+    #[test]
+    fn orphan_nodes_are_condensed_not_singular() {
+        // Three-node truss plus a fourth node with no element yet (its
+        // members come in a later phase). Used to solve; used to be
+        // SingularSystem because of the orphan's zero rows.
+        let model = TrussModel {
+            nodes: vec![
+                Node {
+                    position: Vector3::new(-1.0, 0.0, 0.0),
+                },
+                Node {
+                    position: Vector3::new(1.0, 0.0, 0.0),
+                },
+                Node {
+                    position: Vector3::new(0.0, 0.0, 1.0),
+                },
+                Node {
+                    position: Vector3::new(0.0, 0.0, 5.0),
+                }, // orphan at this phase
+            ],
+            elements: vec![
+                Element {
+                    nodes: [0, 2],
+                    area_m2: 0.005,
+                    youngs_modulus_gpa: 210.0,
+                    density_kg_m3: 0.0,
+                },
+                Element {
+                    nodes: [1, 2],
+                    area_m2: 0.005,
+                    youngs_modulus_gpa: 210.0,
+                    density_kg_m3: 0.0,
+                },
+            ],
+            supports: vec![
+                Support::pinned(0),
+                Support::pinned(1),
+                // Out-of-plane restraint at the apex (planar truss fixture).
+                Support {
+                    node: 2,
+                    fix_x: false,
+                    fix_y: true,
+                    fix_z: false,
+                },
+            ],
+            loads: vec![NodalLoad {
+                node: 2,
+                force: Vector3::new(0.0, 0.0, -50_000.0),
+            }],
+        };
+        let sol = model
+            .solve()
+            .expect("orphan node must not make the system singular");
+        // Solution stays indexed like the model; the orphan does not move.
+        assert_eq!(sol.displacements.len(), 4);
+        assert_eq!(sol.displacements[3], Vector3::ZERO);
+        // Apex sags.
+        assert!(sol.displacements[2].z < 0.0);
+    }
+
+    /// A load on an unconnected node has no load path — rejected, not
+    /// silently dropped.
+    #[test]
+    fn load_on_orphan_node_is_rejected() {
+        let model = TrussModel {
+            nodes: vec![
+                Node {
+                    position: Vector3::ZERO,
+                },
+                Node {
+                    position: Vector3::new(1.0, 0.0, 0.0),
+                },
+                Node {
+                    position: Vector3::new(0.0, 0.0, 5.0),
+                },
+            ],
+            elements: vec![Element {
+                nodes: [0, 1],
+                area_m2: 0.01,
+                youngs_modulus_gpa: 210.0,
+                density_kg_m3: 0.0,
+            }],
+            supports: vec![Support::pinned(0), Support::pinned(1)],
+            loads: vec![NodalLoad {
+                node: 2,
+                force: Vector3::new(0.0, 0.0, -1000.0),
+            }],
+        };
+        assert_eq!(model.solve(), Err(FemError::OutOfRange));
+    }
+
+    /// The solver's singularity threshold is relative to the model scale:
+    /// a soft (k ~ 1 N/m) mechanism is still singular, and a stiff
+    /// (k ~ 1e9 N/m) well-supported structure still solves.
+    #[test]
+    fn pivot_threshold_scales_with_stiffness() {
+        let soft = TrussModel {
+            nodes: vec![
+                Node {
+                    position: Vector3::ZERO,
+                },
+                Node {
+                    position: Vector3::new(1.0, 0.0, 0.0),
+                },
+            ],
+            elements: vec![Element {
+                nodes: [0, 1],
+                area_m2: 1.0,
+                youngs_modulus_gpa: 2.1e-9, // k = EA/L ≈ 2.1 N/m
+                density_kg_m3: 0.0,
+            }],
+            supports: vec![Support::pinned(0)],
+            loads: vec![NodalLoad {
+                node: 1,
+                force: Vector3::new(1.0, 0.0, 0.0),
+            }],
+        };
+        // Mechanism in y/z at any stiffness.
+        assert_eq!(soft.solve(), Err(FemError::SingularSystem));
     }
 
     /// Verification: a vertical bar under self weight stretches by

@@ -22,3 +22,6 @@ tpt-yard-digital-twin = { workspace = true }
 tpt-yard-orbital-assembly = { workspace = true }
 tpt-yard-robotic-assembly = { workspace = true }
 wasm-bindgen = { workspace = true }
+
+[lints]
+workspace = true

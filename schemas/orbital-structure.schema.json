@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tpt-solutions.github.io/tpt-shipyard/schemas/orbital-structure.schema.json",
+  "title": "Orbital structure assembly manifest",
+  "description": "Input manifest for OrbitalAssembly planning (see test-data/orbital-structures/).",
+  "type": "object",
+  "required": ["structure", "bay"],
+  "properties": {
+    "structure": { "type": "string" },
+    "type": { "enum": ["truss", "station", "habitat_ring"] },
+    "segments": { "type": "integer", "minimum": 1 },
+    "bay_pitch_m": { "type": "number", "exclusiveMinimum": 0 },
+    "bay": {
+      "type": "object",
+      "required": ["mass_kg", "dimensions_m"],
+      "properties": {
+        "mass_kg": { "type": "number", "exclusiveMinimum": 0 },
+        "dimensions_m": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": { "type": "number", "exclusiveMinimum": 0 }
+        },
+        "chord_area_m2": { "type": "number", "exclusiveMinimum": 0 },
+        "bay_height_m": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "orbit": {
+      "type": "object",
+      "properties": {
+        "designation": { "type": "string" },
+        "station_keeping_accel_ms2": { "type": "number", "minimum": 0 }
+      }
+    },
+    "robot": {
+      "type": "object",
+      "required": ["links_m", "gripper_force_n"],
+      "properties": {
+        "name": { "type": "string" },
+        "links_m": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "number", "exclusiveMinimum": 0 }
+        },
+        "gripper_force_n": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "assembly": {
+      "type": "object",
+      "properties": {
+        "policy": { "type": "string" },
+        "force_limit_n": { "type": "number", "exclusiveMinimum": 0 },
+        "bolt_torque_nm": { "type": "number", "minimum": 0 }
+      }
+    }
+  }
+}

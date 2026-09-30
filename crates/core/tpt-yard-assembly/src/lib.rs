@@ -86,18 +86,26 @@ pub struct ActivityNode {
 }
 
 impl ActivityNode {
-    /// Creates a node in the [`ActivityStatus::Pending`] state.
+    /// Creates a node in the [`ActivityStatus::Pending`] state. Duplicate
+    /// dependency entries are collapsed (the same edge twice is still one
+    /// edge — duplicates must not create phantom indegree).
     pub fn new(
         id: ActivityId,
         name: impl Into<String>,
         duration_hours: f64,
         dependencies: &[ActivityId],
     ) -> Self {
+        let mut seen = BTreeSet::new();
+        let deps = dependencies
+            .iter()
+            .copied()
+            .filter(|d| seen.insert(*d))
+            .collect();
         Self {
             id,
             name: name.into(),
             duration_hours,
-            dependencies: dependencies.to_vec(),
+            dependencies: deps,
             status: ActivityStatus::Pending,
         }
     }
@@ -118,6 +126,8 @@ pub enum GraphError {
     /// The graph contains at least one dependency cycle; the offending
     /// activities are listed.
     CycleDetected(Vec<ActivityId>),
+    /// An activity with this id already exists.
+    DuplicateActivity(ActivityId),
 }
 
 impl fmt::Display for GraphError {
@@ -137,6 +147,7 @@ impl fmt::Display for GraphError {
                 let list: Vec<String> = cycle.iter().map(|a| a.to_string()).collect();
                 write!(f, "dependency cycle detected: {}", list.join(" -> "))
             }
+            GraphError::DuplicateActivity(a) => write!(f, "duplicate activity {a}"),
         }
     }
 }
@@ -167,12 +178,16 @@ impl ActivityGraph {
         self.nodes.is_empty()
     }
 
-    /// Adds an activity with its dependencies. Dependencies must already exist,
-    /// which keeps the graph well-formed as it is built.
+    /// Adds an activity with its dependencies.
+    ///
+    /// Activities may be added in any order — a dependency on an
+    /// activity that is added later is fine. Use [`ActivityGraph::validate`]
+    /// (or run any algorithm such as [`ActivityGraph::topological_order`],
+    /// which validates first) to check that every dependency resolves.
     ///
     /// # Errors
     ///
-    /// [`GraphError::UnknownDependency`] if a dependency is not in the graph.
+    /// [`GraphError::DuplicateActivity`] if `id` is already in the graph.
     pub fn add_activity(
         &mut self,
         id: ActivityId,
@@ -180,18 +195,33 @@ impl ActivityGraph {
         duration_hours: f64,
         dependencies: &[ActivityId],
     ) -> Result<(), GraphError> {
-        for dep in dependencies {
-            if !self.nodes.contains_key(dep) {
-                return Err(GraphError::UnknownDependency {
-                    activity: id,
-                    dependency: *dep,
-                });
-            }
+        if self.nodes.contains_key(&id) {
+            return Err(GraphError::DuplicateActivity(id));
         }
         self.nodes.insert(
             id,
             ActivityNode::new(id, name, duration_hours, dependencies),
         );
+        Ok(())
+    }
+
+    /// Checks that every dependency of every activity resolves to an
+    /// existing activity.
+    ///
+    /// # Errors
+    ///
+    /// [`GraphError::UnknownDependency`] on the first dangling dependency.
+    pub fn validate(&self) -> Result<(), GraphError> {
+        for n in self.nodes.values() {
+            for d in &n.dependencies {
+                if !self.nodes.contains_key(d) {
+                    return Err(GraphError::UnknownDependency {
+                        activity: n.id,
+                        dependency: *d,
+                    });
+                }
+            }
+        }
         Ok(())
     }
 
@@ -254,15 +284,23 @@ impl ActivityGraph {
     ///
     /// # Errors
     ///
-    /// [`GraphError::CycleDetected`] listing the activities still unsorted when
-    /// the queue drains (these participate in, or depend on, a cycle).
+    /// [`GraphError::UnknownDependency`] if any dependency does not resolve,
+    /// [`GraphError::CycleDetected`] listing the activities still unsorted
+    /// when the queue drains (these participate in, or depend on, a cycle).
     pub fn topological_order(&self) -> Result<Vec<ActivityId>, GraphError> {
+        self.validate()?;
         let mut indegree: BTreeMap<ActivityId, usize> = BTreeMap::new();
         for n in self.nodes.values() {
             indegree.entry(n.id).or_insert(0);
+            // Count each distinct edge once (duplicate dependency entries
+            // must not inflate the indegree — `dependents_of` yields the
+            // node once, so the decrement would never balance).
+            let mut seen = BTreeSet::new();
             for d in &n.dependencies {
-                *indegree.entry(n.id).or_insert(0) += 1;
-                indegree.entry(*d).or_insert(0);
+                if seen.insert(*d) {
+                    *indegree.entry(n.id).or_insert(0) += 1;
+                    indegree.entry(*d).or_insert(0);
+                }
             }
         }
         // BTreeSet as the queue keeps the output deterministic.
@@ -416,18 +454,10 @@ mod tests {
     #[test]
     fn cycle_is_detected() {
         let mut g = ActivityGraph::new();
-        // A dependency on a not-yet-existing activity is rejected.
-        assert!(g
-            .add_activity(ActivityId(1), "a", 1.0, &[ActivityId(2)])
-            .is_err());
-        g.add_activity(ActivityId(1), "a", 1.0, &[]).unwrap();
+        g.add_activity(ActivityId(1), "a", 1.0, &[ActivityId(2)])
+            .unwrap();
         g.add_activity(ActivityId(2), "b", 1.0, &[ActivityId(1)])
             .unwrap();
-        // Close the loop manually: 1 -> 2 -> 1.
-        g.activity_mut(ActivityId(1))
-            .unwrap()
-            .dependencies
-            .push(ActivityId(2));
         assert!(g.find_cycle().is_some());
         assert!(matches!(
             g.topological_order(),
@@ -436,18 +466,105 @@ mod tests {
     }
 
     #[test]
-    fn unknown_dependency_is_rejected() {
+    fn unknown_dependency_is_rejected_at_validation() {
         let mut g = ActivityGraph::new();
-        let err = g
-            .add_activity(ActivityId(1), "a", 1.0, &[ActivityId(9)])
-            .unwrap_err();
+        // Adding with a not-yet-existing dependency is allowed (out-of-order
+        // construction); the dangling edge is caught at validation.
+        g.add_activity(ActivityId(1), "a", 1.0, &[ActivityId(9)])
+            .unwrap();
         assert_eq!(
-            err,
-            GraphError::UnknownDependency {
+            g.validate(),
+            Err(GraphError::UnknownDependency {
                 activity: ActivityId(1),
                 dependency: ActivityId(9)
-            }
+            })
         );
+        assert!(matches!(
+            g.topological_order(),
+            Err(GraphError::UnknownDependency { .. })
+        ));
+    }
+
+    /// Regression (review 7A/A11): a valid network built out of order must
+    /// work — dependencies may reference activities added later.
+    #[test]
+    fn out_of_order_construction_works() {
+        let mut g = ActivityGraph::new();
+        g.add_activity(ActivityId(3), "Erect", 4.0, &[ActivityId(2)])
+            .unwrap();
+        g.add_activity(ActivityId(2), "Weld", 16.0, &[ActivityId(1)])
+            .unwrap();
+        g.add_activity(ActivityId(1), "Cut", 8.0, &[]).unwrap();
+        g.validate().unwrap();
+        assert_eq!(
+            g.topological_order().unwrap(),
+            vec![ActivityId(1), ActivityId(2), ActivityId(3)]
+        );
+        assert_eq!(g.makespan_hours().unwrap(), 28.0);
+    }
+
+    /// Regression (review 7A/A11): a duplicate dependency edge must not
+    /// inflate the indegree and report a false cycle.
+    #[test]
+    fn duplicate_dependency_is_not_a_cycle() {
+        let mut g = ActivityGraph::new();
+        g.add_activity(ActivityId(1), "a", 1.0, &[]).unwrap();
+        g.add_activity(ActivityId(2), "b", 1.0, &[ActivityId(1), ActivityId(1)])
+            .unwrap();
+        g.topological_order()
+            .expect("duplicate dependency must not create a false cycle");
+        let mut with_dup = ActivityGraph::new();
+        with_dup
+            .add_activity(ActivityId(1), "a", 1.0, &[])
+            .unwrap();
+        with_dup
+            .add_activity(ActivityId(2), "b", 1.0, &[ActivityId(1)])
+            .unwrap();
+        // Duplicating via mutation is still just one edge.
+        with_dup
+            .activity_mut(ActivityId(2))
+            .unwrap()
+            .dependencies
+            .push(ActivityId(1));
+        with_dup
+            .topological_order()
+            .expect("no false cycle from a mutated duplicate edge");
+    }
+
+    /// Regression (review 7A/A11): a duplicate activity id must be rejected,
+    /// not silently overwrite the node (which would orphan its dependents).
+    #[test]
+    fn duplicate_activity_id_rejected() {
+        let mut g = ActivityGraph::new();
+        g.add_activity(ActivityId(1), "a", 1.0, &[]).unwrap();
+        g.add_activity(ActivityId(2), "b", 1.0, &[ActivityId(1)])
+            .unwrap();
+        assert_eq!(
+            g.add_activity(ActivityId(1), "a again", 2.0, &[]),
+            Err(GraphError::DuplicateActivity(ActivityId(1)))
+        );
+        // The original node is intact.
+        assert_eq!(g.activity(ActivityId(1)).unwrap().duration_hours, 1.0);
+    }
+
+    /// Regression (review 7A/A11): a dangling dependency introduced through
+    /// `activity_mut` must be reported as an error by graph algorithms,
+    /// not produce a phantom node that panics later passes.
+    #[test]
+    fn dangling_dependency_from_mutation_is_an_error() {
+        let mut g = ActivityGraph::new();
+        g.add_activity(ActivityId(1), "a", 1.0, &[]).unwrap();
+        g.add_activity(ActivityId(2), "b", 1.0, &[ActivityId(1)])
+            .unwrap();
+        g.activity_mut(ActivityId(1))
+            .unwrap()
+            .dependencies
+            .push(ActivityId(99));
+        assert!(matches!(
+            g.topological_order(),
+            Err(GraphError::UnknownDependency { .. })
+        ));
+        assert!(g.earliest_finish_times().is_err());
     }
 
     #[test]

@@ -2,31 +2,17 @@
 //!
 //! Measures sling-load distribution and erection-sequence planning across
 //! the reference container-ship division (12 blocks) and synthetic large
-//! divisions.
+//! divisions. Criterion-managed (review 7G).
 
-use std::time::Instant;
+#![allow(missing_docs)]
+
+use criterion::{criterion_group, criterion_main, Criterion};
 
 use tpt_yard_blocks::{cog_within_lifts, sling_loads};
 use tpt_yard_core::{Dimensions, Vector3};
 use tpt_yard_hull::{HullConstruction, HullGeometry};
 
-fn bench(name: &str, iterations: u32, mut f: impl FnMut()) {
-    f();
-    let start = Instant::now();
-    for _ in 0..iterations {
-        f();
-    }
-    let elapsed = start.elapsed();
-    println!(
-        "{name:<44} {iterations:>8} iters  {:>10.1?} total  {:>10.3?} / iter",
-        elapsed,
-        elapsed / iterations
-    );
-}
-
-fn main() {
-    println!("== tpt-shipyard: block-lifting benchmark ==");
-
+fn bench_block_lifting(c: &mut Criterion) {
     // Single heavy pick: 12 lift points, 800 t block.
     let lifts: Vec<Vector3> = (0..12)
         .map(|i| {
@@ -37,13 +23,19 @@ fn main() {
         .collect();
     let hook = Vector3::new(16.5, 4.0, 25.0);
 
-    bench("sling_loads (12 legs, 800 t)", 2_000, || {
-        let loads = sling_loads(800.0 * 9.81, Vector3::new(7.5, 3.5, 0.0), &lifts, hook);
-        assert_eq!(loads.len(), 12);
+    c.bench_function("lifting/sling_loads_12_legs", |b| {
+        b.iter(|| {
+            let loads = sling_loads(
+                800.0 * 9.81,
+                Vector3::new(7.5, 3.5, 0.0),
+                std::hint::black_box(&lifts),
+                hook,
+            );
+            assert_eq!(loads.len(), 12);
+        })
     });
-
-    bench("cog_within_lifts (12 legs)", 2_000, || {
-        assert!(cog_within_lifts(Vector3::new(7.5, 4.0, 0.0), &lifts));
+    c.bench_function("lifting/cog_within_lifts_12", |b| {
+        b.iter(|| cog_within_lifts(Vector3::new(7.5, 4.0, 0.0), std::hint::black_box(&lifts)))
     });
 
     // Division + erection planning at three scales.
@@ -56,12 +48,14 @@ fn main() {
             depth_bands: 3,
         });
         let workshop = Dimensions::new(24.0, 40.0, 20.0);
-        let name = format!("division + erection ({:.0} m, 3 tiers)", loa);
-        bench(&name, 200, || {
-            let mut h = HullConstruction::new(hull.hull_form);
-            h.blocks = h.block_division(40_000.0, workshop);
-            let joins = h.erection_sequence(&h.blocks);
-            assert!(!joins.is_empty());
+        c.bench_function(&format!("lifting/division_erection_{loa}m"), |b| {
+            b.iter(|| {
+                let blocks = hull.block_division(40_000.0, workshop);
+                hull.erection_sequence(&blocks).len()
+            })
         });
     }
 }
+
+criterion_group!(benches, bench_block_lifting);
+criterion_main!(benches);

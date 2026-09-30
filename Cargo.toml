@@ -19,6 +19,7 @@ members = [
     "crates/sea/tpt-yard-launch",
     "crates/sea/tpt-yard-outfitting",
     "crates/sea/tpt-yard-sea-trials",
+    "crates/sea/tpt-yard-hydrostatics",
     # Space Shipyard
     "crates/space/tpt-yard-orbital-assembly",
     "crates/space/tpt-yard-space-structural",
@@ -35,6 +36,9 @@ members = [
     "crates/integration/tpt-yard-transport-link",
     "crates/integration/tpt-yard-process-link",
     "crates/integration/tpt-yard-earth-link",
+    # Facade & CLI
+    "crates/facade/tpt-yard",
+    "crates/cli/tpt-yard-cli",
     # Examples & benchmarks
     "examples/container-ship-block-assembly",
     "examples/orbital-station-truss",
@@ -79,6 +83,12 @@ tpt-yard-scheduling = { path = "crates/planning/tpt-yard-scheduling", version = 
 tpt-yard-quality = { path = "crates/planning/tpt-yard-quality", version = "0.1.0" }
 tpt-yard-logistics = { path = "crates/planning/tpt-yard-logistics", version = "0.1.0" }
 tpt-yard-facility = { path = "crates/planning/tpt-yard-facility", version = "0.1.0" }
+tpt-yard-hydrostatics = { path = "crates/sea/tpt-yard-hydrostatics", version = "0.1.0" }
+tpt-yard-transport-link = { path = "crates/integration/tpt-yard-transport-link", version = "0.1.0" }
+tpt-yard-process-link = { path = "crates/integration/tpt-yard-process-link", version = "0.1.0" }
+tpt-yard-earth-link = { path = "crates/integration/tpt-yard-earth-link", version = "0.1.0" }
+tpt-yard-wasm = { path = "crates/core/tpt-yard-wasm", version = "0.1.0" }
+tpt-yard = { path = "crates/facade/tpt-yard", version = "0.1.0" }
 # External
 wasm-bindgen = "=0.2.128"
 

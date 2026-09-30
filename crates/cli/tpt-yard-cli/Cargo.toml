@@ -1,0 +1,23 @@
+[package]
+name = "tpt-yard-cli"
+description = "Command-line front end for tpt-shipyard: validate, plan (block division through schedule), schedule, report, and scaffold vessel projects."
+keywords = ["shipyard", "cli", "digital-twin", "construction", "planning"]
+categories = ["command-line-utilities", "science", "simulation"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "tpt-yard"
+path = "src/main.rs"
+
+[dependencies]
+tpt-yard = { workspace = true }
+tpt-yard-core = { workspace = true }
+
+[lints]
+workspace = true

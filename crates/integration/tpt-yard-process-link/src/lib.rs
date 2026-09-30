@@ -185,8 +185,8 @@ pub fn plan_propellant_loading(
     let eos = eos_for(propellant)
         .ok_or_else(|| ProcessLinkError::EosMismatch(propellant.name.clone()))?;
 
-    let loading_pressure = 1.15 * propellant.boiling_point_k * propellant.boiling_point_k * 0.0
-        + 1.15 * vapour_pressure_at_boiling(propellant);
+    // Ullage held slightly above atmospheric during fill.
+    let loading_pressure = 1.15 * vapour_pressure_at_boiling(propellant);
     let vapour_density = eos.vapour_density(
         propellant.boiling_point_k,
         loading_pressure,
@@ -204,9 +204,10 @@ pub fn plan_propellant_loading(
     })
 }
 
-/// Saturation pressure proxy at the boiling point (= 1 atm by definition).
-fn vapour_pressure_at_boiling(propellant: &PropellantSpec) -> f64 {
-    let _ = propellant;
+/// Saturation pressure at the boiling point: 1 atm by definition of the
+/// normal boiling point (the EOS lookup for real operating pressures stays
+/// with the  substrate).
+fn vapour_pressure_at_boiling(_propellant: &PropellantSpec) -> f64 {
     101_325.0
 }
 

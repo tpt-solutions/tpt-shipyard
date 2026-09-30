@@ -3,8 +3,11 @@
 //! Measures the full analytical pipeline — Rosenthal thermal cycles,
 //! residual-stress field, distortion, and sequence ranking — on the same
 //! panel as `test-data/golden/sea/welding-distortion-panel.json`.
+//! Criterion-managed (review 7G: baselines + regression gates).
 
-use std::time::Instant;
+#![allow(missing_docs)]
+
+use criterion::{criterion_group, criterion_main, Criterion};
 
 use tpt_yard_core::{Material, Vector3};
 use tpt_yard_joints::{GrooveType, JointGeometry, JointKind};
@@ -30,66 +33,46 @@ fn reference_panel() -> WeldingSimulation {
     WeldingSimulation::new(procedure, Material::ah36(), joint)
 }
 
-fn bench(name: &str, iterations: u32, mut f: impl FnMut()) {
-    // Warm-up.
-    f();
-    let start = Instant::now();
-    for _ in 0..iterations {
-        f();
-    }
-    let elapsed = start.elapsed();
-    println!(
-        "{name:<44} {iterations:>8} iters  {:>10.1?} total  {:>10.3?} / iter",
-        elapsed,
-        elapsed / iterations
-    );
-}
-
-fn main() {
-    println!("== tpt-shipyard: welding-distortion benchmark (reference AH36 panel) ==");
+fn bench_welding(c: &mut Criterion) {
     let sim = reference_panel();
 
-    bench("thermal_cycle (d = 8 mm)", 200, || {
-        let _ = sim.thermal_cycle(8.0).unwrap();
+    c.bench_function("welding/thermal_cycle_8mm", |b| {
+        b.iter(|| std::hint::black_box(&sim).thermal_cycle(8.0).unwrap())
     });
-
-    bench("thermal_cycle (d = 20 mm)", 200, || {
-        let _ = sim.thermal_cycle(20.0).unwrap();
+    c.bench_function("welding/thermal_cycle_20mm", |b| {
+        b.iter(|| std::hint::black_box(&sim).thermal_cycle(20.0).unwrap())
     });
-
-    bench("residual_stress", 500, || {
-        let _ = sim.residual_stress().unwrap();
+    c.bench_function("welding/residual_stress", |b| {
+        b.iter(|| std::hint::black_box(&sim).residual_stress().unwrap())
     });
-
-    bench("distortion", 500, || {
-        let _ = sim.distortion().unwrap();
+    c.bench_function("welding/distortion", |b| {
+        b.iter(|| std::hint::black_box(&sim).distortion().unwrap())
     });
-
-    // Multi-pass sequence ranking with 8 candidate sequences of 6 passes.
-    let candidates: Vec<Vec<WeldPass>> = (0..8)
-        .map(|seed| {
-            (0..6)
-                .map(|i| WeldPass {
-                    id: i + 1,
-                    heat_input_kj_mm: 3.0 + (i % 3) as f64,
-                    direction: if (i + seed) % 2 == 0 {
-                        WeldDirection::Forward
-                    } else {
-                        WeldDirection::Reverse
-                    },
-                    start_mm: Vector3::new((i * 150) as f64, 0.0, 0.0),
-                    end_mm: Vector3::new((i * 150 + 120) as f64, 0.0, 0.0),
-                })
-                .collect()
+    c.bench_function("welding/sequence_optimization", |b| {
+        let mk = |i: u32, x: f64, dir| WeldPass {
+            id: i,
+            heat_input_kj_mm: 6.0,
+            direction: dir,
+            start_mm: Vector3::ZERO,
+            end_mm: Vector3::new(x + 500.0, 0.0, 0.0),
+        };
+        let concentrated = vec![
+            mk(1, 0.0, WeldDirection::Forward),
+            mk(2, 0.0, WeldDirection::Forward),
+            mk(3, 0.0, WeldDirection::Forward),
+        ];
+        let balanced = vec![
+            mk(1, 0.0, WeldDirection::Forward),
+            mk(2, 600.0, WeldDirection::Reverse),
+            mk(3, 1200.0, WeldDirection::Forward),
+        ];
+        b.iter(|| {
+            std::hint::black_box(&sim)
+                .welding_sequence_optimization(&[concentrated.clone(), balanced.clone()])
+                .unwrap()
         })
-        .collect();
-    bench("sequence_optimization (8x6 passes)", 50, || {
-        let _ = sim.welding_sequence_optimization(&candidates).unwrap();
-    });
-
-    bench("distortion_of_sequence (6 passes)", 500, || {
-        let mut s = sim.clone();
-        s.weld_procedure.sequence = candidates[0].clone();
-        let _ = s.distortion_of_sequence().unwrap();
     });
 }
+
+criterion_group!(benches, bench_welding);
+criterion_main!(benches);

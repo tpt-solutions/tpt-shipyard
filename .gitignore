@@ -2,14 +2,17 @@
 /target
 **/target
 
-# Cargo
-Cargo.lock
+# Cargo: the lock file IS tracked (reproducible CI builds with --locked,
+# review 7G). Only ignore the local target dir.
 
 # Backup / swap files
 *.bak
 *.swp
 *.swo
 *~
+
+# Agent worktree scratch
+.kilo/
 
 # Editor / IDE
 .idea

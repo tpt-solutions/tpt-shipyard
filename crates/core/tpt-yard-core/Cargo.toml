@@ -13,3 +13,6 @@ authors.workspace = true
 
 [dependencies]
 tpt-yard-assembly = { workspace = true }
+
+[lints]
+workspace = true

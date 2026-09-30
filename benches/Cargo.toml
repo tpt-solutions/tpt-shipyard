@@ -26,6 +26,7 @@ name = "launch-stability"
 harness = false
 
 [dependencies]
+criterion = "0.5"
 tpt-yard-core = { workspace = true }
 tpt-yard-joints = { workspace = true }
 tpt-yard-welding = { workspace = true }
@@ -36,3 +37,6 @@ tpt-yard-drydock = { workspace = true }
 tpt-yard-weight = { workspace = true }
 tpt-yard-orbital-assembly = { workspace = true }
 tpt-yard-robotic-assembly = { workspace = true }
+
+[lints]
+workspace = true

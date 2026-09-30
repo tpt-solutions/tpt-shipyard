@@ -96,8 +96,9 @@ impl fmt::Display for LaunchWindowError {
 impl std::error::Error for LaunchWindowError {}
 
 /// The sea-state limit by launch method (yard practice screening):
-/// slipway end launch ≤ 2, side launch ≤ 1, dock flooding ≤ 3, shiplift ≤ 2.
-fn sea_state_limit(analysis: &LaunchAnalysis) -> f64 {
+/// slipway end launch <= 2, side launch <= 1, dock flooding <= 3, shiplift <= 2.
+/// (Combined with the site's operational limit in `plan_launch_window`.)
+fn method_sea_state_limit(analysis: &LaunchAnalysis) -> f64 {
     match analysis.launch_method {
         LaunchMethod::Slipway { .. } => 2.0,
         LaunchMethod::SideLaunch => 1.0,
@@ -109,7 +110,9 @@ fn sea_state_limit(analysis: &LaunchAnalysis) -> f64 {
 /// Finds the first safe window in the forecast for the launch method.
 ///
 /// The window spans the longest (and first) run of hours at or below the
-/// method's sea-state limit; the `earliest_hour` is that run's start.
+/// sea-state limit - the *stricter* of the launch-method practice limit and
+/// the site's operational `max_sea_state` (the site limit was ignored
+/// before, review 7B); the `earliest_hour` is that run's start.
 ///
 /// # Errors
 ///
@@ -121,7 +124,7 @@ pub fn plan_launch_window(
     if forecast.hourly_sea_state.is_empty() {
         return Err(LaunchWindowError::EmptyForecast);
     }
-    let limit = sea_state_limit(analysis);
+    let limit = method_sea_state_limit(analysis).min(analysis.site.max_sea_state as f64);
 
     // Longest calm run.
     let (mut best_start, mut best_len) = (0usize, 0usize);
@@ -199,6 +202,24 @@ mod tests {
         assert_eq!(window.earliest_hour, 17);
         assert_eq!(window.calm_hours, 7); // hours 17..24
         assert_eq!(window.sea_state_limit, 2.0);
+    }
+
+    /// Regression (review 7B): the site's operational sea-state limit is
+    /// enforced, not just the per-method practice limit.
+    #[test]
+    fn site_limit_stricter_than_method_limit() {
+        // Sheltered site: slipway practice allows SS 2, the site only SS 1.
+        let mut a = slipway();
+        a.site.max_sea_state = 1;
+        let forecast = SeaStateForecast {
+            hourly_sea_state: (0..24)
+                .map(|h| if h < 6 { 2.0 } else { 1.0 })
+                .collect(),
+        };
+        let window = plan_launch_window(&a, &forecast).unwrap();
+        // SS 2 hours would pass a bare method limit of 2 but must wait.
+        assert_eq!(window.earliest_hour, 6);
+        assert_eq!(window.sea_state_limit, 1.0);
     }
 
     #[test]

@@ -1,0 +1,63 @@
+{
+  "id": 1,
+  "name": "Submarine pressure hull",
+  "vessel_type": {
+    "kind": "sea",
+    "value": {
+      "kind": "submarine",
+      "hull_type": "DoubleHull"
+    }
+  },
+  "construction_method": "sea_block_construction",
+  "build_phases": [
+    {
+      "id": 1,
+      "name": "Pressure hull sections",
+      "activities": [
+        {
+          "id": 1,
+          "name": "Roll and weld sections",
+          "activity_type": {
+            "kind": "join_block"
+          },
+          "dependencies": [],
+          "duration_hours": 12,
+          "resources": []
+        },
+        {
+          "id": 2,
+          "name": "Fit ring stiffeners",
+          "activity_type": {
+            "kind": "join_block"
+          },
+          "dependencies": [
+            1
+          ],
+          "duration_hours": 10,
+          "resources": []
+        },
+        {
+          "id": 3,
+          "name": "Hydro test",
+          "activity_type": {
+            "kind": "join_block"
+          },
+          "dependencies": [
+            2
+          ],
+          "duration_hours": 6,
+          "resources": []
+        }
+      ],
+      "structural_state": {
+        "kind": "not_started"
+      },
+      "weight_state": {
+        "design_kg": 2300000,
+        "installed_kg": 0
+      },
+      "duration_days": 40
+    }
+  ],
+  "current_phase": 1
+}

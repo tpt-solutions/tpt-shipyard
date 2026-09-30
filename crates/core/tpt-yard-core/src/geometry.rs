@@ -252,9 +252,11 @@ impl Geometry3D {
         Self { vertices, faces }
     }
 
-    /// A cylinder along the Z axis, centred on the origin.
+    /// A cylinder along the Z axis, centred on the origin. Fewer than 3
+    /// segments cannot form a ring; the count is clamped up to 3 (an
+    /// assertion would panic on caller-supplied values).
     pub fn from_cylinder(radius: f64, length: f64, segments: u32) -> Self {
-        assert!(segments >= 3, "cylinder needs at least 3 segments");
+        let segments = segments.max(3);
         let half = length / 2.0;
         let mut vertices = Vec::with_capacity(segments as usize * 2 + 2);
         for z in [-half, half] {
@@ -321,10 +323,12 @@ impl Geometry3D {
     /// Axis-aligned bounding box of all vertices (degenerate for empty
     /// geometry).
     pub fn bounding_box(&self) -> BoundingBox {
-        let mut bb = match self.vertices.first() {
-            Some(&v) => BoundingBox::point(v),
-            None => BoundingBox::point(Vector3::ZERO),
+        // `&vertices[1..]` on an empty mesh would panic (range start out of
+        // range); an empty mesh has an empty box.
+        let Some(&first) = self.vertices.first() else {
+            return BoundingBox::point(Vector3::ZERO);
         };
+        let mut bb = BoundingBox::point(first);
         for v in &self.vertices[1..] {
             bb = bb.union(&BoundingBox::point(*v));
         }
@@ -356,7 +360,13 @@ impl Geometry3D {
 
     /// Appends another mesh (offset by `delta`) into this one.
     pub fn merge(&mut self, other: &Geometry3D, delta: Vector3) {
-        let offset = self.vertices.len() as u32;
+        // Face indices are u32; a combined vertex count beyond that cannot
+        // be represented (and cannot fit memory either). Saturate instead
+        // of wrapping indices silently.
+        let Ok(offset) = u32::try_from(self.vertices.len()) else {
+            debug_assert!(false, "vertex count exceeds u32::MAX in merge");
+            return;
+        };
         for v in &other.vertices {
             self.vertices.push(*v + delta);
         }

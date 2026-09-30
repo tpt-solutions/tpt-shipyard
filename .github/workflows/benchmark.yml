@@ -3,24 +3,52 @@ name: Benchmark
 on:
   push:
     branches: [main, master]
+  pull_request:
   workflow_dispatch:
 
 jobs:
-  bench:
-    name: Run benchmarks
+  # Master pushes save a criterion baseline for later comparisons.
+  baseline:
+    name: Save baseline (master)
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Run benches
-        run: |
-          mkdir -p bench-results
-          for b in block-lifting welding-distortion orbital-assembly-sequence launch-stability; do
-            cargo bench -p tpt-shipyard-benches --bench "$b" 2>&1 | tee "bench-results/$b.txt"
-          done
-      - name: Upload results
+      - name: Run benches with a saved baseline
+        run: cargo bench -p tpt-shipyard-benches -- --save-baseline master
+      - name: Upload baseline
         uses: actions/upload-artifact@v4
         with:
-          name: bench-results
-          path: bench-results/
+          name: criterion-baseline
+          path: target/criterion
+
+  # PRs run the benches and compare against the saved baseline with a
+  # 20 % regression gate (critcmp).
+  gate:
+    name: Regression gate (PR)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Download master baseline
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: benchmark.yml
+          name: criterion-baseline
+          branch: master
+          path: target/criterion
+          if_no_artifact_found: warn
+      - name: Smoke benches (PR must compile and run)
+        run: cargo bench -p tpt-shipyard-benches -- --quick
+      - name: Compare against the baseline (20 % threshold)
+        run: |
+          cargo install critcmp --locked
+          cargo bench -p tpt-shipyard-benches -- --save-baseline pr
+          critcmp master pr --threshold 20 || {
+            echo "::error::benchmark regression beyond 20 % against the master baseline"
+            exit 1
+          }

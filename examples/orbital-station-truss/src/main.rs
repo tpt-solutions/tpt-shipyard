@@ -2,50 +2,92 @@
 //! robotic arm end-to-end — manifest, sequence plan, step simulation with
 //! collision and force checks, and partial-structure integrity at every bay.
 
-use tpt_yard_core::{ComponentId, StepId, Vector3};
+use tpt_yard_core::{json::Value, ComponentId, StepId, Vector3};
 use tpt_yard_orbital_assembly::{
     AssemblyAction, AssemblyState, ComponentSpec, OrbitalAssembly, OrbitalParameters,
     SpaceStructure,
 };
 use tpt_yard_robotic_assembly::{EndEffector, Joint, Pose, RoboticArm};
 
-const BAYS: u64 = 6;
-const PITCH: f64 = 5.0;
-
 fn main() {
-    // 1. The truss manifest and the assembly robot.
+    // 1. The truss manifest (review 7F: examples read their test data and
+    //    accept a path argument). Defaults to the repo's ISS reference
+    //    manifest; pass another manifest path to plan a different truss.
+    let manifest_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| {
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../test-data/orbital-structures/iss-truss-manifest.json"
+            )
+            .to_string()
+        });
+    let text = std::fs::read_to_string(&manifest_path)
+        .unwrap_or_else(|e| panic!("reading {manifest_path}: {e}"));
+    let manifest = Value::parse(&text).expect("manifest parses");
+    let num = |o: &Value, k: &str| o.get(k).and_then(|n| n.as_f64()).expect(k);
+
+    let bays = manifest
+        .get("segments")
+        .and_then(|n| n.as_u64())
+        .expect("segments");
+    let pitch = num(&manifest, "bay_pitch_m");
+    let bay = manifest.get("bay").expect("bay");
+    let (bay_mass, dims) = {
+        let d = bay.get("dimensions_m").and_then(|d| d.as_array()).expect("dims");
+        (
+            num(bay, "mass_kg"),
+            Vector3::new(d[0].as_f64().unwrap(), d[1].as_f64().unwrap(), d[2].as_f64().unwrap()),
+        )
+    };
+    let mut orbit = OrbitalParameters::default();
+    if let Some(o) = manifest.get("orbit") {
+        if let Some(a) = o.get("station_keeping_accel_ms2").and_then(|n| n.as_f64()) {
+            orbit.station_keeping_accel_ms2 = a;
+        }
+    }
+
     let mut assembly = OrbitalAssembly::new(
         SpaceStructure::Truss {
-            segments: BAYS as u32,
-            length_m: BAYS as f64 * PITCH,
+            segments: bays as u32,
+            length_m: bays as f64 * pitch,
         },
-        OrbitalParameters::default(),
+        orbit,
     );
-    for i in 1..=BAYS {
+    for i in 1..=bays {
         assembly.add_component(ComponentSpec {
             id: ComponentId(i),
             name: format!("bay {i}"),
-            mass_kg: 500.0,
-            dimensions: Vector3::new(PITCH, 3.0, 3.0),
-            target_position: Vector3::new(PITCH * i as f64 - PITCH / 2.0, 0.0, 0.0),
+            mass_kg: bay_mass,
+            dimensions: dims,
+            target_position: Vector3::new(pitch * i as f64 - pitch / 2.0, 0.0, 0.0),
         });
     }
+    let robot_spec = manifest.get("robot").expect("robot");
+    let links = robot_spec
+        .get("links_m")
+        .and_then(|l| l.as_array())
+        .expect("links")
+        .iter()
+        .map(|n| n.as_f64().unwrap())
+        .collect::<Vec<_>>();
+    let force_n = num(robot_spec, "gripper_force_n");
     let mut robot = RoboticArm::new(
         tpt_yard_core::RobotId(1),
-        vec![
-            Joint::revolute(-3.0, 3.0, 0.5),
-            Joint::revolute(-3.0, 3.0, 0.5),
-        ],
-        vec![4.0, 4.0],
-        EndEffector::Gripper { force_n: 400.0 },
+        links.iter().map(|_| Joint::revolute(-3.0, 3.0, 0.5)).collect(),
+        links.clone(),
+        EndEffector::Gripper { force_n },
     );
     robot.base = Pose::origin();
     assembly.add_robot(robot);
+    // Assembly-parameterised cross-section (review 7B: no hard-codeds).
+    assembly.chord_area_m2 = num(bay, "chord_area_m2");
+    assembly.bay_height_m = num(bay, "bay_height_m");
 
     // 2. Plan the sequence: anchor bay first, build outwards.
     let steps = assembly.plan_sequence();
     println!(
-        "Truss: {BAYS} bays x {PITCH} m, {} assembly steps",
+        "Truss: {bays} bays x {pitch} m (from {manifest_path}), {} assembly steps",
         steps.len()
     );
 
@@ -111,9 +153,9 @@ fn main() {
 {} m deployed cantilever under {} N docking impulse",
         final_check.root_stress_mpa,
         final_check.utilization * 100.0,
-        BAYS as f64 * PITCH - PITCH / 2.0,
+        bays as f64 * pitch - pitch / 2.0,
         assembly.docking_impulse_n
     );
-    assert_eq!(state.installed_components.len(), BAYS as usize);
+    assert_eq!(state.installed_components.len(), bays as usize);
     assert!(final_check.passed);
 }

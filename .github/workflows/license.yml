@@ -4,6 +4,10 @@ on:
   push:
     branches: [main, master]
   pull_request:
+  # Review 7G: advisories and sources drift daily — run the FULL deny
+  # check (licenses, bans, advisories, sources) on a weekly schedule too.
+  schedule:
+    - cron: "0 6 * * 1"
 
 jobs:
   cargo-deny:
@@ -13,4 +17,4 @@ jobs:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          command: check licenses bans
+          command: check

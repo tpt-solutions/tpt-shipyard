@@ -20,7 +20,7 @@ a single release train on a 6-week cadence — see the workspace
 
 ### Verification
 
-- JSON round-trip tests over every enum variant (compact and pretty writers)
+- JSON round-trip tests for the project model (compact and pretty writers)
 - Geometry tests: box/cylinder bounds, centroids, rotation length preservation
 - Rosenthal-relevant material diffusivity and shear-modulus consistency checks
 

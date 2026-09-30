@@ -34,7 +34,7 @@
 //!     weight_kg: 100.0, cog: Vector3::new(2.0, 0.0, 3.0),
 //!     status: ItemStatus::Design, margin_pct: 0.0,
 //!     installed_by: Some(ActivityId(1)),
-//! });
+//! }).expect("valid weight item");
 //!
 //! let mut twin = DigitalTwin::with_weight_model(
 //!     project, weight,
@@ -190,6 +190,17 @@ pub struct CoGReport {
     pub samples: Vec<CoGSample>,
 }
 
+/// Counts from one [`DigitalTwin::ingest_telemetry`] batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TelemetrySummary {
+    /// Sensor readings stored.
+    pub readings_ingested: usize,
+    /// Scan deviations seen.
+    pub deviations_scanned: usize,
+    /// Deviations beyond tolerance flagged as quality rework.
+    pub corrections_flagged: usize,
+}
+
 /// Errors produced by twin operations.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TwinError {
@@ -208,6 +219,18 @@ pub enum TwinError {
     /// Completing the activity would leave the partial structure unsound; the
     /// twin refuses to advance.
     UnsoundStructure(StructuralCheckResult),
+    /// The activity belongs to a phase ahead of the twin's current phase:
+    /// the plan says this work has not started yet.
+    ActivityNotInCurrentPhase {
+        /// The activity.
+        activity: ActivityId,
+        /// The phase it belongs to.
+        activity_phase: PhaseId,
+        /// The twin's current phase.
+        current_phase: PhaseId,
+    },
+    /// Serialized twin state is malformed.
+    Malformed(String),
 }
 
 impl fmt::Display for TwinError {
@@ -222,6 +245,15 @@ impl fmt::Display for TwinError {
             TwinError::UnknownPhase(p) => write!(f, "unknown phase {p}"),
             TwinError::Weight(e) => write!(f, "weight model: {e}"),
             TwinError::Graph(e) => write!(f, "activity graph: {e}"),
+            TwinError::ActivityNotInCurrentPhase {
+                activity,
+                activity_phase,
+                current_phase,
+            } => write!(
+                f,
+                "activity {activity} belongs to phase {activity_phase:?}, ahead of the current phase {current_phase:?}"
+            ),
+            TwinError::Malformed(m) => write!(f, "malformed twin state: {m}"),
             TwinError::UnsoundStructure(check) => {
                 write!(
                     f,
@@ -341,6 +373,19 @@ impl DigitalTwin {
         if self.assembly_state.completed_activities.contains(activity) {
             return Err(TwinError::AlreadyCompleted(*activity));
         }
+        // The activity must not run ahead of the plan: a twin tracking the
+        // build state refuses work from a phase that has not started.
+        if let Some((idx, phase_id)) = self.phase_of_activity(*activity) {
+            let current_idx = self.vessel.phase_index(self.vessel.current_phase);
+            if current_idx.is_some_and(|c| idx > c) {
+                return Err(TwinError::ActivityNotInCurrentPhase {
+                    activity: *activity,
+                    activity_phase: phase_id,
+                    current_phase: self.vessel.current_phase,
+                });
+            }
+        }
+
         // Resolve the graph once; dependency check comes from the *graph
         // statuses*, which mirror assembly_state.
         let graph = self.status_graph()?;
@@ -358,6 +403,9 @@ impl DigitalTwin {
         }
 
         // Dry run: what will the installed set look like after this activity?
+        // `weight`/`moment` are the exact post-commit installed totals, so
+        // the mass-properties update below needs no further computation that
+        // could fail mid-commit.
         let mut weight = self.weight_model.installed_weight();
         let mut moment = Vector3::ZERO;
         for i in &self.weight_model.items {
@@ -382,7 +430,9 @@ impl DigitalTwin {
             return Err(TwinError::UnsoundStructure(check));
         }
 
-        // Commit.
+        // Commit. Every fallible step has already run, so no failure can
+        // leave the twin half-mutated. An empty installed set (early phases
+        // with no wired items yet) is a valid state: zero mass properties.
         self.assembly_state.completed_activities.insert(*activity);
         self.assembly_state.in_progress.remove(activity);
         self.assembly_state.blocked.remove(activity);
@@ -391,10 +441,9 @@ impl DigitalTwin {
                 item.status = ItemStatus::Installed;
             }
         }
-        let installed_cog = self.weight_model.installed_centre_of_gravity()?;
         self.assembly_state.current_mass_properties = MassProperties {
-            mass_kg: self.weight_model.installed_weight(),
-            cog: installed_cog,
+            mass_kg: weight,
+            cog: hypothetical_cog,
         };
         self.structural_model.connected_fraction = if self.structural_model.member_count > 0 {
             self.assembly_state.completed_activities.len() as f64
@@ -419,7 +468,11 @@ impl DigitalTwin {
             .unwrap_or(false);
         if current_done {
             if let Some(next) = self.vessel.build_phases.get(idx + 1) {
-                self.vessel.current_phase = next.id;
+                // The pointer only ever moves forward: completing a late
+                // activity from an earlier phase must not rewind the twin.
+                if next.id > self.vessel.current_phase {
+                    self.vessel.current_phase = next.id;
+                }
             }
         }
         Ok(())
@@ -533,8 +586,14 @@ impl DigitalTwin {
                             margin * 100.0
                         ));
                     }
-                    let half_track = positions.iter().map(|p| p.y.abs()).fold(0.0f64, f64::max);
-                    if half_track > 0.0 && cog.y.abs() > half_track {
+                    // Transverse containment within the actual support
+                    // track (handles asymmetric keel-block layouts; a
+                    // single keel line — zero-width track — requires the
+                    // CoG on the line).
+                    let (min_y, max_y) = positions
+                        .iter()
+                        .fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.y), b.max(p.y)));
+                    if cog.y < min_y - 1e-9 || cog.y > max_y + 1e-9 {
                         passed = false;
                         notes.push("CoG outside the block track transversally".into());
                     }
@@ -578,6 +637,219 @@ impl DigitalTwin {
             cog,
             notes,
         }
+    }
+
+    /// Restores a twin serialized by [`DigitalTwin::to_json`].
+    ///
+    /// The restored twin carries an empty render geometry (derived state —
+    /// it repopulates as activities advance); everything else round-trips.
+    ///
+    /// # Errors
+    ///
+    /// [`TwinError`] on malformed state or a project that fails
+    /// [`VesselProject::validate`].
+    pub fn from_json_value(v: &tpt_yard_core::json::Value) -> Result<Self, TwinError> {
+        use tpt_yard_core::json::Value;
+        let malformed = |what: &str| TwinError::Malformed(format!("twin state: missing '{what}'"));
+        let vessel = VesselProject::from_json_value(
+            v.get("vessel")
+                .ok_or_else(|| malformed("vessel"))
+                .map_err(|e| TwinError::Malformed(format!("twin vessel: {e}")))?,
+        )
+        .map_err(|e| TwinError::Malformed(format!("twin vessel: {e}")))?;
+        let weight = WeightModel::from_json_value(
+            v.get("weight_model")
+                .ok_or_else(|| malformed("weight_model"))?,
+        )
+        .map_err(|e| TwinError::Malformed(format!("twin weight model: {e}")))?;
+        let parse_set = |k: &str| -> Result<HashSet<ActivityId>, TwinError> {
+            let arr = v
+                .get(k)
+                .and_then(|x| x.as_array())
+                .ok_or_else(|| malformed(k))?;
+            Ok(arr
+                .iter()
+                .filter_map(|n| n.as_f64().map(|f| ActivityId(f as u64)))
+                .collect())
+        };
+        let completed = parse_set("completed")?;
+        let in_progress = parse_set("in_progress")?;
+        let blocked = parse_set("blocked")?;
+        let mp_v = v.get("mass_properties").ok_or_else(|| malformed("mass_properties"))?;
+        let num = |o: &Value, k: &str| o.get(k).and_then(|n| n.as_f64()).unwrap_or(0.0);
+        let cog_v = mp_v.get("cog").and_then(|c| c.as_array());
+        let cog = cog_v
+            .map(|a| {
+                Vector3::new(
+                    a.first().and_then(|n| n.as_f64()).unwrap_or(0.0),
+                    a.get(1).and_then(|n| n.as_f64()).unwrap_or(0.0),
+                    a.get(2).and_then(|n| n.as_f64()).unwrap_or(0.0),
+                )
+            })
+            .unwrap_or(Vector3::ZERO);
+
+        let member_count = vessel
+            .build_phases
+            .iter()
+            .map(|p| p.activities.len())
+            .sum();
+        let mut twin = Self {
+            vessel,
+            weight_model: weight,
+            structural_model: StructuralModel {
+                member_count,
+                connected_fraction: 0.0,
+            },
+            assembly_state: AssemblyState {
+                completed_activities: completed,
+                in_progress,
+                blocked,
+                current_geometry: tpt_yard_core::Geometry3D::new(),
+                current_mass_properties: MassProperties {
+                    mass_kg: num(mp_v, "mass_kg"),
+                    cog,
+                },
+            },
+            support_condition: SupportCondition::Floating,
+            quality_records: Vec::new(),
+            sensor_data: Vec::new(),
+        };
+        twin.structural_model.connected_fraction =
+            if twin.structural_model.member_count > 0 {
+                twin.assembly_state.completed_activities.len() as f64
+                    / twin.structural_model.member_count as f64
+            } else {
+                0.0
+            };
+        twin.activity_graph()?;
+        Ok(twin)
+    }
+
+    /// Ingests a live sensor/scan batch (review 7H roadmap item: "live
+    /// digital-twin ingest of sensor and scan-deviation JSON driving
+    /// distortion corrections").
+    ///
+    /// The batch schema (see `test-data/telemetry/sample-batch.json`):
+    /// readings append to `sensor_data`; scan deviations beyond the 5 mm
+    /// tolerance produce rejected quality records — corrections are
+    /// *flagged*, never auto-executed.
+    ///
+    /// # Errors
+    ///
+    /// [`TwinError::Malformed`] on a malformed batch.
+    pub fn ingest_telemetry(
+        &mut self,
+        batch: &tpt_yard_core::json::Value,
+    ) -> Result<TelemetrySummary, TwinError> {
+        let malformed = |m: &str| TwinError::Malformed(format!("telemetry: {m}"));
+        const TOLERANCE_MM: f64 = 5.0;
+
+        let mut summary = TelemetrySummary::default();
+
+        if let Some(readings) = batch.get("readings").and_then(|r| r.as_array()) {
+            for r in readings {
+                let block = r
+                    .get("block")
+                    .and_then(|b| b.as_u64())
+                    .ok_or_else(|| malformed("reading missing 'block'"))?;
+                let quantity = r
+                    .get("quantity")
+                    .and_then(|q| q.as_str())
+                    .ok_or_else(|| malformed("reading missing 'quantity'"))?
+                    .to_string();
+                let value = r
+                    .get("value")
+                    .and_then(|v| v.as_f64())
+                    .ok_or_else(|| malformed("reading missing numeric 'value'"))?;
+                self.sensor_data.push(SensorReading {
+                    timestamp_s: self.sensor_data.len() as f64,
+                    sensor: format!("block {block}: {quantity}"),
+                    value,
+                });
+                summary.readings_ingested += 1;
+            }
+        }
+
+        if let Some(devs) = batch.get("scan_deviations").and_then(|d| d.as_array()) {
+            for d in devs {
+                let block = d
+                    .get("block")
+                    .and_then(|b| b.as_u64())
+                    .ok_or_else(|| malformed("deviation missing 'block'"))?;
+                let dev_mm = d
+                    .get("axis_mm")
+                    .and_then(|v| v.as_f64())
+                    .ok_or_else(|| malformed("deviation missing numeric 'axis_mm'"))?;
+                summary.deviations_scanned += 1;
+                if dev_mm.abs() > TOLERANCE_MM {
+                    summary.corrections_flagged += 1;
+                    self.quality_records.push(QualityRecord {
+                        id: self.quality_records.len() as u64 + 1,
+                        activity_id: ActivityId(block),
+                        accepted: false,
+                        description: format!(
+                            "scan deviation {dev_mm:.1} mm exceeds the {TOLERANCE_MM} mm tolerance: flag for heat-straightening"
+                        ),
+                    });
+                }
+            }
+        }
+
+        Ok(summary)
+    }
+
+    /// Serializes the twin's session state to JSON: the vessel project,
+    /// the weight model, and the assembly state (completed / in-progress /
+    /// blocked activity sets plus current mass properties). The derived
+    /// render geometry is *not* serialized — it rebuilds as the plan
+    /// advances (review 7C persistence item).
+    ///
+    /// # Errors
+    ///
+    /// [`TwinError::Graph`] if the project's dependency network is
+    /// malformed (the same check [`DigitalTwin::activity_graph`] runs).
+    pub fn to_json(&self) -> Result<tpt_yard_core::json::Value, TwinError> {
+        use tpt_yard_core::json::Value;
+        // Validate first: persisting a broken twin would just defer the
+        // failure to load time.
+        self.activity_graph()?;
+        let set = |name: &str, items: &HashSet<ActivityId>| {
+            (
+                name.to_string(),
+                Value::Array(
+                    items
+                        .iter()
+                        .map(|a| Value::Number(a.0 as f64))
+                        .collect(),
+                ),
+            )
+        };
+        let mp = &self.assembly_state.current_mass_properties;
+        Ok(Value::Object(vec![
+            ("vessel".to_string(), self.vessel.to_json()),
+            ("weight_model".to_string(), self.weight_model.to_json()),
+            set("completed", &self.assembly_state.completed_activities),
+            set("in_progress", &self.assembly_state.in_progress),
+            set("blocked", &self.assembly_state.blocked),
+            (
+                "current_phase".to_string(),
+                Value::Number(self.vessel.current_phase.0 as f64),
+            ),
+            (
+                "mass_properties".to_string(),
+                Value::Object(vec![
+                    ("mass_kg".to_string(), Value::Number(mp.mass_kg)),
+                    (
+                        "cog".to_string(),
+                        Value::Array(vec![
+                            Value::Number(mp.cog.x),
+                            Value::Number(mp.cog.y),
+                            Value::Number(mp.cog.z),
+                        ]),
+                    ),
+                ]),
+            ),
+        ]))
     }
 
     /// As-built vs design weight deviation.
@@ -697,7 +969,7 @@ mod tests {
                 status: ItemStatus::Design,
                 margin_pct: 0.0,
                 installed_by: Some(id),
-            });
+            }).expect("valid weight item");
             phases.push(phase);
         }
         let project = VesselProject::new(
@@ -767,11 +1039,174 @@ mod tests {
 
     #[test]
     fn dependencies_are_enforced() {
-        let mut twin = twin_on_blocks(3);
+        // Phase 1 holds two chained activities (1 <- 2); phase 2 holds 3.
+        let mut phase1 = BuildPhase::new(PhaseId(1), "Erect", 3.0);
+        phase1
+            .activities
+            .push(AssemblyActivity::new(ActivityId(1), "Block 1", ActivityType::JoinBlock, 8.0));
+        phase1.activities.push(
+            AssemblyActivity::new(ActivityId(2), "Block 2", ActivityType::JoinBlock, 8.0)
+                .with_dependencies(&[ActivityId(1)]),
+        );
+        let mut phase2 = BuildPhase::new(PhaseId(2), "Outfit", 3.0);
+        phase2
+            .activities
+            .push(AssemblyActivity::new(ActivityId(3), "Wire", ActivityType::JoinBlock, 8.0));
+        let (project, _w) = line_project(1, 100.0, 2.0);
+        let mut project = project;
+        project.build_phases = vec![phase1, phase2];
+        let mut weight = WeightModel::new(200.0, Vector3::ZERO);
+        for (i, aid) in [(1u64, ActivityId(1)), (2, ActivityId(2))] {
+            weight.add_item(WeightItem {
+                id: ItemId(i),
+                name: format!("block {i}"),
+                group: "hull".into(),
+                weight_kg: 100.0,
+                cog: Vector3::new(i as f64 * 2.0, 0.0, 6.0),
+                status: ItemStatus::Design,
+                margin_pct: 0.0,
+                installed_by: Some(aid),
+            })
+            .expect("valid weight item");
+        }
+        let mut twin = DigitalTwin::with_weight_model(project, weight, SupportCondition::Orbital);
+        // Within the current phase, incomplete dependencies are rejected.
         let err = twin.advance_phase(&ActivityId(2)).unwrap_err();
         assert!(matches!(err, TwinError::DependenciesNotComplete(_)));
         twin.advance_phase(&ActivityId(1)).unwrap();
         twin.advance_phase(&ActivityId(2)).unwrap();
+    }
+
+    /// Regression (review 7B): the twin refuses work from a phase ahead of
+    /// the current one — the plan has not started it yet.
+    #[test]
+    fn future_phase_activity_is_rejected() {
+        let mut twin = twin_on_blocks(3);
+        let err = twin.advance_phase(&ActivityId(2)).unwrap_err();
+        assert!(matches!(
+            err,
+            TwinError::ActivityNotInCurrentPhase { .. }
+        ));
+        // Completed activities in the current phase remain valid, and the
+        // phase pointer advances normally afterwards.
+        twin.advance_phase(&ActivityId(1)).unwrap();
+        assert_eq!(twin.vessel.current_phase, PhaseId(2));
+        twin.advance_phase(&ActivityId(2)).unwrap();
+        assert_eq!(twin.vessel.current_phase, PhaseId(3));
+    }
+
+    /// Regression (review 7A/A3): `advance_phase` used to commit the
+    /// activity before the installed-CoG recompute could fail, leaving the
+    /// twin half-mutated on error; and `DigitalTwin::new` (no wired items)
+    /// could therefore never advance at all.
+    #[test]
+    fn fresh_twin_without_items_advances() {
+        let (project, _) = line_project(3, 100.0, 2.0);
+        let mut twin = DigitalTwin::new(project);
+        twin.advance_phase(&ActivityId(1)).unwrap();
+        assert!(twin
+            .assembly_state
+            .completed_activities
+            .contains(&ActivityId(1)));
+        let mp = twin.assembly_state.current_mass_properties;
+        assert_eq!(mp.mass_kg, 0.0);
+    }
+
+    /// Verification (review 7H): live telemetry ingest stores readings and
+    /// flags out-of-tolerance scan deviations as rework — without
+    /// auto-executing corrections.
+    #[test]
+    fn telemetry_ingest_stores_and_flags() {
+        let mut twin = twin_on_blocks(12);
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../test-data/telemetry/sample-batch.json"
+        ))
+        .expect("sample batch");
+        let batch = tpt_yard_core::json::Value::parse(&text).unwrap();
+
+        let summary = twin.ingest_telemetry(&batch).unwrap();
+        assert_eq!(summary.readings_ingested, 3);
+        assert_eq!(summary.deviations_scanned, 3);
+        assert_eq!(summary.corrections_flagged, 2, "deviations 7.8 and -6.3 exceed 5 mm");
+        assert_eq!(twin.sensor_data.len(), 3);
+        let rejected: Vec<_> = twin
+            .quality_records
+            .iter()
+            .filter(|r| !r.accepted)
+            .collect();
+        assert_eq!(rejected.len(), 2);
+        assert!(rejected.iter().all(|r| r.description.contains("heat-straightening")));
+
+        // Malformed batches are rejected, not partially applied.
+        let before = twin.sensor_data.len();
+        assert!(matches!(
+            twin.ingest_telemetry(
+                &tpt_yard_core::json::Value::parse(r#"{"readings":[{"block":1}]}"#).unwrap()
+            ),
+            Err(TwinError::Malformed(_))
+        ));
+        assert_eq!(twin.sensor_data.len(), before);
+    }
+
+    /// Regression (review 7C persistence): a twin's session state survives
+    /// a JSON round-trip — project, weight model and progress sets.
+    #[test]
+    fn twin_session_round_trips_through_json() {
+        let mut twin = twin_on_blocks(4);
+        twin.advance_phase(&ActivityId(1)).unwrap();
+        twin.advance_phase(&ActivityId(2)).unwrap();
+
+        let json = twin.to_json().unwrap();
+        let restored = DigitalTwin::from_json_value(&json).expect("restores");
+
+        assert_eq!(
+            restored.assembly_state.completed_activities,
+            twin.assembly_state.completed_activities
+        );
+        assert_eq!(
+            restored.assembly_state.current_mass_properties,
+            twin.assembly_state.current_mass_properties
+        );
+        assert_eq!(*restored.weight_model(), *twin.weight_model());
+        assert_eq!(restored.vessel.current_phase, twin.vessel.current_phase);
+        // The restored twin keeps working: the next erection passes.
+        let mut restored = restored;
+        restored.advance_phase(&ActivityId(3)).unwrap();
+        assert_eq!(restored.assembly_state.completed_activities.len(), 3);
+
+        // Truncated state is rejected, not defaulted.
+        assert!(matches!(
+            DigitalTwin::from_json_value(&tpt_yard_core::json::Value::parse("{}").unwrap()),
+            Err(TwinError::Malformed(_))
+        ));
+    }
+
+    /// Regression (review 7A/A3): every rejected advance must leave the twin
+    /// exactly as it was.
+    #[test]
+    fn failed_advance_leaves_twin_untouched() {
+        let mut twin = twin_on_blocks(3);
+        twin.advance_phase(&ActivityId(1)).unwrap();
+        let before = twin.clone();
+
+        // Unknown activity.
+        assert!(matches!(
+            twin.advance_phase(&ActivityId(99)),
+            Err(TwinError::UnknownActivity(_))
+        ));
+        // Activity 3 lives in phase 3 while the twin is in phase 1.
+        assert!(matches!(
+            twin.advance_phase(&ActivityId(3)),
+            Err(TwinError::ActivityNotInCurrentPhase { .. })
+        ));
+        // Already completed.
+        assert!(matches!(
+            twin.advance_phase(&ActivityId(1)),
+            Err(TwinError::AlreadyCompleted(_))
+        ));
+
+        assert_eq!(before, twin, "rejected advances must not mutate the twin");
     }
 
     #[test]

@@ -292,6 +292,11 @@ pub struct OrbitalAssembly {
     pub allowable_stress_mpa: f64,
     /// Docking-impulse design load at the root, N.
     pub docking_impulse_n: f64,
+    /// Chord cross-section area of the truss members, m2 (default 0.01,
+    /// ISS-like; was a hard-coded literal, review 7B).
+    pub chord_area_m2: f64,
+    /// Truss bay height (chord separation), m (default 3.0).
+    pub bay_height_m: f64,
 }
 
 impl OrbitalAssembly {
@@ -305,7 +310,8 @@ impl OrbitalAssembly {
             components: Vec::new(),
             allowable_stress_mpa: 250.0,
             docking_impulse_n: 20_000.0,
-        }
+            chord_area_m2: 0.01,
+            bay_height_m: 3.0,}
     }
 
     /// Adds a component to the manifest.
@@ -394,6 +400,9 @@ impl OrbitalAssembly {
             .iter()
             .find(|c| c.id == step.component)
             .ok_or(AssemblyError::UnknownComponent(step.component))?;
+        if step.robot.is_none() {
+            return Err(AssemblyError::NoRobotAssigned);
+        }
 
         let mut notes = Vec::new();
         let mut collision = None;
@@ -516,10 +525,24 @@ impl OrbitalAssembly {
             }
         }
 
+        // Tip extent: the farthest installed component's centre plus its
+        // half-extent projected along the deployment direction (the centre
+        // distance alone underestimates the root moment by ~half a bay).
         let deployed_length = installed
             .iter()
             .filter_map(|id| self.components.iter().find(|c| c.id == *id))
-            .map(|c| c.target_position.length())
+            .map(|c| {
+                let r = c.target_position.length();
+                if r <= 1e-9 {
+                    return 0.0;
+                }
+                let hat = c.target_position / r;
+                let half_extent = (c.dimensions.x * hat.x.abs()
+                    + c.dimensions.y * hat.y.abs()
+                    + c.dimensions.z * hat.z.abs())
+                    / 2.0;
+                r + half_extent
+            })
             .fold(0.0f64, f64::max);
         let installed_mass: f64 = installed
             .iter()
@@ -534,11 +557,11 @@ impl OrbitalAssembly {
             installed_mass
         )];
 
-        // Constant cross-section along the truss: 0.01 m2 chord area and a
-        // 3 m bay height (ISS-like). Root stress therefore grows linearly
-        // with deployed length under a tip load — the real deployment risk.
-        let chord_area_m2 = 0.01;
-        let height = 3.0;
+        // Constant cross-section along the truss; the chord area and bay
+        // height are plan parameters (defaulting ISS-like) so the golden
+        // cases can drive them instead of a hard-coded literal.
+        let chord_area_m2 = self.chord_area_m2.max(1e-9);
+        let height = self.bay_height_m.max(1e-9);
         let moment_load = self.docking_impulse_n * deployed_length;
         let stress_mpa = moment_load / (chord_area_m2 * height) / 1e6;
         let utilization = stress_mpa / self.allowable_stress_mpa;

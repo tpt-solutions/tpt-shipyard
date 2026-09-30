@@ -1,6 +1,6 @@
 {
   "case": "Reference hull-panel welding distortion benchmark (RFC 0004)",
-  "description": "Single-V SAW butt weld on an AH36 panel; golden values are the analytical model outputs locked at acceptance, verified against published experimental ranges for comparable joints (transverse shrinkage 0.5-2.5 mm, angular distortion 0.5-4 deg for single-side V butts).",
+  "description": "Single-V SAW butt weld on an AH36 panel. Golden values regenerated after the Rosenthal unit fix (temperature rise in K adds directly to the C preheat; arc efficiency eta=0.95 now applied to the net plate power) and verified against an independent implementation: t8/5 matches the closed-form 3D Rykalin expression Q/(2*pi*k*v)*(1/(500-T0)-1/(800-T0)) = 29.08 s, the thermal-cycle peak matches a direct scan of the analytic Rosenthal field (9605 C at xi = -10.9 mm; the sampled 9578.6 C is the 401-sample discretisation), and the contraction-model values were recomputed by hand. Experimental ranges for comparable single-side V butts: transverse shrinkage 0.5-2.5 mm, angular distortion 0.5-4 deg. Longitudinal shrinkage and bowing regenerated for the panel-parameterized model (panel section = panel_width x thickness = 2000x12 mm instead of a hard-coded 1000 mm reference; bow arm = panel_width/4), hand-verified: longitudinal = 12e-6 * 1125.37 * (63.735/24000) * 1000 = 0.03586 mm, bow = 0.03586 * 6 / 500 = 0.00043 mm.",
   "panel": {
     "length_mm": 1000,
     "width_mm": 500,
@@ -25,18 +25,18 @@
   },
   "material": "AH36 shipbuilding steel",
   "expected": {
-    "transverse_shrinkage_mm": 1.5599,
-    "longitudinal_shrinkage_mm": 0.0717,
+    "transverse_shrinkage_mm": 1.4819,
+    "longitudinal_shrinkage_mm": 0.0359,
     "angular_distortion_deg": 0.6849,
-    "bowing_mm": 0.0009,
+    "bowing_mm": 0.00043,
     "residual_stress": {
-      "tension_half_width_mm": 10.017,
-      "compressive_stress_mpa": -2.39,
+      "tension_half_width_mm": 10.427,
+      "compressive_stress_mpa": -2.49,
       "peak_tensile_mpa": 355.0
     },
     "thermal_cycle_at_8mm": {
-      "peak_temp_c": 9808.5,
-      "t8_5_s": 14.46
+      "peak_temp_c": 9578.6,
+      "t8_5_s": 29.09
     }
   },
   "tolerance": {

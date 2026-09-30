@@ -166,16 +166,27 @@ impl Drydock {
         }
 
         // Level schedule: 0 → float-off level → floating_draft + under-keel
-        // clearance → (dock depth available). ~12 steps minimum.
+        // clearance → (dock depth available). ~12 steps minimum, with the
+        // exact float-off instant (buoyancy = weight, keel reaction = 0)
+        // always sampled — the grid on its own can straddle the one level
+        // that decides whether the float-out is safe.
         let final_level = (floating_draft + 1.0).min(self.depth_m);
         let n_levels = 12;
-        let mut steps = Vec::with_capacity(n_levels + 1);
+        let mut levels: Vec<f64> = (0..=n_levels)
+            .map(|i| final_level * i as f64 / n_levels as f64)
+            .collect();
+        if floating_draft < final_level
+            && levels.iter().all(|&l| (l - floating_draft).abs() > 1e-9)
+        {
+            levels.push(floating_draft);
+            levels.sort_by(f64::total_cmp);
+        }
+        let mut steps = Vec::with_capacity(levels.len());
         let mut stable_at_every_level = true;
         let mut min_gm = None;
         let mut total_hours = 0.0;
 
-        for i in 0..=n_levels {
-            let level = final_level * i as f64 / n_levels as f64;
+        for &level in &levels {
             let draft = self.draft_at(vessel, level);
             let displaced = displaced_mass_kg(vessel, draft);
             let aground = displaced < vessel.launch_weight_kg - 1.0;
@@ -185,7 +196,7 @@ impl Drydock {
                     None,
                     true,
                     vec![format!(
-                        "aground: keel blocks carry {:.0} t",
+                        "aground: keel blocks carry {:.0} t (independent heeling is restrained by the keel line; stability is judged at the float-off instant)",
                         (vessel.launch_weight_kg - displaced) / 1000.0
                     )],
                 )
@@ -240,12 +251,53 @@ pub fn displaced_mass_kg(vessel: &DockedVessel, draft_m: f64) -> f64 {
 }
 
 /// Metacentric height GM at draft `d`, m:
-/// `GM = KB + BM − KG` with `KB = d/2`, `BM = B²/(12·d)`
-/// (rectangular waterplane block approximation).
+/// `GM = KB + BM − KG` with `KB = d/2` and the fineness-corrected
+/// `BM = Cwp·B²/(12·Cb·d)`, where the waterplane coefficient is the
+/// standard approximation `Cwp ≈ (1 + 2·Cb)/3`. (The plain box form
+/// `B²/(12·d)` ignores the block coefficient and overstates BM for full
+/// hull forms.)
+/// Virtual GM while the vessel rests on the keel blocks at touchdown
+/// (review 7H roadmap item — the "virtual GM" of grounding/docking).
+///
+/// When the keel first touches, an upward ground reaction `P` at the keel
+/// line effectively stiffens the vessel: any small heel lifts one side off
+/// the blocks and the reaction redistributes, acting like a righting
+/// couple. The classical docking approximation raises GM by
+/// `ΔGM = P·KM / W` (the reaction applied at the keel line acts at the
+/// metacentre arm). Equivalently the vessel is *more* stable on the blocks
+/// than afloat at the same draft — the danger is the **instant of lifting
+/// OFF**, where P → 0 and the virtual GM collapses to the free-floating
+/// GM. `P` here is the keel-block share of the weight at the given draft
+/// (weight minus buoyancy), floored at zero.
+pub fn virtual_gm_touchdown_m(vessel: &DockedVessel, draft_m: f64) -> f64 {
+    let hs_weight_kn = vessel.launch_weight_kg * G_ACC / 1000.0;
+    let buoyancy_kn =
+        displaced_mass_kg(vessel, draft_m) * G_ACC / 1000.0;
+    let reaction_kn = (hs_weight_kn - buoyancy_kn).max(0.0);
+    let gm_afloat = gm_m(vessel, draft_m);
+    if reaction_kn <= 0.0 || hs_weight_kn <= 0.0 {
+        return gm_afloat; // afloat: no virtual rise
+    }
+    // KM at this draft (GM + KG).
+    let km = gm_afloat + vessel.cog_above_keel_m;
+    let share = reaction_kn / hs_weight_kn;
+    gm_afloat + share * km
+}
+
+const G_ACC: f64 = 9.81;
+
+/// Metacentric height GM at draft `d`, m:
+/// `GM = KB + BM − KG` with `KB = d/2` and the fineness-corrected
+/// `BM = Cwp·B²/(12·Cb·d)`, where the waterplane coefficient is the
+/// standard approximation `Cwp ≈ (1 + 2·Cb)/3`. (The plain box form
+/// `B²/(12·d)` ignores the block coefficient and overstates BM for full
+/// hull forms.)
 pub fn gm_m(vessel: &DockedVessel, draft_m: f64) -> f64 {
     let d = draft_m.max(1e-6);
     let kb = d / 2.0;
-    let bm = vessel.breadth_m * vessel.breadth_m / (12.0 * d);
+    let cwp = (1.0 + 2.0 * vessel.block_coefficient) / 3.0;
+    let bm = cwp * vessel.breadth_m * vessel.breadth_m
+        / (12.0 * vessel.block_coefficient * d);
     kb + bm - vessel.cog_above_keel_m
 }
 
@@ -297,10 +349,43 @@ mod tests {
         assert!(gm_m(&v, d) < 0.0);
     }
 
+    /// Verification (review 7H): virtual GM at touchdown exceeds the
+    /// afloat GM, scales with the block reaction share, and collapses to
+    /// the afloat GM exactly at float-off.
+    #[test]
+    fn virtual_gm_stiffens_on_the_blocks() {
+        let v = barge();
+        // Touchdown-ish: barely aground (draft a hair below floating draft).
+        let float_draft = floating_draft_m(&v);
+        let aground_draft = float_draft * 0.5;
+        let virtual_gm = virtual_gm_touchdown_m(&v, aground_draft);
+        let afloat_gm = gm_m(&v, aground_draft);
+        assert!(
+            virtual_gm > afloat_gm,
+            "virtual {virtual_gm} must exceed afloat {afloat_gm}"
+        );
+        // At half-float draft the reaction carries ~half the weight, so
+        // the rise is ~0.5 x KM.
+        let km = afloat_gm + v.cog_above_keel_m;
+        let expected_rise = 0.5 * km;
+        assert!(
+            (virtual_gm - afloat_gm - expected_rise).abs() < 0.1,
+            "rise {} vs expected {expected_rise}",
+            virtual_gm - afloat_gm
+        );
+        // Deeper aground = stiffer still.
+        let deep = virtual_gm_touchdown_m(&v, float_draft * 0.1);
+        assert!(deep > virtual_gm);
+        // At (or past) float-off: identical to the afloat GM.
+        let off = virtual_gm_touchdown_m(&v, float_draft * 1.1);
+        assert!((off - gm_m(&v, float_draft * 1.1)).abs() < 1e-9);
+    }
+
     #[test]
     fn sequence_floods_to_afloat() {
         let seq = dock().flooding_sequence(&barge(), 5_000.0).unwrap();
-        assert_eq!(seq.steps.len(), 13);
+        // 12-level grid + level 0 + the exact float-off instant.
+        assert_eq!(seq.steps.len(), 14);
         assert!(seq.stable_at_every_level);
         // Early steps aground, final step afloat with positive GM.
         assert!(seq.steps.first().unwrap().gm_m.is_none());
@@ -311,6 +396,15 @@ mod tests {
         // Elapsed hours are consistent with the dock volume.
         let final_volume = dock().water_volume_m3(seq.steps.last().unwrap().water_level_m);
         assert!((seq.total_time_hours - final_volume / 5_000.0).abs() < 1e-9);
+        // The float-off instant (water level = floating draft) is sampled
+        // explicitly: buoyancy carries the full weight, keel reaction gone.
+        let float_off = seq
+            .steps
+            .iter()
+            .find(|s| (s.water_level_m - floating_draft_m(&barge())).abs() < 1e-9)
+            .expect("float-off instant must be sampled");
+        assert!((float_off.displaced_mass_kg - 6_000_000.0).abs() < 1.0);
+        assert!(float_off.gm_m.is_some(), "GM judged at float-off");
     }
 
     #[test]

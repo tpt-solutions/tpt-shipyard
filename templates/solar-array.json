@@ -1,0 +1,63 @@
+{
+  "id": 1,
+  "name": "Space solar array",
+  "vessel_type": {
+    "kind": "space",
+    "value": {
+      "kind": "space_station",
+      "modules": 2
+    }
+  },
+  "construction_method": "in_space_manufacturing",
+  "build_phases": [
+    {
+      "id": 1,
+      "name": "Array manufacture",
+      "activities": [
+        {
+          "id": 1,
+          "name": "Print substrate",
+          "activity_type": {
+            "kind": "join_block"
+          },
+          "dependencies": [],
+          "duration_hours": 12,
+          "resources": []
+        },
+        {
+          "id": 2,
+          "name": "Lay cells",
+          "activity_type": {
+            "kind": "join_block"
+          },
+          "dependencies": [
+            1
+          ],
+          "duration_hours": 10,
+          "resources": []
+        },
+        {
+          "id": 3,
+          "name": "Deploy & verify",
+          "activity_type": {
+            "kind": "join_block"
+          },
+          "dependencies": [
+            2
+          ],
+          "duration_hours": 6,
+          "resources": []
+        }
+      ],
+      "structural_state": {
+        "kind": "not_started"
+      },
+      "weight_state": {
+        "design_kg": 12000,
+        "installed_kg": 0
+      },
+      "duration_days": 30
+    }
+  ],
+  "current_phase": 1
+}

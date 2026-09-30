@@ -121,10 +121,9 @@ impl ShipyardScheduler {
     fn graph(&self) -> Result<ActivityGraph, ScheduleError> {
         let mut g = ActivityGraph::new();
         for a in &self.activities {
-            if !g.contains(a.id) {
-                g.add_activity(a.id, a.name.clone(), a.duration_hours, &a.dependencies)?;
-            }
+            g.add_activity(a.id, a.name.clone(), a.duration_hours, &a.dependencies)?;
         }
+        g.validate()?;
         Ok(g)
     }
 
@@ -184,19 +183,51 @@ impl ShipyardScheduler {
         Ok(out)
     }
 
-    /// The critical path: zero-float activities from start to finish.
+    /// The critical path: one zero-float chain from a network start to a
+    /// network end, in execution order.
     ///
     /// # Errors
     ///
     /// [`ScheduleError`] on malformed networks.
     pub fn critical_path(&self) -> Result<Vec<ActivityId>, ScheduleError> {
+        let g = self.graph()?;
         let cpm = self.cpm()?;
-        let mut path: Vec<ActivityId> = cpm
+        let critical: std::collections::BTreeSet<ActivityId> = cpm
             .values()
             .filter(|s| s.float_h < 1e-9)
             .map(|s| s.id)
             .collect();
-        path.sort();
+        // Walk a chain: start at the critical activity with the earliest
+        // start, then repeatedly take its earliest-finishing critical
+        // dependent. Ties break by id, so the result is deterministic.
+        let start = critical
+            .iter()
+            .copied()
+            .min_by(|&a, &b| {
+                cpm[&a]
+                    .earliest_start_h
+                    .total_cmp(&cpm[&b].earliest_start_h)
+                    .then(a.cmp(&b))
+            })
+            .ok_or(ScheduleError::EmptySchedule)?;
+        let mut path = vec![start];
+        loop {
+            let current = *path.last().expect("non-empty");
+            let next = g
+                .dependents_of(current)
+                .into_iter()
+                .filter(|d| critical.contains(d))
+                .min_by(|&a, &b| {
+                    cpm[&a]
+                        .earliest_start_h
+                        .total_cmp(&cpm[&b].earliest_start_h)
+                        .then(a.cmp(&b))
+                });
+            match next {
+                Some(n) => path.push(n),
+                None => break,
+            }
+        }
         Ok(path)
     }
 
@@ -226,44 +257,63 @@ impl ShipyardScheduler {
                 | ScheduleObjective::MinimizeDrydockTime
         );
 
-        let mut order = g.topological_order()?;
-        if !duration_mode {
-            // Min-float-first priority (a classic levelling heuristic).
-            order.sort_by(|&a, &b| {
-                let fa = cpm[&a].float_h;
-                let fb = cpm[&b].float_h;
-                fa.total_cmp(&fb).then(a.cmp(&b))
-            });
-        }
-
-        // Serial schedule: place each activity after its dependencies; in
-        // levelling mode respect the priority order when contention occurs.
+        // Serial schedule generation. In duration mode activities run in
+        // plain topological order at their earliest starts. In levelling
+        // mode the *priority* (min float first) decides which eligible
+        // activity (all dependencies already placed) is placed next — the
+        // placement itself is always precedence-feasible, unlike a
+        // priority-sorted flat order, which can put a successor in front of
+        // its predecessor.
+        let topo = g.topological_order()?;
         let mut start: BTreeMap<ActivityId, f64> = BTreeMap::new();
         // Placed activities for the resource-conflict scan.
         let mut placed: Vec<(ActivityId, f64, f64)> = Vec::new(); // (id, start, end)
-        for &id in &order {
-            let node = g.activity(id).expect("exists");
+        let mut order: Vec<ActivityId> = Vec::with_capacity(topo.len());
+        let mut remaining: std::collections::BTreeSet<ActivityId> =
+            topo.iter().copied().collect();
+        while !remaining.is_empty() {
+            let next = if duration_mode {
+                // First in topological order.
+                *topo.iter().find(|id| remaining.contains(id)).expect("non-empty")
+            } else {
+                // Levelling priority among eligible activities.
+                *remaining
+                    .iter()
+                    .filter(|&&id| {
+                        g.activity(id)
+                            .expect("exists")
+                            .dependencies
+                            .iter()
+                            .all(|d| start.contains_key(d))
+                    })
+                    .min_by(|&a, &b| {
+                        cpm[&a].float_h.total_cmp(&cpm[&b].float_h).then(a.cmp(&b))
+                    })
+                    .expect("acyclic network always has an eligible activity")
+            };
+            remaining.remove(&next);
+            order.push(next);
+            let node = g.activity(next).expect("exists");
             let dep_finish = node
                 .dependencies
                 .iter()
                 .map(|d| {
                     let dur = g.activity(*d).expect("exists").duration_hours;
-                    start.get(d).copied().unwrap_or(0.0) + dur
+                    start.get(d).expect("dependencies placed first") + dur
                 })
                 .fold(0.0f64, f64::max);
-            let earliest = dep_finish.max(cpm[&id].earliest_start_h);
-            let s = if duration_mode {
-                earliest
-            } else {
-                // Levelling: serial schedule generation — place at the
-                // earliest clash-free time for this activity's resources,
-                // scanning past its CPM float if needed (levelling may
-                // legitimately stretch the makespan to flatten peaks).
+            let earliest = dep_finish.max(cpm[&next].earliest_start_h);
+            let s = if !duration_mode {
+                // Levelling: place at the earliest clash-free time for this
+                // activity's resources. Interval scheduling: a clash-free
+                // start exists at `earliest` or at the finish of some placed
+                // activity — checking those breakpoints is exact, with no
+                // arbitrary horizon cap.
                 let dur = node.duration_hours;
                 let resources = &self
                     .activities
                     .iter()
-                    .find(|a| a.id == id)
+                    .find(|a| a.id == next)
                     .map(|a| {
                         a.resources
                             .iter()
@@ -272,34 +322,38 @@ impl ShipyardScheduler {
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
-                let mut t = earliest;
-                let mut found = None;
-                // Bound: one full pass of the schedule horizon.
-                while t <= earliest + 10_000.0 {
-                    let clash = placed.iter().any(|(pid, ps, pe)| {
-                        let other = self
-                            .activities
-                            .iter()
-                            .find(|a| a.id == *pid)
-                            .expect("placed");
-                        let overlaps_time = t < *pe && *ps < t + dur;
-                        overlaps_time
-                            && other
-                                .resources
-                                .iter()
-                                .filter(|r| r.capacity > 0.0)
-                                .any(|r| resources.contains(&r.kind))
-                    });
-                    if !clash {
-                        found = Some(t);
-                        break;
+                let mut candidates: Vec<f64> = vec![earliest];
+                for &(_, _, pe) in &placed {
+                    if pe > earliest {
+                        candidates.push(pe);
                     }
-                    t += 1.0;
                 }
-                found.unwrap_or(earliest)
+                candidates.sort_by(f64::total_cmp);
+                candidates.dedup();
+                candidates
+                    .into_iter()
+                    .find(|&t| {
+                        !placed.iter().any(|(pid, ps, pe)| {
+                            let other = self
+                                .activities
+                                .iter()
+                                .find(|a| a.id == *pid)
+                                .expect("placed");
+                            let overlaps_time = t < *pe && *ps < t + dur;
+                            overlaps_time
+                                && other
+                                    .resources
+                                    .iter()
+                                    .filter(|r| r.capacity > 0.0)
+                                    .any(|r| resources.contains(&r.kind))
+                        })
+                    })
+                    .unwrap_or(earliest) // unreachable: the last breakpoint is always free
+            } else {
+                earliest
             };
-            start.insert(id, s);
-            placed.push((id, s, s + node.duration_hours));
+            start.insert(next, s);
+            placed.push((next, s, s + node.duration_hours));
         }
         let makespan = order
             .iter()
@@ -354,6 +408,127 @@ impl ShipyardScheduler {
             early.makespan_hours, levelled.makespan_hours
         ));
         Ok(levelled)
+    }
+}
+
+/// Result of the Monte Carlo schedule-risk pass (review 7H roadmap item).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScheduleRisk {
+    /// Sample count.
+    pub samples: u32,
+    /// Median (P50) makespan, hours.
+    pub p50_makespan_h: f64,
+    /// 90th-percentile makespan, hours — the number to promise against.
+    pub p90_makespan_h: f64,
+    /// Mean makespan, hours.
+    pub mean_makespan_h: f64,
+    /// Fraction of samples in which each activity sat on the critical
+    /// path, descending — where the schedule is actually fragile.
+    pub criticality_frequency: Vec<(ActivityId, f64)>,
+}
+
+/// Deterministic xorshift64* RNG (reproducible risk runs).
+struct XorShift(u64);
+
+impl XorShift {
+    fn next_f64(&mut self) -> f64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        (x.wrapping_mul(0x2545F4914F6CDD1D) >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// Triangular sample on [min, mode, max] by inverse CDF.
+    fn triangular(&mut self, min: f64, mode: f64, max: f64) -> f64 {
+        let r = self.next_f64();
+        let f = (mode - min) / (max - min).max(1e-12);
+        if r < f {
+            min + (r * (max - min) * (mode - min)).sqrt()
+        } else {
+            max - ((1.0 - r) * (max - min) * (max - mode)).sqrt()
+        }
+    }
+}
+
+impl ShipyardScheduler {
+    /// Monte Carlo schedule risk: samples each activity's duration from a
+    /// triangular distribution — `(1-u)·d … d … (1+u)·d` for the
+    /// uncertainty fraction `u` — runs the CPM forward pass per sample,
+    /// and reports the makespan percentiles plus how often each activity
+    /// was critical.
+    ///
+    /// The run is deterministic for a given `seed` (same numbers every
+    /// time; review requirement: reproducible planning outputs).
+    ///
+    /// # Errors
+    ///
+    /// [`ScheduleError`] on malformed networks or an empty schedule.
+    pub fn monte_carlo_risk(
+        &self,
+        uncertainty_frac: f64,
+        n_samples: u32,
+        seed: u64,
+    ) -> Result<ScheduleRisk, ScheduleError> {
+        if self.activities.is_empty() {
+            return Err(ScheduleError::EmptySchedule);
+        }
+        let u = uncertainty_frac.clamp(0.0, 10.0);
+        let n = n_samples.max(1);
+        let mut rng = XorShift(if seed == 0 { 0x853c49e6748fea9b } else { seed });
+
+        let mut makespans = Vec::with_capacity(n as usize);
+        let mut critical_counts: BTreeMap<ActivityId, u32> = self
+            .activities
+            .iter()
+            .map(|a| (a.id, 0))
+            .collect();
+
+        for _ in 0..n {
+            let sampled: Vec<AssemblyActivity> = self
+                .activities
+                .iter()
+                .map(|a| {
+                    let mut copy = a.clone();
+                    copy.duration_hours =
+                        rng.triangular(a.duration_hours * (1.0 - u), a.duration_hours, a.duration_hours * (1.0 + u));
+                    copy
+                })
+                .collect();
+            let sample_net = ShipyardScheduler::new(sampled);
+            let cpm = sample_net.cpm()?;
+            let finish = sample_net.graph()?.earliest_finish_times()?;
+            let makespan = finish.values().copied().fold(0.0, f64::max);
+            makespans.push(makespan);
+            for s in cpm.values() {
+                if s.float_h < 1e-9 {
+                    if let Some(c) = critical_counts.get_mut(&s.id) {
+                        *c += 1;
+                    }
+                }
+            }
+        }
+
+        makespans.sort_by(f64::total_cmp);
+        let p = |q: f64| -> f64 {
+            let idx = ((q * (makespans.len() as f64 - 1.0)).round()) as usize;
+            makespans[idx.min(makespans.len() - 1)]
+        };
+        let mean = makespans.iter().sum::<f64>() / makespans.len() as f64;
+        let mut criticality: Vec<(ActivityId, f64)> = critical_counts
+            .into_iter()
+            .map(|(id, c)| (id, c as f64 / n as f64))
+            .collect();
+        criticality.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+
+        Ok(ScheduleRisk {
+            samples: n,
+            p50_makespan_h: p(0.50),
+            p90_makespan_h: p(0.90),
+            mean_makespan_h: mean,
+            criticality_frequency: criticality,
+        })
     }
 }
 
@@ -438,7 +613,7 @@ mod tests {
                 capacity: 1.0,
             });
         }
-        let s = ShipyardScheduler::new(acts);
+        let s = ShipyardScheduler::new(acts.clone());
         let early = s
             .optimize_sequence(ScheduleObjective::MinimizeDuration)
             .unwrap();
@@ -460,6 +635,48 @@ mod tests {
         assert!(levelled.makespan_hours > early.makespan_hours);
     }
 
+    /// Verification (review 7H): zero uncertainty reproduces the
+    /// deterministic makespan exactly; uncertainty spreads the percentiles
+    /// in the right order; the run is seed-deterministic; criticality
+    /// frequencies are sane.
+    #[test]
+    fn monte_carlo_risk_is_sound() {
+        let s = network(); // makespan 34 h (A -> B -> D)
+        let zero = s.monte_carlo_risk(0.0, 500, 42).unwrap();
+        assert!((zero.p50_makespan_h - 34.0).abs() < 1e-9);
+        assert!((zero.p90_makespan_h - 34.0).abs() < 1e-9);
+        assert!((zero.mean_makespan_h - 34.0).abs() < 1e-9);
+
+        let risky = s.monte_carlo_risk(0.3, 2_000, 42).unwrap();
+        assert!(risky.p90_makespan_h > risky.p50_makespan_h);
+        assert!(risky.p50_makespan_h > 0.0);
+        // P90 must stay inside the triangular envelope: 34 * 1.3 at the
+        // very worst (all-critical chain at max simultaneously).
+        assert!(risky.p90_makespan_h <= 34.0 * 1.3 + 1e-6, "{}", risky.p90_makespan_h);
+        // Frequencies: between 0 and 1, and the truly-critical B dominates.
+        for (id, f) in &risky.criticality_frequency {
+            assert!((0.0..=1.0).contains(f), "{id:?} -> {f}");
+        }
+        let freq_of = |id: u64| {
+            risky
+                .criticality_frequency
+                .iter()
+                .find(|(a, _)| a.0 == id)
+                .map(|(_, f)| *f)
+                .unwrap()
+        };
+        assert!(freq_of(2) > freq_of(3), "B (critical) more often than C");
+        assert!(freq_of(1) > 0.5, "A is on nearly every critical path");
+
+        // Seed determinism.
+        let again = s.monte_carlo_risk(0.3, 2_000, 42).unwrap();
+        assert_eq!(again, risky);
+        // A different seed moves the percentiles (with overwhelming
+        // probability for 2000 samples).
+        let other = s.monte_carlo_risk(0.3, 2_000, 7).unwrap();
+        assert!(other.p50_makespan_h != risky.p50_makespan_h || other.mean_makespan_h != risky.mean_makespan_h);
+    }
+
     #[test]
     fn empty_schedule_rejected() {
         let s = ShipyardScheduler::new(vec![]);
@@ -472,12 +689,89 @@ mod tests {
 
     #[test]
     fn cycle_rejected() {
+        // Regression (review 7A/A6): a *real* cycle — both activities exist,
+        // each depends on the other.
         let s = ShipyardScheduler::new(vec![
             AssemblyActivity::new(ActivityId(1), "a", ActivityType::CutSteel, 1.0)
                 .with_dependencies(&[ActivityId(2)]),
-            AssemblyActivity::new(ActivityId(2), "b", ActivityType::CutSteel, 1.0),
+            AssemblyActivity::new(ActivityId(2), "b", ActivityType::CutSteel, 1.0)
+                .with_dependencies(&[ActivityId(1)]),
         ]);
-        // Building the graph fails: dependency 2 unknown when adding 1.
         assert!(matches!(s.critical_path(), Err(ScheduleError::Graph(_))));
+        assert!(matches!(
+            s.optimize_sequence(ScheduleObjective::MinimizeCraneUsage),
+            Err(ScheduleError::Graph(_))
+        ));
+        assert!(matches!(
+            s.resource_leveling(),
+            Err(ScheduleError::Graph(_))
+        ));
+    }
+
+    #[test]
+    fn unknown_dependency_rejected() {
+        let s = ShipyardScheduler::new(vec![
+            AssemblyActivity::new(ActivityId(1), "a", ActivityType::CutSteel, 1.0),
+            AssemblyActivity::new(ActivityId(2), "b", ActivityType::CutSteel, 1.0)
+                .with_dependencies(&[ActivityId(9)]),
+        ]);
+        assert!(matches!(s.critical_path(), Err(ScheduleError::Graph(_))));
+    }
+
+    /// Regression (review 7A/A6): in levelling mode a successor with less
+    /// float than its predecessor used to be *placed* first — its start came
+    /// out before the predecessor even ran. Every returned order must be a
+    /// topological order of the network regardless of objective.
+    #[test]
+    fn leveled_schedule_respects_precedence() {
+        // Long low-priority predecessor chain: A(20h) -> B(1h); B has far
+        // less float than A once the independent 40 h activity C runs, so
+        // min-float-first priority puts B before A unless precedence
+        // constrains the placement loop itself.
+        let acts = vec![
+            AssemblyActivity::new(ActivityId(1), "A", ActivityType::CutSteel, 20.0),
+            AssemblyActivity::new(ActivityId(2), "B", ActivityType::JoinBlock, 1.0)
+                .with_dependencies(&[ActivityId(1)]),
+            AssemblyActivity::new(ActivityId(3), "C", ActivityType::Paint, 40.0),
+        ];
+        let s = ShipyardScheduler::new(acts.clone());
+        let objectives = [
+            ScheduleObjective::MinimizeDuration,
+            ScheduleObjective::MinimizeCraneUsage,
+            ScheduleObjective::MinimizeCost,
+            ScheduleObjective::MinimizeDrydockTime,
+            ScheduleObjective::MaximizeParallelism,
+        ];
+        for objective in objectives {
+            let r = s.optimize_sequence(objective).unwrap();
+            assert_topological(&acts, &r.order, objective);
+        }
+        // The reference network too: D depends on B and C.
+        let s = network();
+        for objective in objectives {
+            let r = s.optimize_sequence(objective).unwrap();
+            assert_topological(&s.activities, &r.order, objective);
+        }
+    }
+
+    /// Asserts `order` contains every activity exactly once with every
+    /// dependency placed earlier.
+    fn assert_topological(
+        acts: &[AssemblyActivity],
+        order: &[ActivityId],
+        objective: ScheduleObjective,
+    ) {
+        assert_eq!(order.len(), acts.len(), "{objective:?}: every activity placed");
+        let mut seen = std::collections::BTreeSet::new();
+        for id in order {
+            let act = acts.iter().find(|a| a.id == *id).unwrap();
+            for d in &act.dependencies {
+                assert!(
+                    seen.contains(d),
+                    "{objective:?}: activity {id:?} placed before its dependency {d:?}"
+                );
+            }
+            assert!(seen.insert(*id), "{objective:?}: duplicate placement");
+        }
     }
 }

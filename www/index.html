@@ -70,7 +70,29 @@
   </div>
 </main>
 <script type="module">
-import init, { WasmDigitalTwin } from "./pkg/tpt_yard_wasm.js";
+// Handle a missing/failed WASM build gracefully (review 7E): pkg/ is a
+// build artifact; a checkout without `wasm-pack build` should show a
+// clear message instead of a bare module error.
+async function loadTwin() {
+  try {
+    const mod = await import("./pkg/tpt_yard_wasm.js");
+    await mod.default();
+    return mod;
+  } catch (err) {
+    document.getElementById("stage").insertAdjacentHTML(
+      "afterbegin",
+      '<p class="bad" id="load-error">WASM module not available: build it with ' +
+      '<code>wasm-pack build crates/core/tpt-yard-wasm --target web --out-dir ../../../www/pkg</code> ' +
+      'and reload. (' + err + ')</p>'
+    );
+    for (const id of ["step", "auto", "reset"]) {
+      document.getElementById(id).disabled = true;
+    }
+    return null;
+  }
+}
+
+const mod = await loadTwin();
 
 // 12-block barge project, one erection phase per block.
 function projectJson(blocks) {
@@ -102,90 +124,138 @@ function projectJson(blocks) {
   });
 }
 
-await init();
-let twin = new WasmDigitalTwin(projectJson(12));
+if (mod) {
+  let twin = new mod.WasmDigitalTwin(projectJson(12));
 
-const cv = document.getElementById("cv");
-const ctx = cv.getContext("2d");
-const bar = document.getElementById("bar");
+  const cv = document.getElementById("cv");
+  const ctx = cv.getContext("2d");
+  const bar = document.getElementById("bar");
+  const stepBtn = document.getElementById("step");
+  const autoBtn = document.getElementById("auto");
+  const resetBtn = document.getElementById("reset");
 
-function fmtT(kg) { return (kg / 1000).toFixed(0) + " t"; }
+  const BLOCKS = 12;
+  let timer = null;
+  let running = false;
 
-function refresh() {
-  const report = JSON.parse(twin.get_weight_report());
-  const check = JSON.parse(twin.structural_check());
-  const verts = twin.get_geometry();
+  function fmtT(kg) { return (kg / 1000).toFixed(0) + " t"; }
 
-  document.getElementById("w-inst").textContent = fmtT(report.installed_kg);
-  document.getElementById("w-best").textContent = fmtT(report.best_estimate_kg);
-  document.getElementById("w-design").textContent = fmtT(report.design_kg);
-  const dev = report.deviation_kg;
-  document.getElementById("w-dev").textContent = fmtT(dev);
-  document.getElementById("w-dev").className = dev > 0 ? "bad" : "ok";
-  document.getElementById("cog").textContent = report.cog[0].toFixed(1) + " m";
+  function refresh() {
+    const report = JSON.parse(twin.get_weight_report());
+    const check = JSON.parse(twin.structural_check());
+    const verts = twin.get_geometry();
 
-  const pass = document.getElementById("s-pass");
-  pass.textContent = check.passed ? "PASSED" : "FAILED";
-  pass.className = check.passed ? "ok" : "bad";
-  document.getElementById("s-margin").textContent = (check.margin * 100).toFixed(1) + " %";
-  document.getElementById("s-react").textContent =
-    (check.reactions.aft ?? 0).toFixed(0) + " / " + (check.reactions.fore ?? 0).toFixed(0) + " kN";
-  document.getElementById("raw").textContent = JSON.stringify(check);
+    document.getElementById("w-inst").textContent = fmtT(report.installed_kg);
+    document.getElementById("w-best").textContent = fmtT(report.best_estimate_kg);
+    document.getElementById("w-design").textContent = fmtT(report.design_kg);
+    const dev = report.deviation_kg;
+    document.getElementById("w-dev").textContent = fmtT(dev);
+    document.getElementById("w-dev").className = dev > 0 ? "bad" : "ok";
+    document.getElementById("cog").textContent = report.cog[0].toFixed(1) + " m";
 
-  const done = twin.completed_count();
-  bar.style.width = (done / 12 * 100) + "%";
+    const pass = document.getElementById("s-pass");
+    pass.textContent = check.passed ? "PASSED" : "FAILED";
+    pass.className = check.passed ? "ok" : "bad";
+    document.getElementById("s-margin").textContent = (check.margin * 100).toFixed(1) + " %";
+    document.getElementById("s-react").textContent =
+      (check.reactions.aft ?? 0).toFixed(0) + " / " + (check.reactions.fore ?? 0).toFixed(0) + " kN";
+    document.getElementById("raw").textContent = JSON.stringify(check);
 
-  // ---- draw: top-down blocks + CoG marker ----
-  ctx.clearRect(0, 0, cv.width, cv.height);
-  const n = 12, pitch = 62, bx = 40, by = 70;
-  for (let i = 0; i < n; i++) {
-    const erected = i < done;
-    ctx.strokeStyle = "#2c4a85";
-    ctx.fillStyle = erected ? "#274b8f" : "#101a2c";
-    ctx.beginPath();
-    ctx.rect(bx + i * pitch, by, pitch - 8, 60);
-    ctx.fill(); ctx.stroke();
-    if (erected) {
-      ctx.fillStyle = "#8fb6ff";
-      ctx.font = "11px sans-serif";
-      ctx.fillText("B" + (200 + i + 1), bx + i * pitch + 11, by + 34);
+    const done = twin.completed_count();
+    bar.style.width = (done / BLOCKS * 100) + "%";
+
+    // ---- draw: top-down blocks + CoG marker ----
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    const n = BLOCKS, pitch = 62, bx = 40, by = 70;
+    for (let i = 0; i < n; i++) {
+      const erected = i < done;
+      ctx.strokeStyle = "#2c4a85";
+      ctx.fillStyle = erected ? "#274b8f" : "#101a2c";
+      ctx.beginPath();
+      ctx.rect(bx + i * pitch, by, pitch - 8, 60);
+      ctx.fill(); ctx.stroke();
+      if (erected) {
+        ctx.fillStyle = "#8fb6ff";
+        ctx.font = "11px sans-serif";
+        ctx.fillText("B" + (200 + i + 1), bx + i * pitch + 11, by + 34);
+      }
     }
+    // elevation strip
+    for (let i = 0; i < n; i++) {
+      const erected = i < done;
+      ctx.fillStyle = erected ? "#57d1a4" : "#1a2438";
+      ctx.fillRect(bx + i * pitch, by + 90, pitch - 8, 22);
+    }
+    // keel supports + CoG marker
+    ctx.fillStyle = "#6b7f9e";
+    ctx.fillRect(bx - 20, by + 118, 16, 10);
+    ctx.fillRect(bx + n * pitch - 12, by + 118, 16, 10);
+    if (done > 0) {
+      const cx = bx + (report.cog[0] / (n * 10)) * (n * pitch) - 5;
+      ctx.fillStyle = "#ffb454";
+      ctx.beginPath();
+      ctx.moveTo(cx, by + 58); ctx.lineTo(cx + 6, by + 70); ctx.lineTo(cx - 6, by + 70);
+      ctx.closePath(); ctx.fill();
+      ctx.fillText("CoG", cx - 12, by + 84);
+    }
+    stepBtn.disabled = running || done >= BLOCKS;
+    autoBtn.disabled = running || done >= BLOCKS;
   }
-  // elevation strip
-  for (let i = 0; i < n; i++) {
-    const erected = i < done;
-    ctx.fillStyle = erected ? "#57d1a4" : "#1a2438";
-    ctx.fillRect(bx + i * pitch, by + 90, pitch - 8, 22);
-  }
-  // keel supports + CoG marker
-  ctx.fillStyle = "#6b7f9e";
-  ctx.fillRect(bx - 20, by + 118, 16, 10);
-  ctx.fillRect(bx + n * pitch - 12, by + 118, 16, 10);
-  if (done > 0) {
-    const cx = bx + (report.cog[0] / (n * 10)) * (n * pitch) - 5;
-    ctx.fillStyle = "#ffb454";
-    ctx.beginPath();
-    ctx.moveTo(cx, by + 58); ctx.lineTo(cx + 6, by + 70); ctx.lineTo(cx - 6, by + 70);
-    ctx.closePath(); ctx.fill();
-    ctx.fillText("CoG", cx - 12, by + 84);
-  }
-  document.getElementById("step").disabled = done >= 12;
-}
 
-document.getElementById("step").onclick = () => { twin.advance_next(); refresh(); };
-document.getElementById("auto").onclick = () => {
-  const timer = setInterval(() => {
+  function stopRun() {
+    if (timer !== null) {
+      clearInterval(timer);
+      timer = null;
+    }
+    running = false;
+  }
+
+  // Free the old twin's WASM memory before replacing it (review 7E).
+  function replaceTwin() {
+    twin.free();
+    twin = new mod.WasmDigitalTwin(projectJson(BLOCKS));
+  }
+
+  stepBtn.onclick = () => {
     twin.advance_next();
     refresh();
-    if (twin.completed_count() >= 12) clearInterval(timer);
-  }, 350);
-};
-document.getElementById("reset").onclick = () => {
-  twin = new WasmDigitalTwin(projectJson(12));
-  refresh();
-};
+  };
 
-refresh();
+  autoBtn.onclick = () => {
+    // Review 7E: "Run" is disabled while running — no double timers.
+    if (running) return;
+    running = true;
+    autoBtn.textContent = "Running…";
+    autoBtn.disabled = true;
+    stepBtn.disabled = true;
+    timer = setInterval(() => {
+      const sound = twin.advance_next();
+      refresh();
+      // Review 7E: stop on completion AND on a failed (unsound) step.
+      if (!sound || twin.completed_count() >= BLOCKS) {
+        stopRun();
+        autoBtn.textContent = "Run to completion";
+        refresh();
+      }
+    }, 350);
+  };
+
+  resetBtn.onclick = () => {
+    // Review 7E: clear any pending timer BEFORE replacing the twin, or the
+    // orphaned interval keeps mutating the fresh instance.
+    stopRun();
+    autoBtn.textContent = "Run to completion";
+    replaceTwin();
+    refresh();
+  };
+
+  window.addEventListener("beforeunload", () => {
+    stopRun();
+    twin.free();
+  });
+
+  refresh();
+}
 </script>
 </body>
 </html>

@@ -1,24 +1,13 @@
-//! Benchmark: launch statics and flooding sequences.
+//! Benchmark: launch statics, dynamic trajectory, and flooding sequences.
+//! Criterion-managed (review 7G).
 
-use std::time::Instant;
+#![allow(missing_docs)]
+
+use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 
 use tpt_yard_core::{MassProperties, Vector3};
 use tpt_yard_drydock::{DockedVessel, Drydock};
 use tpt_yard_launch::{LaunchAnalysis, LaunchMethod, SiteConditions};
-
-fn bench(name: &str, iterations: u32, mut f: impl FnMut()) {
-    f();
-    let start = Instant::now();
-    for _ in 0..iterations {
-        f();
-    }
-    let elapsed = start.elapsed();
-    println!(
-        "{name:<44} {iterations:>8} iters  {:>10.1?} total  {:>10.3?} / iter",
-        elapsed,
-        elapsed / iterations
-    );
-}
 
 fn slipway(cog_x: f64) -> LaunchAnalysis {
     LaunchAnalysis {
@@ -42,17 +31,12 @@ fn slipway(cog_x: f64) -> LaunchAnalysis {
     }
 }
 
-fn main() {
-    println!("== tpt-shipyard: launch-stability benchmark ==");
-
-    bench("slipway_launch (full statics chain)", 2_000, || {
-        let r = slipway(70.0).slipway_launch();
-        assert!(r.safe);
+fn bench_launch(c: &mut Criterion) {
+    c.bench_function("launch/slipway_statics", |b| {
+        b.iter(|| std::hint::black_box(&slipway(70.0)).slipway_launch())
     });
-
-    bench("slipway_launch (tip-up case)", 2_000, || {
-        let r = slipway(40.0).slipway_launch();
-        assert!(r.tip_up_risk);
+    c.bench_function("launch/dynamic_trajectory", |b| {
+        b.iter(|| std::hint::black_box(&slipway(70.0)).dynamic_launch())
     });
 
     let dock = Drydock {
@@ -61,24 +45,21 @@ fn main() {
         depth_m: 10.0,
     };
     let vessel = DockedVessel {
-        launch_weight_kg: 6_000_000.0,
-        cog_above_keel_m: 5.5,
-        length_m: 140.0,
-        breadth_m: 22.0,
-        block_coefficient: 0.85,
+        launch_weight_kg: 4_000_000.0,
+        cog_above_keel_m: 6.0,
+        length_m: 90.0,
+        breadth_m: 20.0,
+        block_coefficient: 0.8,
         ballast_tanks: vec![],
     };
-    bench("drydock flooding_sequence (13 levels)", 2_000, || {
-        let seq = dock.flooding_sequence(&vessel, 5_000.0).unwrap();
-        assert!(seq.stable_at_every_level);
+    let mut group = c.benchmark_group("launch/flooding_sequence");
+    // Throughput = flood rate so the numbers read as m3/h processed.
+    group.throughput(Throughput::Bytes(5_000));
+    group.bench_function("5000_m3_hr", |b| {
+        b.iter(|| dock.flooding_sequence(std::hint::black_box(&vessel), 5_000.0).unwrap())
     });
-
-    bench("launch_stability via weight model", 2_000, || {
-        let a = slipway(70.0);
-        let s = a.launch_stability(&tpt_yard_weight::WeightModel::new(
-            4_000_000.0,
-            Vector3::new(70.0, 0.0, 6.0),
-        ));
-        assert!(s.stable);
-    });
+    group.finish();
 }
+
+criterion_group!(benches, bench_launch);
+criterion_main!(benches);

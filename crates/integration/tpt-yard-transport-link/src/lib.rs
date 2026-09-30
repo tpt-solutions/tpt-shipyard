@@ -14,6 +14,7 @@
 //! use tpt_yard_transport_link::{plan_construction, DesignKind, VehicleDesign};
 //!
 //! let design = VehicleDesign {
+//!     id: 1,
 //!     name: "Container ship 1400 TEU".into(),
 //!     kind: DesignKind::Maritime {
 //!         loa_m: 140.0,
@@ -45,6 +46,8 @@ pub struct QualityRecords {
 /// `tpt_transport::core::Vehicle`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct VehicleDesign {
+    /// Design identifier (becomes the `VesselProject` id).
+    pub id: u64,
     /// Design name.
     pub name: String,
     /// The vehicle family.
@@ -93,8 +96,9 @@ pub fn plan_construction(design: &VehicleDesign) -> VesselProject {
             loa_m,
             deadweight_t,
         } => {
+            // TEU proxy: ~10 t deadweight per nominal TEU on a feeder.
             let vessel_type = VesselType::Sea(SeaVesselType::ContainerShip {
-                teu_capacity: (deadweight_t / 10.0) as u32,
+                teu_capacity: (deadweight_t / 10.0).max(1.0) as u32,
             });
             let method = ConstructionMethod::SeaDrydock;
             let phases = vec![
@@ -105,7 +109,7 @@ pub fn plan_construction(design: &VehicleDesign) -> VesselProject {
                 BuildPhase::new(PhaseId(5), "Launch & trials", *loa_m / 10.0),
             ];
             VesselProject::new(
-                ProjectId(1),
+                ProjectId(design.id),
                 design.name.clone(),
                 vessel_type,
                 method,
@@ -114,10 +118,13 @@ pub fn plan_construction(design: &VehicleDesign) -> VesselProject {
             .expect("non-empty phase plan")
         }
         DesignKind::Spacecraft {
-            mass_kg: _,
+            mass_kg,
             assembled_in_orbit,
         } => {
-            let vessel_type = VesselType::Space(SpaceVesselType::SpaceStation { modules: 4 });
+            // Module-count proxy: one module per ~50 t of mass, at least one.
+            let vessel_type = VesselType::Space(SpaceVesselType::SpaceStation {
+                modules: ((*mass_kg / 50_000.0).ceil() as u32).max(1),
+            });
             let method = if *assembled_in_orbit {
                 ConstructionMethod::OrbitalAssembly
             } else {
@@ -175,6 +182,7 @@ mod tests {
     fn round_trip_design_build_handover() {
         // 1. Design a small ship.
         let design = VehicleDesign {
+            id: 7,
             name: "Handover test ship".into(),
             kind: DesignKind::Maritime {
                 loa_m: 100.0,
@@ -204,7 +212,7 @@ mod tests {
                 status: ItemStatus::Design,
                 margin_pct: 0.0,
                 installed_by: Some(activity_id),
-            });
+            }).expect("valid weight item");
         }
         let project = project;
         let mut twin = DigitalTwin::with_weight_model(
@@ -231,6 +239,7 @@ mod tests {
     #[test]
     fn spacecraft_maps_to_orbital_assembly() {
         let design = VehicleDesign {
+            id: 7,
             name: "Orbital station".into(),
             kind: DesignKind::Spacecraft {
                 mass_kg: 400_000.0,

@@ -15,3 +15,6 @@ tpt-yard-hull = { workspace = true }
 tpt-yard-blocks = { workspace = true }
 tpt-yard-digital-twin = { workspace = true }
 tpt-yard-weight = { workspace = true }
+
+[lints]
+workspace = true

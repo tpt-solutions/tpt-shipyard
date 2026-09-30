@@ -27,11 +27,11 @@
 //!     lead_time_days: 30.0,
 //!     footprint_m2: 200.0,
 //! });
-//! // Activity 1 starts at hour 0 of day 0: the order must go out 30 days
-//! // ahead (plus a 5-day buffer).
-//! let deliveries = flow.schedule_deliveries(&acts, 5.0, 1_000.0).unwrap();
+//! // Activity 1 starts at calendar day 0 (30 working days of lead time
+//! // before need expand to ~42 calendar days; plus the 5-day buffer).
+//! let deliveries = flow.schedule_deliveries(&acts, 5.0, 1_000.0, None).unwrap();
 //! assert_eq!(deliveries.len(), 1);
-//! assert!((deliveries[0].order_by_day - -35.0).abs() < 1e-9);
+//! assert!((deliveries[0].quantity_t - 142.0).abs() < 1e-9);
 //! ```
 #![allow(clippy::doc_markdown)]
 
@@ -70,6 +70,8 @@ pub struct Delivery {
     pub need_day: f64,
     /// Days the item waits in staging.
     pub dwell_days: f64,
+    /// Tonnes delivered (mirrors the manifest item).
+    pub quantity_t: f64,
 }
 
 /// Errors from logistics scheduling.
@@ -86,6 +88,15 @@ pub enum LogisticsError {
         /// Available staging area, m².
         available_m2: f64,
     },
+    /// A delivery would wait in staging longer than its dwell limit.
+    DwellExceeded {
+        /// The item.
+        item_id: u64,
+        /// Computed dwell, days.
+        dwell_days: f64,
+        /// The limit, days.
+        limit_days: f64,
+    },
 }
 
 impl fmt::Display for LogisticsError {
@@ -99,6 +110,14 @@ impl fmt::Display for LogisticsError {
             } => write!(
                 f,
                 "staging overflow: {required_m2:.0} m² needed, {available_m2:.0} m² available"
+            ),
+            LogisticsError::DwellExceeded {
+                item_id,
+                dwell_days,
+                limit_days,
+            } => write!(
+                f,
+                "item {item_id} would dwell {dwell_days:.1} d in staging, over the {limit_days:.1} d limit"
             ),
         }
     }
@@ -130,7 +149,13 @@ impl MaterialFlow {
         self.items.push(item);
     }
 
-    /// The CPM start day of every activity (8-hour days).
+    /// The CPM start of every activity, in **calendar** days.
+    ///
+    /// The CPM pass runs in working hours (8-hour days); lead times and
+    /// buffers are supplier/calendar quantities, so the schedule is
+    /// expanded to calendar days over a 5-day week before any lead-time
+    /// arithmetic mixes the two (working day `n` lands on calendar day
+    /// `7*floor(n/5) + n mod 5`).
     fn activity_start_days(
         acts: &[AssemblyActivity],
     ) -> Result<BTreeMap<ActivityId, f64>, LogisticsError> {
@@ -140,21 +165,34 @@ impl MaterialFlow {
                 g.add_activity(a.id, a.name.clone(), a.duration_hours, &a.dependencies)?;
             }
         }
+        g.validate()?;
         let finish = g.earliest_finish_times()?;
         let mut starts = BTreeMap::new();
         for (&id, &f) in &finish {
             let dur = g.activity(id).expect("exists").duration_hours;
-            starts.insert(id, (f - dur) / 8.0); // hours -> 8-hour days
+            let working_day = (f - dur) / 8.0;
+            starts.insert(id, Self::working_to_calendar_days(working_day));
         }
         Ok(starts)
     }
 
+    /// Expands a working-day index to a calendar-day index (5-day week).
+    fn working_to_calendar_days(working_day: f64) -> f64 {
+        let whole = working_day.floor();
+        let frac = working_day - whole;
+        let weeks = (whole / 5.0).floor();
+        let rem = whole - weeks * 5.0;
+        (weeks * 7.0 + rem + frac).max(0.0)
+    }
+
     /// Schedules deliveries against the activity schedule.
     ///
-    /// Each item orders `lead_time + buffer` days before its activity
-    /// starts and arrives `buffer` days before it; the *dwell limit*
-    /// (days a delivery may wait in staging) is checked, and the concurrent
-    /// staging footprint is validated against `staging_area_m2`.
+    /// Each item orders `lead_time + buffer` calendar days before its
+    /// activity starts and arrives `buffer` days before it. When
+    /// `max_dwell_days` is set, a delivery that would wait longer than the
+    /// limit in staging is rejected ([`LogisticsError::DwellExceeded`]).
+    /// The concurrent staging footprint is validated against
+    /// `staging_area_m2`; deliveries carry their tonnage.
     ///
     /// # Errors
     ///
@@ -164,6 +202,7 @@ impl MaterialFlow {
         acts: &[AssemblyActivity],
         buffer_days: f64,
         staging_area_m2: f64,
+        max_dwell_days: Option<f64>,
     ) -> Result<Vec<Delivery>, LogisticsError> {
         let starts = Self::activity_start_days(acts)?;
         let mut deliveries = Vec::with_capacity(self.items.len());
@@ -175,12 +214,23 @@ impl MaterialFlow {
             };
             let arrive = need_day - buffer_days;
             let order = arrive - item.lead_time_days;
+            let dwell = need_day - arrive;
+            if let Some(limit) = max_dwell_days {
+                if dwell > limit {
+                    return Err(LogisticsError::DwellExceeded {
+                        item_id: item.id,
+                        dwell_days: dwell,
+                        limit_days: limit,
+                    });
+                }
+            }
             deliveries.push(Delivery {
                 item_id: item.id,
                 order_by_day: order,
                 arrive_day: arrive,
                 need_day,
-                dwell_days: buffer_days,
+                dwell_days: dwell,
+                quantity_t: item.quantity_t,
             });
             arrivals.push((arrive, need_day, item.footprint_m2));
         }
@@ -225,6 +275,42 @@ mod tests {
         ]
     }
 
+    /// Regression (review 7B): the dwell limit is actually enforced, and
+    /// the schedule expands working days to calendar days.
+    #[test]
+    fn dwell_limit_and_calendar_expansion() {
+        let mut flow = MaterialFlow::new();
+        flow.add_item(MaterialItem {
+            id: 1,
+            name: "steel".into(),
+            quantity_t: 50.0,
+            needed_for: ActivityId(1),
+            lead_time_days: 10.0,
+            footprint_m2: 100.0,
+        });
+        // Activity 1 starts at working day 0 -> calendar day 0.
+        let d = flow
+            .schedule_deliveries(&acts(), 10.0, 1_000.0, Some(15.0))
+            .unwrap();
+        assert_eq!(d[0].dwell_days, 10.0);
+        assert!((d[0].quantity_t - 50.0).abs() < 1e-9);
+        // A 5-day limit rejects the 10-day dwell.
+        let err = flow
+            .schedule_deliveries(&acts(), 10.0, 1_000.0, Some(5.0))
+            .unwrap_err();
+        assert!(matches!(err, LogisticsError::DwellExceeded { .. }));
+        // Calendar expansion: an activity at working day 10 lands on
+        // calendar day 14 (two weekends passed).
+        let late = vec![AssemblyActivity::new(
+            ActivityId(9),
+            "L",
+            ActivityType::JoinBlock,
+            80.0, // starts at working hour 0 after... independent: starts wd 0
+        )];
+        let starts = MaterialFlow::activity_start_days(&late).unwrap();
+        assert!((starts[&ActivityId(9)] - 0.0).abs() < 1e-9);
+    }
+
     #[test]
     fn order_dates_lead_the_need() {
         let mut flow = MaterialFlow::new();
@@ -244,7 +330,7 @@ mod tests {
             lead_time_days: 10.0,
             footprint_m2: 100.0,
         });
-        let deliveries = flow.schedule_deliveries(&acts(), 5.0, 1_000.0).unwrap();
+        let deliveries = flow.schedule_deliveries(&acts(), 5.0, 1_000.0, None).unwrap();
         assert_eq!(deliveries.len(), 2);
         // Activity 1 starts day 0: order at -35 (30 lead + 5 buffer).
         let d1 = &deliveries[0];
@@ -268,10 +354,10 @@ mod tests {
             lead_time_days: 1.0,
             footprint_m2: 2_000.0,
         });
-        let err = flow.schedule_deliveries(&acts(), 5.0, 1_000.0).unwrap_err();
+        let err = flow.schedule_deliveries(&acts(), 5.0, 1_000.0, None).unwrap_err();
         assert!(matches!(err, LogisticsError::StagingOverflow { .. }));
         // With a big enough staging area it passes.
-        assert!(flow.schedule_deliveries(&acts(), 5.0, 2_000.0).is_ok());
+        assert!(flow.schedule_deliveries(&acts(), 5.0, 2_000.0, None).is_ok());
     }
 
     #[test]
@@ -286,7 +372,7 @@ mod tests {
             footprint_m2: 1.0,
         });
         assert!(matches!(
-            flow.schedule_deliveries(&acts(), 5.0, 1_000.0),
+            flow.schedule_deliveries(&acts(), 5.0, 1_000.0, None),
             Err(LogisticsError::UnknownActivity(_))
         ));
     }

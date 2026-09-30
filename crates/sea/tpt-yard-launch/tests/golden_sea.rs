@@ -47,7 +47,7 @@ fn golden_slipway_launch_stability() {
         .unwrap_or(0.002);
     let check = |name: &str, computed: f64, expected: f64| {
         assert!(
-            ((computed - expected) / expected.abs().max(1e-9)) <= tol,
+            ((computed - expected) / expected.abs().max(1e-9)).abs() <= tol,
             "{name}: computed {computed} vs golden {expected}"
         );
     };
@@ -114,7 +114,7 @@ fn golden_drydock_flooding_sequence() {
         .unwrap_or(0.002);
     let check = |name: &str, computed: f64, expected: f64| {
         assert!(
-            ((computed - expected) / expected.abs().max(1e-9)) <= tol,
+            ((computed - expected) / expected.abs().max(1e-9)).abs() <= tol,
             "{name}: computed {computed} vs golden {expected}"
         );
     };

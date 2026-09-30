@@ -1,0 +1,79 @@
+[package]
+name = "tpt-yard"
+description = "Facade for the tpt-shipyard workspace: one dependency, a curated prelude, and feature flags for the sea, space and planning crates."
+keywords = ["shipyard", "shipbuilding", "digital-twin", "construction", "simulation"]
+categories = ["science", "simulation"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = ["sea", "space", "planning"]
+## Sea-surface shipyard: hull blocks, lifting, drydock, launch, outfitting, sea trials.
+sea = [
+    "dep:tpt-yard-hull",
+    "dep:tpt-yard-blocks",
+    "dep:tpt-yard-drydock",
+    "dep:tpt-yard-launch",
+    "dep:tpt-yard-outfitting",
+    "dep:tpt-yard-sea-trials",
+]
+## Space shipyard: orbital assembly, space structures, robotic arms, habitats, propellant, manufacturing.
+space = [
+    "dep:tpt-yard-orbital-assembly",
+    "dep:tpt-yard-space-structural",
+    "dep:tpt-yard-space-manufacturing",
+    "dep:tpt-yard-robotic-assembly",
+    "dep:tpt-yard-habitat",
+    "dep:tpt-yard-propellant",
+]
+## Scheduling, logistics, facility layout, quality management.
+planning = [
+    "dep:tpt-yard-scheduling",
+    "dep:tpt-yard-logistics",
+    "dep:tpt-yard-facility",
+    "dep:tpt-yard-quality",
+]
+## WebAssembly bindings for browser dashboards (native-compilable too).
+wasm = ["dep:tpt-yard-wasm"]
+
+[dependencies]
+# Core stack (always present).
+tpt-yard-core = { workspace = true }
+tpt-yard-assembly = { workspace = true }
+tpt-yard-weight = { workspace = true }
+tpt-yard-digital-twin = { workspace = true }
+# Structural-during-construction stack (always present).
+tpt-yard-structural = { workspace = true }
+tpt-yard-welding = { workspace = true }
+tpt-yard-distortion = { workspace = true }
+tpt-yard-joints = { workspace = true }
+# Integration bridges (thin, cheap).
+tpt-yard-transport-link = { workspace = true }
+tpt-yard-process-link = { workspace = true }
+tpt-yard-earth-link = { workspace = true }
+# Feature-gated layers.
+tpt-yard-hull = { workspace = true, optional = true }
+tpt-yard-blocks = { workspace = true, optional = true }
+tpt-yard-drydock = { workspace = true, optional = true }
+tpt-yard-launch = { workspace = true, optional = true }
+tpt-yard-outfitting = { workspace = true, optional = true }
+tpt-yard-sea-trials = { workspace = true, optional = true }
+tpt-yard-orbital-assembly = { workspace = true, optional = true }
+tpt-yard-space-structural = { workspace = true, optional = true }
+tpt-yard-space-manufacturing = { workspace = true, optional = true }
+tpt-yard-robotic-assembly = { workspace = true, optional = true }
+tpt-yard-habitat = { workspace = true, optional = true }
+tpt-yard-propellant = { workspace = true, optional = true }
+tpt-yard-scheduling = { workspace = true, optional = true }
+tpt-yard-logistics = { workspace = true, optional = true }
+tpt-yard-facility = { workspace = true, optional = true }
+tpt-yard-quality = { workspace = true, optional = true }
+tpt-yard-wasm = { workspace = true, optional = true }
+
+[lints]
+workspace = true

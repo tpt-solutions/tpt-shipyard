@@ -1,6 +1,10 @@
 {
   "case": "Drydock flooding sequence with stability at every level (RFC 0002 reference case)",
-  "dock": { "length_m": 200.0, "width_m": 30.0, "depth_m": 10.0 },
+  "dock": {
+    "length_m": 200.0,
+    "width_m": 30.0,
+    "depth_m": 10.0
+  },
   "vessel": {
     "launch_weight_kg": 4000000.0,
     "cog_above_keel_m": 6.0,
@@ -10,14 +14,18 @@
   },
   "flood_rate_m3_hr": 5000.0,
   "expected": {
-    "n_steps": 13,
+    "n_steps": 14,
     "final_water_level_m": 3.71,
     "final_draft_m": 2.71,
-    "final_gm_m": 7.655,
+    "final_gm_m": 8.681,
     "final_displaced_kg": 4000000.0,
     "total_time_hours": 4.452,
     "stable_at_every_level": true,
     "aground_steps": 9
   },
-  "tolerance": { "relative": 0.002, "note": "closed-form level schedule: exact within rounding" }
+  "tolerance": {
+    "relative": 0.002,
+    "note": "closed-form level schedule: exact within rounding"
+  },
+  "description": " Regenerated after the review 7B GM fix (BM = Cwp*B^2/(12*Cb*T), Cwp = (1+2Cb)/3) and float-off-instant sampling; final GM verified by hand (8.68 m)."
 }

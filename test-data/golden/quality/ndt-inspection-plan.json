@@ -5,26 +5,68 @@
       "id": 1,
       "name": "Panel line",
       "activities": [
-        { "id": 1, "name": "Weld butt seam", "type": "WeldBlock", "duration_hours": 8.0 },
-        { "id": 2, "name": "Paint", "type": "Paint", "duration_hours": 4.0 }
+        {
+          "id": 1,
+          "name": "Weld butt seam",
+          "type": "WeldBlock",
+          "duration_hours": 8.0
+        },
+        {
+          "id": 2,
+          "name": "Paint",
+          "type": "Paint",
+          "duration_hours": 4.0
+        }
       ]
     },
     {
       "id": 2,
       "name": "Outfitting",
       "activities": [
-        { "id": 3, "name": "Sea water line", "type": "OutfitPiping", "duration_hours": 6.0 },
-        { "id": 4, "name": "Hydro test", "type": "TestHydrostatic", "duration_hours": 2.0 }
+        {
+          "id": 3,
+          "name": "Sea water line",
+          "type": "OutfitPiping",
+          "duration_hours": 6.0
+        },
+        {
+          "id": 4,
+          "name": "Hydro test",
+          "type": "TestHydrostatic",
+          "duration_hours": 2.0
+        }
       ]
     }
   ],
   "expected": {
     "n_points": 4,
     "points": [
-      { "activity": 1, "method": "UT", "criticality": 1, "coverage_pct": 100.0 },
-      { "activity": 2, "method": "VT", "criticality": 3, "coverage_pct": 100.0 },
-      { "activity": 3, "method": "PT", "criticality": 2, "coverage_pct": 100.0 },
-      { "activity": 4, "method": "PRESS", "criticality": 1, "coverage_pct": 100.0 }
+      {
+        "activity": 1,
+        "method": "UT",
+        "criticality": 1,
+        "coverage_pct": 30.0,
+        "timing": "post-weld"
+      },
+      {
+        "activity": 2,
+        "method": "VT",
+        "criticality": 3,
+        "coverage_pct": 100.0
+      },
+      {
+        "activity": 3,
+        "method": "PT",
+        "criticality": 2,
+        "coverage_pct": 100.0
+      },
+      {
+        "activity": 4,
+        "method": "PRESS",
+        "criticality": 1,
+        "coverage_pct": 100.0
+      }
     ]
-  }
+  },
+  "description": "Regenerated after the review 7B fix: the plan now honours its documented coverage policy - structural butt welds are sampled at 30% (100% is reserved for pressure boundaries), timings reflect the activity kind, and methods degrade to the yard-available list. Points 2-4 unchanged."
 }

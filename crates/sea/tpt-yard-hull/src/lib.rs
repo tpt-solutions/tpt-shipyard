@@ -194,27 +194,45 @@ impl HullConstruction {
     /// Constraints (all verified by tests):
     /// - block weight ≤ crane capacity (`crane_capacity_kn` at 100 %, minus
     ///   a 10 % rigging allowance);
-    /// - block length ≤ workshop length, block height ≤ workshop depth;
-    /// - the depth is split into `depth_bands` tiers of equal height.
+    /// - block length ≤ workshop length, block height ≤ workshop depth, and
+    ///   the moulded breadth fits the workshop width (division is
+    ///   longitudinal only — a too narrow workshop means the block cannot
+    ///   be built, which the caller must catch).
+    /// - the depth is split into `depth_bands` tiers of equal height
+    ///   (`depth_bands == 0` yields no blocks).
     ///
-    /// The hull envelope is approximated as `2·(B + D)·length·areal
-    /// density` per tier — the classic pre-design weight estimate.
+    /// Steel weight is the classic pre-design envelope estimate: areal
+    /// density × (bottom/deck + shell sides) per tier, times an
+    /// **internal-structure factor** of 4 covering decks, transverse and
+    /// longitudinal bulkheads, floors, girders and foundation steel — a bare
+    /// shell envelope runs ~4× light against real cargo-ship steel weights.
     pub fn block_division(
         &self,
         crane_capacity_kn: f64,
         workshop_dimensions: Dimensions,
     ) -> Vec<HullBlock> {
+        if self.hull_form.depth_bands == 0 {
+            return Vec::new();
+        }
         let g = self.hull_form;
         let crane_limit_kn = crane_capacity_kn * 0.9; // rigging allowance
         let band_height = g.depth_m / g.depth_bands as f64;
 
+        /// Shell envelope → full structure multiplier (pre-design estimate;
+        /// see the method doc).
+        const INTERNAL_STRUCTURE_FACTOR: f64 = 4.0;
+
         // Per-metre of length, one tier weighs roughly:
-        // areal·(B + 2·band_height)   [bottom + shell sides of the tier]
-        let kg_per_m_per_tier = g.areal_density_kg_m2 * (g.boa_m + 2.0 * band_height);
+        // factor · areal·(bottom/deck + 2 shell sides of the tier)
+        let kg_per_m_per_tier = INTERNAL_STRUCTURE_FACTOR
+            * g.areal_density_kg_m2
+            * (g.boa_m + 2.0 * band_height);
 
         // Max length per block from the crane (weight limit) and workshop.
+        // No upward clamp: a crane that cannot lift even a 1 m block makes
+        // the division infeasible, and clamping would hide that.
         let max_len_weight = crane_limit_kn * 1000.0 / 9.81 / kg_per_m_per_tier.max(1e-6);
-        let max_len = max_len_weight.min(workshop_dimensions.length).max(1.0);
+        let max_len = max_len_weight.min(workshop_dimensions.length).max(1e-3);
         let n_x = (g.loa_m / max_len).ceil().max(1.0) as u32;
         let block_len = g.loa_m / n_x as f64;
 
@@ -251,36 +269,45 @@ impl HullConstruction {
     /// (stability on the keel blocks), within a tier from midship outwards
     /// (limits cumulative weld shrinkage at the ends and keeps the CoG near
     /// midship). The returned joins are in erection order.
+    ///
+    /// Each block lands on an already-erected support: a lateral neighbour
+    /// in its own tier when one exists, otherwise — for the first block of
+    /// an upper tier — the block directly below it. Only the very first
+    /// keel-tier block lands on nothing (`onto: None`, the dock floor).
     pub fn erection_sequence(&self, blocks: &[HullBlock]) -> Vec<BlockJoin> {
+        let loa = self.hull_form.loa_m;
         let mut ordered: Vec<&HullBlock> = blocks.iter().collect();
         ordered.sort_by(|a, b| {
             a.z_band
                 .cmp(&b.z_band)
-                .then(midship_distance(a).total_cmp(&midship_distance(b)))
+                .then(midship_distance(a, loa).total_cmp(&midship_distance(b, loa)))
                 .then(a.x_band.cmp(&b.x_band))
         });
 
         let mut joins = Vec::with_capacity(ordered.len());
         let mut erected: Vec<&HullBlock> = Vec::new();
         for (index, block) in ordered.into_iter().enumerate() {
-            // Land against the neighbouring block already erected in this
-            // tier (aft neighbour first), or the dock floor for the first.
-            let onto = erected
+            let lateral = erected
                 .iter()
                 .filter(|b| b.z_band == block.z_band)
-                .map(|b| (b.x_band as i64 - block.x_band as i64).abs())
-                .zip(
-                    erected
-                        .iter()
-                        .filter(|b| b.z_band == block.z_band)
-                        .collect::<Vec<_>>(),
-                )
-                .min_by_key(|(d, _)| *d)
-                .map(|(_, b)| b.id);
+                .min_by_key(|b| (b.x_band as i64 - block.x_band as i64).abs())
+                .map(|b| b.id);
+            // Upper tiers always have a landed support: the tier below is
+            // fully erected first (the ordering guarantees it for complete
+            // divisions), so the first block of a tier lands on the block
+            // directly beneath it.
+            let below = if lateral.is_none() && block.z_band > 0 {
+                erected
+                    .iter()
+                    .find(|b| b.z_band + 1 == block.z_band && b.x_band == block.x_band)
+                    .map(|b| b.id)
+            } else {
+                None
+            };
+            let onto = lateral.or(below);
             let seam = match (onto, block.z_band) {
                 (None, 0) => SeamType::DockJoint,
-                (None, _) => SeamType::ButtSeam,
-                (Some(_), _) => SeamType::ButtSeam,
+                (None, _) | (Some(_), _) => SeamType::ButtSeam,
             };
             joins.push(BlockJoin {
                 block: block.id,
@@ -300,8 +327,11 @@ impl HullConstruction {
     }
 }
 
-fn midship_distance(b: &HullBlock) -> f64 {
-    b.geometry.centre.x
+/// Longitudinal distance of a block centre from midship, m (the hull runs
+/// x ∈ [0, LOA], so midship is at LOA/2 — measuring from the origin would
+/// order the sequence end-to-end instead of midship-outward).
+fn midship_distance(b: &HullBlock, loa_m: f64) -> f64 {
+    (b.geometry.centre.x - loa_m / 2.0).abs()
 }
 
 #[cfg(test)]
@@ -372,12 +402,13 @@ mod tests {
         let first_tier1 = joins.iter().position(|j| j.z_band == 1).unwrap();
         assert!(joins[..first_tier1].iter().all(|j| j.z_band == 0));
 
-        // Within the bottom tier, distance from midship is non-decreasing.
+        // Within the bottom tier, distance from midship is non-decreasing
+        // (review 7D: inline arithmetic, not the function under test).
         let by_id = |id: BlockId| blocks.iter().find(|b| b.id == id).unwrap();
         let tier0: Vec<&BlockJoin> = joins[..first_tier1].iter().collect();
         for w in tier0.windows(2) {
-            let d0 = midship_distance(by_id(w[0].block));
-            let d1 = midship_distance(by_id(w[1].block));
+            let d0 = (by_id(w[0].block).geometry.centre.x - 70.0).abs();
+            let d1 = (by_id(w[1].block).geometry.centre.x - 70.0).abs();
             assert!(d0 <= d1 + 1e-9, "midship-outward order violated");
         }
 
@@ -391,6 +422,15 @@ mod tests {
             .find(|j| j.z_band == 0 && j.onto.is_some())
             .expect("subsequent tier-0 blocks join neighbours");
         assert!(by_id(join_with_neighbour.onto.unwrap()).z_band == 0);
+
+        // Regression (review 7A/A7): the first block of an upper tier must
+        // land on the block directly below it, not hang from `onto: None`.
+        let first_tier1_join = &joins[first_tier1];
+        let below = by_id(first_tier1_join.onto.expect("upper tier lands on tier below"));
+        assert_eq!(below.z_band, 0);
+        assert_eq!(below.x_band, by_id(first_tier1_join.block).x_band);
+        // Every upper-tier block has a support.
+        assert!(joins[first_tier1..].iter().all(|j| j.onto.is_some()));
     }
 
     #[test]

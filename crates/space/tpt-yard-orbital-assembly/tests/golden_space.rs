@@ -24,6 +24,16 @@ fn truss_from_golden(v: &Value) -> OrbitalAssembly {
         },
         OrbitalParameters::default(),
     );
+    // The sequence steps carry a robot; simulate would refuse without one.
+    a.add_robot(tpt_yard_robotic_assembly::RoboticArm::new(
+        tpt_yard_core::RobotId(1),
+        vec![
+            tpt_yard_robotic_assembly::Joint::revolute(-3.0, 3.0, 0.5),
+            tpt_yard_robotic_assembly::Joint::revolute(-3.0, 3.0, 0.5),
+        ],
+        vec![4.0, 4.0],
+        tpt_yard_robotic_assembly::EndEffector::Gripper { force_n: 400.0 },
+    ));
     for bay in v.get("bays").and_then(|b| b.as_array()).expect("bays") {
         let dims = bay.get("dimensions_m").and_then(|d| d.as_array()).unwrap();
         let target = bay.get("target_m").and_then(|d| d.as_array()).unwrap();
@@ -131,6 +141,10 @@ fn golden_iss_truss_integrity_screening() {
     let steps = a.plan_sequence();
     a.docking_impulse_n = num(p, "docking_impulse_n");
     a.allowable_stress_mpa = num(p, "allowable_stress_mpa");
+    // Review 7B: the cross-section parameters come from the golden file
+    // instead of the hard-coded 0.01 m2 / 3 m literals.
+    a.chord_area_m2 = num(p, "chord_area_m2");
+    a.bay_height_m = num(p, "bay_height_m");
 
     let check = a
         .verify_structural_integrity(&StepId(steps.len() as u64))
@@ -141,9 +155,9 @@ fn golden_iss_truss_integrity_screening() {
         .and_then(|t| t.get("relative"))
         .and_then(|x| x.as_f64())
         .unwrap_or(1e-9);
-    let expected_stress = num(exp, "root_stress_at_72_5_m_mpa");
+    let expected_stress = num(exp, "root_stress_at_75_m_mpa");
     assert!((check.root_stress_mpa - expected_stress).abs() <= expected_stress * tol);
-    let expected_util = num(exp, "utilization_at_72_5_m");
+    let expected_util = num(exp, "utilization_at_75_m");
     assert!((check.utilization - expected_util).abs() <= expected_util * tol + 1e-17);
     assert_eq!(
         check.passed,

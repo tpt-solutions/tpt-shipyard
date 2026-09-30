@@ -35,11 +35,28 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
-        run: cargo clippy --workspace --all-targets
+        run: cargo clippy --workspace --all-targets --locked
       - name: Tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
       - name: Docs
-        run: cargo doc --workspace --no-deps
+        run: cargo doc --workspace --no-deps --locked
+
+  examples:
+    name: Examples run
+    needs: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run every example
+        run: |
+          for ex in container-ship-block-assembly orbital-station-truss \
+                    rotating-habitat-construction submarine-pressure-hull \
+                    space-solar-array-assembly drydock-flooding-sequence; do
+            echo "== $ex =="
+            cargo run -p "$ex" --locked
+          done
 
   wasm:
     name: WASM build
@@ -52,7 +69,7 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: Build tpt-yard-wasm for wasm32
-        run: cargo build -p tpt-yard-wasm --target wasm32-unknown-unknown
+        run: cargo build -p tpt-yard-wasm --target wasm32-unknown-unknown --locked
 
   msrv:
     name: MSRV
@@ -62,4 +79,63 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --workspace
+      # Review 7G: the MSRV job runs the tests, not just a check — a
+      # feature the tests exercise can still fail to *run* on the MSRV.
+      - run: cargo test --workspace --locked
+
+  dco:
+    name: DCO
+    needs: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Signed-off-by check (DCO)
+        run: |
+          # CONTRIBUTING.md and the PR template require a DCO sign-off on
+          # every commit; this job makes that requirement real.
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          range="${base:-origin/master}..HEAD"
+          echo "Checking $range"
+          fail=0
+          for hash in $(git log --format='%h' $range); do
+            if ! git log -1 --format='%b' "$hash" | grep -qi "Signed-off-by:"; then
+              echo "commit $hash is missing its DCO sign-off"
+              fail=1
+            fi
+          done
+          exit $fail
+
+  semver:
+    name: SemVer compatibility
+    needs: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo-semver-checks
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          # Pre-1.0 workspace: minor bumps are allowed to break.
+          feature-group: default-features
+
+  coverage:
+    name: Coverage
+    needs: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+      - name: Generate coverage
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: lcov.info

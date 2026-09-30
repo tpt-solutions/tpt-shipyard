@@ -24,7 +24,7 @@ fn main() {
         status: ItemStatus::Installed,
         margin_pct: 0.0,
         installed_by: None,
-    });
+    }).expect("valid weight item");
     weight.add_item(WeightItem {
         id: tpt_yard_core::ItemId(2),
         name: "outfit afloat items".into(),
@@ -34,7 +34,7 @@ fn main() {
         status: ItemStatus::Installed,
         margin_pct: 0.0,
         installed_by: None,
-    });
+    }).expect("valid weight item");
 
     let cog = weight
         .installed_centre_of_gravity()

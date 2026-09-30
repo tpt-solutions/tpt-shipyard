@@ -50,7 +50,7 @@ pub struct CoriolisReport {
 }
 
 /// Structural sizing of the rotating hull.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct StructuralDesign {
     /// Required hull shell thickness for the ring, mm.
     pub shell_thickness_mm: f64,
@@ -100,6 +100,11 @@ pub struct HabitatDesigner {
     pub habitat_type: HabitatType,
     /// Structural material.
     pub material: Material,
+    /// Radius used for [`HabitatType::Custom`] sizing, m (0 = unset; the
+    /// old behaviour silently assumed 100 m).
+    pub custom_radius_m: f64,
+    /// Minimum practical shell gauge, mm (fabrication limit; default 3 mm).
+    pub min_shell_thickness_mm: f64,
 }
 
 impl HabitatDesigner {
@@ -108,7 +113,16 @@ impl HabitatDesigner {
         Self {
             habitat_type,
             material,
+            custom_radius_m: 0.0,
+            min_shell_thickness_mm: 3.0,
         }
+    }
+
+    /// Builder: explicit radius for [`HabitatType::Custom`] sizing.
+    #[must_use]
+    pub fn with_custom_radius_m(mut self, radius_m: f64) -> Self {
+        self.custom_radius_m = radius_m.max(0.0);
+        self
     }
 
     /// Required rotation rate for a target gravity at `radius_m`, rad/s:
@@ -153,29 +167,47 @@ impl HabitatDesigner {
             | HabitatType::StanfordTorus { radius_m, .. }
             | HabitatType::BernalSphere { radius_m }
             | HabitatType::RingStation { radius_m } => *radius_m,
-            HabitatType::Custom => 100.0,
+            // Unset custom radius: report an empty design rather than a
+            // silently assumed 100 m.
+            HabitatType::Custom => self.custom_radius_m,
         };
+        if radius <= 0.0 {
+            return StructuralDesign::default();
+        }
         // 1 g design point by default (documented; callers re-run for Mars-g).
         let omega = self.required_rotation(radius, 1.0);
-        let sigma_allow = self.material.yield_mpa * 1e6 / safety_factor;
+        let sigma_allow = self.material.yield_mpa * 1e6 / safety_factor.max(1e-6);
 
         // Hoop tension of a spinning ring: T = m * omega^2 * r / (2 pi).
         let tension_n = habitat_mass_kg * omega * omega * radius / (2.0 * std::f64::consts::PI);
-        let area_m2 = tension_n / sigma_allow;
+        let ideal_area_m2 = tension_n / sigma_allow;
 
-        // Circumference carrying the hoop load.
-        let circumference = 2.0 * std::f64::consts::PI * radius;
-        let thickness_m = area_m2 / circumference;
+        // The circumference of the shell that actually carries the hoop
+        // load: for a torus that is the *tube* (minor) circumference — the
+        // major ring length carries no hoop tension of the spin — while
+        // cylinders, spheres and ring stations carry it around the main
+        // circumference.
+        let carrying_circumference = match &self.habitat_type {
+            HabitatType::StanfordTorus { tube_diameter_m, .. } => {
+                std::f64::consts::PI * tube_diameter_m.max(1e-3)
+            }
+            _ => 2.0 * std::f64::consts::PI * radius,
+        };
 
-        // Actual stress with that thickness (self-consistent check).
+        // Round the shell up to the fabrication minimum gauge; the
+        // utilization below is then a *real* margin, not a tautological 1.
+        let thickness_m = (ideal_area_m2 / carrying_circumference)
+            .max(self.min_shell_thickness_mm / 1000.0);
+        let area_m2 = thickness_m * carrying_circumference;
+
         let stress_mpa = (tension_n / area_m2) / 1e6;
-        let utilization = stress_mpa / (self.material.yield_mpa / safety_factor);
+        let utilization = stress_mpa / sigma_allow;
 
         StructuralDesign {
             shell_thickness_mm: thickness_m * 1000.0,
             hoop_stress_mpa: stress_mpa,
             utilization,
-            structure_mass_kg: area_m2 * circumference * self.material.density_kg_m3,
+            structure_mass_kg: area_m2 * carrying_circumference * self.material.density_kg_m3,
         }
     }
 }
@@ -236,20 +268,52 @@ mod tests {
     #[test]
     fn structural_design_is_self_consistent() {
         let d = designer(100.0);
-        let design = d.structural_design(1_000_000.0, 2.0); // 1000 t at SF 2
-        assert!(
-            design.utilization <= 1.0 + 1e-9,
-            "util {}",
-            design.utilization
-        );
-        assert!(design.shell_thickness_mm > 0.0);
-        assert!(design.structure_mass_kg > 0.0);
-        // Heavier habitat: thicker shell.
-        let heavy = d.structural_design(5_000_000.0, 2.0);
+        // Small habitat: the 3 mm fabrication minimum gauge floors the
+        // shell, so the utilization is a real (low) margin, not a
+        // tautological 1.0 (review 7B).
+        let small = d.structural_design(1_000_000.0, 2.0);
+        assert!((small.shell_thickness_mm - 3.0).abs() < 1e-9);
+        assert!(small.utilization < 1.0);
+        assert!(small.structure_mass_kg > 0.0);
+
+        // Heavier habitat beyond the gauge: thicker shell, and the
+        // utilization rises toward (but never tautologically reaches) 1.
+        let design = d.structural_design(5e8, 2.0);
+        assert!(design.shell_thickness_mm > 3.0);
+        let heavy = d.structural_design(2.5e9, 2.0);
         assert!(heavy.shell_thickness_mm > design.shell_thickness_mm);
+        assert!(heavy.utilization > design.utilization);
+        assert!(heavy.utilization <= 1.0 + 1e-9);
         // Higher safety factor: thicker shell.
-        let safer = d.structural_design(1_000_000.0, 4.0);
+        let safer = d.structural_design(5e8, 4.0);
         assert!(safer.shell_thickness_mm > design.shell_thickness_mm);
+    }
+
+    /// Regression (review 7B): the torus load path is the *tube* shell, so
+    /// its required gauge differs from an equal-radius ring station; and a
+    /// `Custom` habitat without an explicit radius reports an empty design
+    /// instead of silently assuming 100 m.
+    #[test]
+    fn torus_carries_on_the_tube_and_custom_is_explicit() {
+        let torus = designer(100.0); // tube diameter 20 m
+        let ring = HabitatDesigner::new(HabitatType::RingStation { radius_m: 100.0 }, Material::aa5083());
+        let t_torus = torus.structural_design(5e8, 2.0).shell_thickness_mm;
+        let t_ring = ring.structural_design(5e8, 2.0).shell_thickness_mm;
+        // Tube circumference (2*pi*10) is far shorter than the major
+        // circumference (2*pi*100): the same steel area makes a much
+        // thicker tube shell.
+        assert!(
+            t_torus > t_ring * 5.0,
+            "torus gauge {t_torus} vs ring gauge {t_ring}"
+        );
+
+        let custom_unset = HabitatDesigner::new(HabitatType::Custom, Material::aa5083())
+            .structural_design(1e6, 2.0);
+        assert_eq!(custom_unset.shell_thickness_mm, 0.0, "unset custom radius: empty design");
+        let custom = HabitatDesigner::new(HabitatType::Custom, Material::aa5083())
+            .with_custom_radius_m(250.0)
+            .structural_design(1e6, 2.0);
+        assert!(custom.shell_thickness_mm > 0.0);
     }
 
     #[test]

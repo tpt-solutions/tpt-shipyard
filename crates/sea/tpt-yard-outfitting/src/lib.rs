@@ -2,7 +2,8 @@
 //!
 //! [`OutfittingPlan`] holds the outfit systems and their 3D routes.
 //! [`OutfittingPlan::collision_detection`] checks route-against-route and
-//! route-against-hull clashes (bounding-box screening with clearance);
+//! route-against-hull clashes (segment-to-segment distance with a
+//! clearance, after a bounding-box screen);
 //! [`OutfittingPlan::installation_sequence`] orders the work — large
 //! systems first, smaller routing after (the "big items in first" doctrine
 //! of pre-outfitted block construction).
@@ -32,7 +33,7 @@
 //! });
 //!
 //! let hull = Geometry3D::from_box(60.0, 12.0, 12.0);
-//! let clashes = plan.collision_detection(&hull);
+//! let clashes = plan.collision_detection(&hull, 0.1);
 //! assert_eq!(clashes.len(), 1); // the route crossing, not the hull wall
 //! assert_eq!(clashes[0].between, (0, 1));
 //! ```
@@ -138,39 +139,53 @@ impl OutfittingPlan {
         }
     }
 
-    /// Detects clashes: route vs route (with clearance) and route outside
-    /// the hull envelope.
-    pub fn collision_detection(&self, hull_geometry: &Geometry3D) -> Vec<Collision> {
+    /// Detects clashes: route vs route and route outside the hull
+    /// envelope.
+    ///
+    /// Route pairs are screened by bounding box, then checked
+    /// **segment to segment**: the distance between the closest points of
+    /// the polylines must exceed the sum of the half cross-sections plus
+    /// `clearance_m`. Two L-shaped routes whose boxes overlap but whose
+    /// runs never approach each other do **not** clash (the old one-box-
+    /// per-route check produced exactly those false clashes).
+    pub fn collision_detection(&self, hull_geometry: &Geometry3D, clearance_m: f64) -> Vec<Collision> {
         let hull_bb = hull_geometry.bounding_box();
         let mut collisions = Vec::new();
 
         for (i, a) in self.routes.iter().enumerate() {
-            let bba = a.bounding_box();
-            // Route vs route.
-            for (j, b) in self.routes.iter().enumerate().skip(i + 1) {
-                if j == a.system && i == b.system {
+            // Screening boxes grow by the clearance as well: the exact
+            // segment test only runs on pairs that could possibly clash.
+            let screen_a = inflate(a, clearance_m);
+            // Route vs route: bbox screen, then exact segment distance.
+            for b in self.routes.iter().skip(i + 1) {
+                let screen_b = inflate(b, clearance_m);
+                if !intersects(&screen_a, &screen_b) {
                     continue;
                 }
-                let bbb = b.bounding_box();
-                if intersects(&bba, &bbb) {
+                let limit = a.cross_section_m / 2.0 + b.cross_section_m / 2.0 + clearance_m;
+                if let Some(at) = segments_within(a, b, limit) {
                     collisions.push(Collision {
                         between: (a.system, b.system),
-                        at: overlap_centre(&bba, &bbb),
+                        at,
                         kind: CollisionKind::SystemVsSystem,
                     });
                 }
             }
-            // Route vs hull: route must stay inside the envelope.
-            let inside = bba.min.x >= hull_bb.min.x
-                && bba.max.x <= hull_bb.max.x
-                && bba.min.y >= hull_bb.min.y
-                && bba.max.y <= hull_bb.max.y
-                && bba.min.z >= hull_bb.min.z
-                && bba.max.z <= hull_bb.max.z;
-            if !inside {
+            // Route vs hull: every waypoint (inflated by the half
+            // cross-section) must stay inside the envelope.
+            let half = a.cross_section_m / 2.0;
+            let outside = a.waypoints.iter().find(|w| {
+                !(w.x - half >= hull_bb.min.x
+                    && w.x + half <= hull_bb.max.x
+                    && w.y - half >= hull_bb.min.y
+                    && w.y + half <= hull_bb.max.y
+                    && w.z - half >= hull_bb.min.z
+                    && w.z + half <= hull_bb.max.z)
+            });
+            if let Some(w) = outside {
                 collisions.push(Collision {
                     between: (a.system, usize::MAX),
-                    at: bba.centre(),
+                    at: *w,
                     kind: CollisionKind::SystemVsHull,
                 });
             }
@@ -192,6 +207,25 @@ impl OutfittingPlan {
     }
 }
 
+/// The route bounding box grown by an extra margin (for the clash screen).
+fn inflate(r: &Route, extra: f64) -> BoundingBox {
+    let half = r.cross_section_m / 2.0 + extra;
+    let mut bb = match r.waypoints.first() {
+        Some(&w) => BoundingBox {
+            min: w - Vector3::new(half, half, half),
+            max: w + Vector3::new(half, half, half),
+        },
+        None => BoundingBox::point(Vector3::ZERO),
+    };
+    for w in &r.waypoints {
+        bb = bb.union(&BoundingBox {
+            min: *w - Vector3::new(half, half, half),
+            max: *w + Vector3::new(half, half, half),
+        });
+    }
+    bb
+}
+
 fn intersects(a: &BoundingBox, b: &BoundingBox) -> bool {
     a.min.x <= b.max.x
         && a.max.x >= b.min.x
@@ -201,8 +235,84 @@ fn intersects(a: &BoundingBox, b: &BoundingBox) -> bool {
         && a.max.z >= b.min.z
 }
 
-fn overlap_centre(a: &BoundingBox, b: &BoundingBox) -> Vector3 {
-    (a.centre() + b.centre()) * 0.5
+/// Closest point on segment `p0-p1` to `q`.
+fn closest_point_on_segment(p0: Vector3, p1: Vector3, q: Vector3) -> Vector3 {
+    let d = p1 - p0;
+    let len2 = d.dot(d);
+    if len2 <= 1e-12 {
+        return p0;
+    }
+    let t = ((q - p0).dot(d) / len2).clamp(0.0, 1.0);
+    p0 + d * t
+}
+
+/// If any segment pair of the two polylines comes within `limit`, returns
+/// an approximate clash location (the midpoint of the closest pair).
+fn segments_within(a: &Route, b: &Route, limit: f64) -> Option<Vector3> {
+    let limit2 = limit * limit;
+    for w in a.waypoints.windows(2) {
+        for v in b.waypoints.windows(2) {
+            let (pa, pb) = closest_points_between_segments(w[0], w[1], v[0], v[1]);
+            if (pa - pb).dot(pa - pb) <= limit2 {
+                return Some((pa + pb) * 0.5);
+            }
+        }
+    }
+    // Degenerate single-point routes.
+    if a.waypoints.len() == 1 || b.waypoints.len() == 1 {
+        for wa in &a.waypoints {
+            for wb in &b.waypoints {
+                let d = *wa - *wb;
+                if d.dot(d) <= limit2 {
+                    return Some((*wa + *wb) * 0.5);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Closest points between two 3-D segments (standard clamped solving of
+/// the quadratic system; degenerate segments fall back to point checks).
+fn closest_points_between_segments(
+    p0: Vector3,
+    p1: Vector3,
+    q0: Vector3,
+    q1: Vector3,
+) -> (Vector3, Vector3) {
+    let d1 = p1 - p0;
+    let d2 = q1 - q0;
+    let r = p0 - q0;
+    let a = d1.dot(d1);
+    let e = d2.dot(d2);
+    let f = d2.dot(r);
+    if a <= 1e-12 && e <= 1e-12 {
+        return (p0, q0);
+    }
+    if a <= 1e-12 {
+        return (p0, closest_point_on_segment(q0, q1, p0));
+    }
+    if e <= 1e-12 {
+        return (closest_point_on_segment(p0, p1, q0), q0);
+    }
+    let c = d1.dot(r);
+    let b = d1.dot(d2);
+    let denom = a * e - b * b;
+    let mut s = if denom > 1e-12 {
+        ((b * f - c * e) / denom).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    // Clamp t, then re-solve s on the clamped boundary (Ericson, RTCD 5.1.9).
+    let mut t = (b * s + f) / e;
+    if t < 0.0 {
+        t = 0.0;
+        s = (-c / a).clamp(0.0, 1.0);
+    } else if t > 1.0 {
+        t = 1.0;
+        s = ((b - c) / a).clamp(0.0, 1.0);
+    }
+    (p0 + d1 * s, q0 + d2 * t)
 }
 
 #[cfg(test)]
@@ -240,7 +350,7 @@ mod tests {
             cross_section_m: 0.2,
         });
         let hull = Geometry3D::from_box(60.0, 12.0, 12.0);
-        let clashes = p.collision_detection(&hull);
+        let clashes = p.collision_detection(&hull, 0.1);
         assert_eq!(clashes.len(), 1);
         assert_eq!(clashes[0].between, (0, 1));
         assert_eq!(clashes[0].kind, CollisionKind::SystemVsSystem);
@@ -260,7 +370,7 @@ mod tests {
             cross_section_m: 0.2,
         });
         let hull = Geometry3D::from_box(60.0, 12.0, 12.0);
-        assert!(p.collision_detection(&hull).is_empty());
+        assert!(p.collision_detection(&hull, 0.1).is_empty());
     }
 
     #[test]
@@ -275,7 +385,7 @@ mod tests {
             cross_section_m: 0.3,
         });
         let hull = Geometry3D::from_box(40.0, 12.0, 12.0);
-        let clashes = p.collision_detection(&hull);
+        let clashes = p.collision_detection(&hull, 0.1);
         assert_eq!(clashes.len(), 1);
         assert_eq!(clashes[0].kind, CollisionKind::SystemVsHull);
         assert_eq!(clashes[0].between, (0, usize::MAX));
@@ -287,6 +397,81 @@ mod tests {
         let p = plan(); // piping 0.2 m, electrical 0.2, machinery 3.0
         let order = p.installation_sequence();
         assert_eq!(order, vec![2, 0, 1]); // machinery, piping, electrical
+    }
+
+    /// Regression (review 7B): two L-shaped routes whose bounding boxes
+    /// overlap must NOT clash when their runs never approach each other —
+    /// the old one-box-per-route check produced exactly this false clash.
+    #[test]
+    fn bbox_overlap_alone_is_not_a_clash() {
+        let mut p = plan();
+        // Route A: along +x at z = 2, then turns away in -y.
+        p.routes.push(Route {
+            system: 0,
+            waypoints: vec![
+                Vector3::new(0.0, 0.0, 2.0),
+                Vector3::new(20.0, 0.0, 2.0),
+                Vector3::new(20.0, -5.0, 2.0),
+            ],
+            cross_section_m: 0.3,
+        });
+        // Route B: runs through the interior of A's L-shaped bounding box
+        // (between the legs), 2.5 m away from every point of A.
+        p.routes.push(Route {
+            system: 1,
+            waypoints: vec![
+                Vector3::new(5.0, -2.5, 2.0),
+                Vector3::new(15.0, -2.5, 2.0),
+            ],
+            cross_section_m: 0.2,
+        });
+        let hull = Geometry3D::from_box(60.0, 12.0, 12.0);
+        // Bounding boxes overlap (B is inside A's L footprint).
+        assert!(intersects(
+            &p.routes[0].bounding_box(),
+            &p.routes[1].bounding_box()
+        ));
+        assert!(
+            p.collision_detection(&hull, 0.1).is_empty(),
+            "runs 2.5 m apart must not clash"
+        );
+        // Route B cutting across A at the same point does clash.
+        p.routes[1].waypoints = vec![
+            Vector3::new(10.0, -2.0, 2.0),
+            Vector3::new(10.0, 2.0, 2.0),
+        ];
+        let clashes = p.collision_detection(&hull, 0.1);
+        assert_eq!(clashes.len(), 1);
+        assert_eq!(clashes[0].between, (0, 1));
+    }
+
+    /// The clearance parameter separates routes that touch the geometric
+    /// sum of their sections but sit inside the requested margin.
+    #[test]
+    fn clearance_widens_the_clash_test() {
+        let mut p = plan();
+        p.routes.push(Route {
+            system: 0,
+            waypoints: vec![Vector3::new(0.0, 0.0, 2.0), Vector3::new(20.0, 0.0, 2.0)],
+            cross_section_m: 0.3,
+        });
+        // Surface-to-surface gap: (1.0 - 0.15 - 0.1) = 0.75 m.
+        p.routes.push(Route {
+            system: 1,
+            waypoints: vec![Vector3::new(0.0, 1.0, 2.0), Vector3::new(20.0, 1.0, 2.0)],
+            cross_section_m: 0.2,
+        });
+        let hull = Geometry3D::from_box(60.0, 24.0, 12.0);
+        assert!(
+            p.collision_detection(&hull, 0.1).is_empty(),
+            "0.75 m gap clears a 0.1 m allowance: {:?}",
+            p.collision_detection(&hull, 0.1)
+        );
+        assert_eq!(
+            p.collision_detection(&hull, 1.0).len(),
+            1,
+            "a 1.0 m allowance engulfs the 0.75 m gap"
+        );
     }
 
     #[test]
