@@ -6,6 +6,20 @@ follows [Semantic Versioning](https://semver.org/). The workspace versions as
 a single release train on a 6-week cadence — see the workspace
 [RELEASES.md](../../RELEASES.md).
 
+## [Unreleased]
+
+### Added
+
+- `ballast_plan` (review 7H): keel-line ballast sequencing for undocking —
+  equal-increment fills until the float-off GM reaches the target, steps
+  emitted pre-flood at level 0, `InsufficientBallast` when the tanks cannot
+  deliver. `DockedVessel` gains `lcg_from_midship_m` and typed
+  `BallastTank`s (name, capacity, longitudinal position).
+- `keel_reaction_distribution` (review 7H): per-block keel reactions from
+  Archimedes + the moment balance, linear pressure law over the row, the
+  single-end lift-off condition (reaction centroid past L/6) flagged and
+  the pressures clamped/renormalised.
+
 ## [0.1.0] - 2026-09-28
 
 ### Added

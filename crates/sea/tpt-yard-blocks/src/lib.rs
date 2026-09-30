@@ -470,12 +470,97 @@ pub fn cog_within_lifts(cog: Vector3, lift_points: &[Vector3]) -> bool {
     inside
 }
 
+/// Result of the shackle-pin check.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PinCheck {
+    /// Bending utilization of the pin across the lug (sigma vs sigma_y/1.5).
+    pub bending_utilization: f64,
+    /// Double-shear utilization at the supports (tau vs 0.6 sigma_y/1.5).
+    pub shear_utilization: f64,
+    /// Both utilizations at or below 1.0.
+    pub safe: bool,
+    /// Findings.
+    pub notes: Vec<String>,
+}
+
+/// Checks the shackle pin spanning the lug (review 7H leftover: "pin
+/// bending"). The pin is a simply supported beam of span `clevis_span_mm`
+/// (the inside width of the shackle/clevis) carrying the lug bearing as a
+/// distributed load over the lug thickness `t`: the midspan moment is
+/// `P(L - t)/4` and both supports carry `P/2` in double shear. The pin
+/// section is `Z = pi d^3 / 32`, `A = pi d^2 / 4`.
+pub fn pin_bending_check(
+    pin_diameter_mm: f64,
+    clevis_span_mm: f64,
+    lug_thickness_mm: f64,
+    load_kn: f64,
+    daf: f64,
+    material: &Material,
+) -> PinCheck {
+    let mut notes = Vec::new();
+    let daf = if daf >= 1.0 { daf } else { 1.0 };
+    let p_n = load_kn.abs() * 1000.0 * daf;
+    let d = pin_diameter_mm.max(1e-6);
+    let l = clevis_span_mm.max(1e-6);
+    let t = lug_thickness_mm.clamp(0.0, l);
+    let z = std::f64::consts::PI * d * d * d / 32.0;
+    let area = std::f64::consts::PI * d * d / 4.0;
+    let moment = p_n * (l - t) / 4.0;
+    let bending = moment / z;
+    let shear = p_n / (2.0 * area);
+    let u_bend = bending / (material.yield_mpa / 1.5);
+    let u_shear = shear / (0.6 * material.yield_mpa / 1.5);
+    let mut safe = true;
+    if u_bend > 1.0 {
+        safe = false;
+        notes.push(format!("pin bending utilization {u_bend:.2} exceeds 1.0"));
+    }
+    if u_shear > 1.0 {
+        safe = false;
+        notes.push(format!(
+            "pin double shear utilization {u_shear:.2} exceeds 1.0"
+        ));
+    }
+    PinCheck {
+        bending_utilization: u_bend,
+        shear_utilization: u_shear,
+        safe,
+        notes,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn close(a: f64, b: f64, tol: f64) -> bool {
         (a - b).abs() < tol
+    }
+
+    /// Hand-computed pin check: P = 200 kN at DAF 1.2 across a 120 mm
+    /// clevis with a 40 mm lug -> M = P(L-t)/4 = 4.8e6 N mm on a 50 mm pin
+    /// (Z = 12271.8 mm^3) -> 391 MPa against 236.7 allowable: bending
+    /// fails at 1.65 while double shear passes at 0.43.
+    #[test]
+    fn pin_check_matches_hand_values() {
+        let ah36 = Material::ah36();
+        let c = pin_bending_check(50.0, 120.0, 40.0, 200.0, 1.2, &ah36);
+        assert!(
+            close(c.bending_utilization, 1.653, 0.01),
+            "{}",
+            c.bending_utilization
+        );
+        assert!(
+            close(c.shear_utilization, 0.430, 0.01),
+            "{}",
+            c.shear_utilization
+        );
+        assert!(!c.safe);
+
+        // Half the load brings bending under 1.0 and the pin passes.
+        let ok = pin_bending_check(50.0, 120.0, 40.0, 100.0, 1.2, &ah36);
+        assert!(ok.safe, "{:?}", ok.notes);
+        assert!(ok.bending_utilization < 0.9);
     }
 
     #[test]

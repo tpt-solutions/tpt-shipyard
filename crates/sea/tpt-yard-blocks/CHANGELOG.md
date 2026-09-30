@@ -6,6 +6,15 @@ follows [Semantic Versioning](https://semver.org/). The workspace versions as
 a single release train on a 6-week cadence — see the workspace
 [RELEASES.md](../../RELEASES.md).
 
+## [Unreleased]
+
+### Added
+
+- `pin_bending_check` (review 7H): the shackle pin as a simply supported
+  beam spanning the clevis with the lug bearing as a distributed load —
+  midspan moment `P(L-t)/4`, section `pi d^3/32`, double shear at the
+  supports — against sigma_y/1.5 and 0.6 sigma_y/1.5.
+
 ## [0.1.0] - 2026-09-28
 
 ### Added

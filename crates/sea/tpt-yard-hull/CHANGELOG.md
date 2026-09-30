@@ -6,6 +6,14 @@ follows [Semantic Versioning](https://semver.org/). The workspace versions as
 a single release train on a 6-week cadence — see the workspace
 [RELEASES.md](../../RELEASES.md).
 
+## [Unreleased]
+
+### Added
+
+- `optimize_division` (review 7H): design-for-construction search — ranks
+  (depth bands x longitudinal divisions) plans by weld hours + lift hours
+  under crane/workshop feasibility, best first.
+
 ## [0.1.0] - 2026-09-28
 
 ### Added

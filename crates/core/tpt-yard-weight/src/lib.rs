@@ -163,6 +163,56 @@ pub struct WeightModel {
     pub items: Vec<WeightItem>,
 }
 
+/// Outcome of [`WeightModel::monte_carlo_risk`]: the sampled weight and
+/// CoG distribution against the design.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WeightRisk {
+    /// Number of Monte Carlo samples actually run.
+    pub samples: u32,
+    /// Median of the sampled total weight, kg.
+    pub p50_weight_kg: f64,
+    /// 90th percentile of the sampled total weight, kg (the growth risk
+    /// figure a design review cares about).
+    pub p90_weight_kg: f64,
+    /// Mean of the sampled total weight, kg.
+    pub mean_weight_kg: f64,
+    /// Median CoG displacement from the nominal CoG, m.
+    pub p50_cog_shift_m: f64,
+    /// 90th percentile CoG displacement from the nominal CoG, m.
+    pub p90_cog_shift_m: f64,
+    /// The design (declared) total weight, kg, for reference.
+    pub design_weight_kg: f64,
+}
+
+/// Seedable XOR/shift RNG (deterministic across runs and platforms —
+/// review requirement: reproducible planning outputs).
+struct XorShift(u64);
+
+impl XorShift {
+    fn next_f64(&mut self) -> f64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        (x.wrapping_mul(0x2545F4914F6CDD1D) >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// Triangular sample on [min, mode, max] by inverse CDF.
+    fn triangular(&mut self, min: f64, mode: f64, max: f64) -> f64 {
+        let r = self.next_f64();
+        let f = (mode - min) / (max - min).max(1e-12);
+        if min >= max {
+            return mode;
+        }
+        if r < f {
+            min + (r * (max - min) * (mode - min)).sqrt()
+        } else {
+            max - ((1.0 - r) * (max - min) * (max - mode)).sqrt()
+        }
+    }
+}
+
 impl WeightModel {
     /// Creates an empty model with the contractual design target.
     pub fn new(design_weight_kg: f64, design_cog: Vector3) -> Self {
@@ -294,6 +344,83 @@ impl WeightModel {
             .filter(|i| !matches!(i.status, ItemStatus::Replaced))
             .map(|i| i.weight_with_margin_kg())
             .sum()
+    }
+
+    /// Monte Carlo weight risk (review 7H leftover: "weight-risk roll-up").
+    ///
+    /// Each countable item's weight is sampled from a triangular
+    /// distribution at `weight · (1 ± uncertainty_frac)` around the
+    /// nominal; per sample the total and CoG of the non-`Replaced` items
+    /// are rolled up (the same rule as [`Self::total_weight`] and
+    /// [`Self::centre_of_gravity`]). Seed-deterministic: the same seed
+    /// reproduces the same percentiles.
+    ///
+    /// The triangular mean equals the nominal, so `mean_weight_kg`
+    /// approximates the nominal total while `p90_weight_kg` sits above it
+    /// — the growth risk a design review provisions for.
+    ///
+    /// # Errors
+    ///
+    /// [`WeightError::EmptyModel`] when no countable item exists, and
+    /// [`WeightError::InvalidWeight`] for a negative or non-finite
+    /// `uncertainty_frac`.
+    pub fn monte_carlo_risk(
+        &self,
+        uncertainty_frac: f64,
+        n_samples: u32,
+        seed: u64,
+    ) -> Result<WeightRisk, WeightError> {
+        if !uncertainty_frac.is_finite() || uncertainty_frac < 0.0 {
+            return Err(WeightError::InvalidWeight(uncertainty_frac));
+        }
+        let countable: Vec<&WeightItem> = self
+            .items
+            .iter()
+            .filter(|i| !matches!(i.status, ItemStatus::Replaced))
+            .collect();
+        if countable.is_empty() {
+            return Err(WeightError::EmptyModel);
+        }
+        let u = uncertainty_frac.clamp(0.0, 10.0);
+        let n = n_samples.max(1);
+        let mut rng = XorShift(if seed == 0 { 0x853c49e6748fea9b } else { seed });
+        let nominal_cog = self.centre_of_gravity()?;
+
+        let mut totals = Vec::with_capacity(n as usize);
+        let mut shifts = Vec::with_capacity(n as usize);
+        for _ in 0..n {
+            let mut moment = Vector3::ZERO;
+            let mut total = 0.0;
+            for item in &countable {
+                let w = rng.triangular(
+                    item.weight_kg * (1.0 - u),
+                    item.weight_kg,
+                    item.weight_kg * (1.0 + u),
+                );
+                moment = moment + item.cog * w;
+                total += w;
+            }
+            let cog = moment / total;
+            shifts.push((cog - nominal_cog).length());
+            totals.push(total);
+        }
+
+        totals.sort_by(f64::total_cmp);
+        shifts.sort_by(f64::total_cmp);
+        let p = |q: f64, v: &mut Vec<f64>| -> f64 {
+            let idx = ((q * (v.len() as f64 - 1.0)).round()) as usize;
+            v[idx.min(v.len() - 1)]
+        };
+        let mean = totals.iter().sum::<f64>() / totals.len() as f64;
+        Ok(WeightRisk {
+            samples: n,
+            p50_weight_kg: p(0.50, &mut totals),
+            p90_weight_kg: p(0.90, &mut totals),
+            mean_weight_kg: mean,
+            p50_cog_shift_m: p(0.50, &mut shifts),
+            p90_cog_shift_m: p(0.90, &mut shifts),
+            design_weight_kg: self.design_weight_kg,
+        })
     }
 
     /// Sum of margins over countable items, kg.
@@ -521,6 +648,11 @@ impl WeightModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn close(a: f64, b: f64, tol: f64) -> bool {
+        (a - b).abs() < tol
+    }
+
     use tpt_yard_assembly::ActivityId;
 
     /// Verification: sum of block weights must equal the vessel total.
@@ -779,6 +911,82 @@ mod tests {
             WeightModel::from_json_value(&tpt_yard_core::json::Value::parse(&text).unwrap())
                 .is_err()
         );
+    }
+
+    /// Review 7H leftover: weight-risk Monte Carlo. The triangular mean
+    /// equals the nominal, so with many samples the mean roll-up lands on
+    /// the nominal total, the median sits at it, and the P90 is above —
+    /// the growth-risk shape a design review provisions for.
+    #[test]
+    fn weight_risk_percentiles_are_sound() {
+        let mut model = WeightModel::new(100_000.0, Vector3::new(50.0, 0.0, 8.0));
+        for i in 0..10u64 {
+            model
+                .add_item(WeightItem {
+                    id: ItemId(i + 1),
+                    name: format!("block {i}"),
+                    group: "hull".into(),
+                    weight_kg: 10_000.0,
+                    cog: Vector3::new(10.0 * i as f64, 0.0, 6.0),
+                    status: ItemStatus::Design,
+                    margin_pct: 2.0,
+                    installed_by: None,
+                })
+                .unwrap();
+        }
+        let nominal = model.total_weight();
+
+        // Zero uncertainty: every sample is the nominal roll-up, and a
+        // Replaced item is excluded exactly as in total_weight().
+        let mut with_replaced = model.clone();
+        with_replaced
+            .add_item(WeightItem {
+                id: ItemId(99),
+                name: "removed".into(),
+                group: "hull".into(),
+                weight_kg: 5_000.0,
+                cog: Vector3::ZERO,
+                status: ItemStatus::Replaced,
+                margin_pct: 0.0,
+                installed_by: None,
+            })
+            .unwrap();
+        let zero = with_replaced.monte_carlo_risk(0.0, 32, 7).unwrap();
+        assert!(close(zero.p50_weight_kg, nominal, 1e-9));
+        assert!(close(zero.p90_weight_kg, nominal, 1e-9));
+        assert!(close(zero.mean_weight_kg, nominal, 1e-9));
+        assert_eq!(zero.p90_cog_shift_m, 0.0);
+
+        // 30 % uncertainty over 4000 samples: mean ~ nominal, ordered
+        // percentiles, CoG shift grows from P50 to P90.
+        let risk = model.monte_carlo_risk(0.30, 4_000, 42).unwrap();
+        assert!((risk.mean_weight_kg - nominal).abs() < 0.01 * nominal);
+        assert!(risk.p50_weight_kg > 0.98 * nominal && risk.p50_weight_kg < 1.02 * nominal);
+        assert!(risk.p90_weight_kg > risk.p50_weight_kg);
+        assert!(
+            risk.p90_weight_kg > nominal,
+            "growth risk must exceed nominal"
+        );
+        assert!(risk.p50_cog_shift_m >= 0.0 && risk.p90_cog_shift_m >= risk.p50_cog_shift_m);
+
+        // Seed determinism: same seed, same numbers; different seed,
+        // different sample.
+        let a = model.monte_carlo_risk(0.30, 200, 7).unwrap();
+        let b = model.monte_carlo_risk(0.30, 200, 7).unwrap();
+        let c = model.monte_carlo_risk(0.30, 200, 8).unwrap();
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+
+        // Bad inputs are rejected.
+        assert!(matches!(
+            model.monte_carlo_risk(-0.1, 10, 1),
+            Err(WeightError::InvalidWeight(_))
+        ));
+        let empty = WeightModel::new(1.0, Vector3::ZERO);
+        assert!(matches!(
+            empty.monte_carlo_risk(0.1, 10, 1),
+            Err(WeightError::EmptyModel)
+        ));
     }
 
     /// Regression (review 7B): a duplicate item id must be rejected — a

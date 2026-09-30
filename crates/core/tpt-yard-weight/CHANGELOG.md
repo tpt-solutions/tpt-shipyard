@@ -6,6 +6,14 @@ follows [Semantic Versioning](https://semver.org/). The workspace versions as
 a single release train on a 6-week cadence — see the workspace
 [RELEASES.md](../../RELEASES.md).
 
+## [Unreleased]
+
+### Added
+
+- `WeightModel::monte_carlo_risk` (review 7H): weight-risk roll-up —
+  triangular item-weight sampling, P50/P90/mean totals and P50/P90 CoG
+  shifts, seed-deterministic.
+
 ## [0.1.0] - 2026-09-28
 
 ### Added

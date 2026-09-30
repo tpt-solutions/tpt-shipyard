@@ -17,6 +17,7 @@
 //! let vessel = DockedVessel {
 //!     launch_weight_kg: 6_000_000.0,   // 6,000 t at launch
 //!     cog_above_keel_m: 6.0,           // KG
+//!     lcg_from_midship_m: 0.0,         // balanced
 //!     length_m: 140.0,
 //!     breadth_m: 22.0,
 //!     block_coefficient: 0.75,
@@ -41,6 +42,19 @@ pub struct Drydock {
     pub depth_m: f64,
 }
 
+/// A bottom ballast tank available during undocking (review 7H: ballast
+/// sequencing). The tank centroid is taken on the keel line: filling it
+/// adds mass at KG = 0 and at its longitudinal position.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BallastTank {
+    /// Tank designation (e.g. "FB WBT 3").
+    pub name: String,
+    /// Capacity, m³.
+    pub volume_m3: f64,
+    /// Tank centroid longitudinal position from midship, m (+ forward).
+    pub x_from_midship_m: f64,
+}
+
 /// A vessel sitting on the dock blocks, awaiting float-out.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DockedVessel {
@@ -48,14 +62,17 @@ pub struct DockedVessel {
     pub launch_weight_kg: f64,
     /// Centre of gravity above keel, m.
     pub cog_above_keel_m: f64,
+    /// Longitudinal centre of gravity from midship, m (+ forward). The
+    /// keel-reaction distribution leans on this; 0.0 = perfectly balanced.
+    pub lcg_from_midship_m: f64,
     /// Length between perpendiculars, m.
     pub length_m: f64,
     /// Moulded breadth, m.
     pub breadth_m: f64,
     /// Block coefficient at launch draft.
     pub block_coefficient: f64,
-    /// Ballast tank capacities, m³ (reserved for ballast sequencing).
-    pub ballast_tanks: Vec<f64>,
+    /// Bottom ballast tanks available for the undocking.
+    pub ballast_tanks: Vec<BallastTank>,
 }
 
 /// State of dock + vessel at one water level.
@@ -100,6 +117,8 @@ pub enum DockError {
     InvalidVessel,
     /// Flood rate must be positive.
     InvalidFloodRate,
+    /// The ballast tanks cannot deliver the target GM even when full.
+    InsufficientBallast,
 }
 
 impl fmt::Display for DockError {
@@ -110,6 +129,9 @@ impl fmt::Display for DockError {
             }
             DockError::InvalidVessel => f.write_str("invalid vessel geometry or weight"),
             DockError::InvalidFloodRate => f.write_str("flood rate must be > 0"),
+            DockError::InsufficientBallast => {
+                f.write_str("ballast tanks cannot reach the target GM even when full")
+            }
         }
     }
 }
@@ -284,6 +306,244 @@ pub fn virtual_gm_touchdown_m(vessel: &DockedVessel, draft_m: f64) -> f64 {
 
 const G_ACC: f64 = 9.81;
 
+/// One planned ballast movement (review 7H: ballast sequencing).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BallastStep {
+    /// The tank to fill.
+    pub tank: String,
+    /// Target fill fraction at the end of the step, 0..=1.
+    pub fill_frac: f64,
+    /// Dock water level at which the fill happens, m. Pre-flood fills sit
+    /// at level 0: the keel blocks still carry the full reaction and the
+    /// ballast goes in while the bottom is dry.
+    pub at_water_level_m: f64,
+}
+
+/// The planned ballast outcome: masses to put in before flooding, and the
+/// resulting float-off condition.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BallastPlan {
+    /// Fill movements in execution order (all pre-flood in this model).
+    pub steps: Vec<BallastStep>,
+    /// Total ballast mass the plan puts aboard, kg.
+    pub ballast_mass_kg: f64,
+    /// Float-off draft with the ballast aboard, m.
+    pub float_off_draft_m: f64,
+    /// GM at float-off with the ballast aboard, m.
+    pub float_off_gm_m: f64,
+    /// Findings.
+    pub notes: Vec<String>,
+}
+
+/// Plans the undocking ballast (review 7H: ballast sequencing).
+///
+/// The vessel is screened first without ballast: if the float-off GM
+/// already reaches `target_gm_m` (default [`MIN_GM_M`]), no ballast is
+/// needed. Otherwise bottom tanks are filled in equal increments — keel-
+/// line mass lowers the centre of gravity without touching KM — until the
+/// float-off GM reaches the target or the tanks run out
+/// ([`DockError::InsufficientBallast`]). Filling happens before flooding
+/// begins (level 0): while the keel blocks carry the boat, extra mass
+/// only loads the blocks; once afloat the ballast is why the boat is
+/// stable.
+///
+/// `target_gm_m = None` means [`MIN_GM_M`].
+///
+/// # Errors
+///
+/// [`DockError::InvalidVessel`] on a malformed vessel or tank set, and
+/// [`DockError::InsufficientBallast`] when even full tanks cannot reach
+/// the target GM.
+pub fn ballast_plan(
+    vessel: &DockedVessel,
+    target_gm_m: Option<f64>,
+) -> Result<BallastPlan, DockError> {
+    let target = target_gm_m.unwrap_or(MIN_GM_M);
+    if vessel.launch_weight_kg <= 0.0
+        || vessel.length_m <= 0.0
+        || vessel.breadth_m <= 0.0
+        || vessel.block_coefficient <= 0.0
+    {
+        return Err(DockError::InvalidVessel);
+    }
+    if vessel
+        .ballast_tanks
+        .iter()
+        .any(|t| !(t.volume_m3.is_finite() && t.volume_m3 >= 0.0))
+    {
+        return Err(DockError::InvalidVessel);
+    }
+
+    // Float-off condition for a given ballast mass (all keel-line).
+    let float_off = |ballast_kg: f64| -> (f64, f64) {
+        let w = vessel.launch_weight_kg + ballast_kg;
+        let draft = w / (RHO_SEA * vessel.block_coefficient * vessel.length_m * vessel.breadth_m);
+        let kb = draft / 2.0;
+        let cwp = (1.0 + 2.0 * vessel.block_coefficient) / 3.0;
+        let bm = cwp * vessel.breadth_m * vessel.breadth_m
+            / (12.0 * vessel.block_coefficient * draft.max(1e-6));
+        let kg = vessel.launch_weight_kg * vessel.cog_above_keel_m / w;
+        (draft, kb + bm - kg)
+    };
+
+    let (d0, gm0) = float_off(0.0);
+    let mut notes = vec![format!(
+        "unballasted float-off at draft {d0:.2} m: GM {gm0:.2} m vs target {target:.2} m"
+    )];
+    if gm0 >= target {
+        notes.push("no ballast required".into());
+        return Ok(BallastPlan {
+            steps: Vec::new(),
+            ballast_mass_kg: 0.0,
+            float_off_draft_m: d0,
+            float_off_gm_m: gm0,
+            notes,
+        });
+    }
+
+    // Greedy equal fills: every tank gains the same increment until the
+    // target GM is met (keeps the LCG untouched with a symmetric set, and
+    // is simple to execute).
+    const STEP: f64 = 0.05;
+    let mut fills = vec![0.0_f64; vessel.ballast_tanks.len()];
+    loop {
+        for f in &mut fills {
+            *f = (*f + STEP).min(1.0);
+        }
+        let mass: f64 = vessel
+            .ballast_tanks
+            .iter()
+            .zip(&fills)
+            .map(|(t, f)| RHO_SEA * t.volume_m3 * f)
+            .sum();
+        let (draft, gm) = float_off(mass);
+        let all_full = fills.iter().all(|f| *f >= 1.0);
+        if gm >= target || all_full {
+            if gm < target {
+                return Err(DockError::InsufficientBallast);
+            }
+            let steps = vessel
+                .ballast_tanks
+                .iter()
+                .zip(&fills)
+                .filter(|(_, f)| **f > 0.0)
+                .map(|(t, f)| BallastStep {
+                    tank: t.name.clone(),
+                    fill_frac: *f,
+                    at_water_level_m: 0.0,
+                })
+                .collect();
+            notes.push(format!(
+                "fill {:.0} t of keel-line ballast: float-off draft {draft:.2} m, GM {gm:.2} m",
+                mass / 1000.0
+            ));
+            return Ok(BallastPlan {
+                steps,
+                ballast_mass_kg: mass,
+                float_off_draft_m: draft,
+                float_off_gm_m: gm,
+                notes,
+            });
+        }
+    }
+}
+
+/// Keel-block reactions for one water level (review 7H: keel-block
+/// reaction distribution). The total aground reaction is the ballasted
+/// weight minus buoyancy; its longitudinal centre follows from the moment
+/// balance about midship (`x_R = W·LCG / R`, the prismatic displacement
+/// centroid sitting at midship). The total is spread over `n_blocks`
+/// evenly spaced blocks by a linear pressure law, which goes negative at
+/// one row end once the reaction centroid passes L/3 from midship — the
+/// classical single-end lift-off; `lifted_off_ends` flags it and the
+/// pressures are clamped at zero and renormalised.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeelReactions {
+    /// Total reaction the blocks carry, kN (0 when afloat).
+    pub total_kn: f64,
+    /// Longitudinal reaction centroid from midship, m.
+    pub centroid_from_midship_m: f64,
+    /// Per-block reactions, kN, from the aft end of the row.
+    pub per_block_kn: Vec<f64>,
+    /// True when the linear law wanted negative end pressures (the row is
+    /// pivoting about one end).
+    pub lifted_off_ends: bool,
+}
+
+/// Computes the keel-block reaction distribution — see [`KeelReactions`].
+/// `fills` are the fill fractions matching `vessel.ballast_tanks`.
+pub fn keel_reaction_distribution(
+    vessel: &DockedVessel,
+    fills: &[f64],
+    water_level_m: f64,
+    n_blocks: usize,
+) -> KeelReactions {
+    let ballast: f64 = vessel
+        .ballast_tanks
+        .iter()
+        .zip(fills.iter().chain(std::iter::repeat(&0.0)))
+        .map(|(t, f)| RHO_SEA * t.volume_m3 * f)
+        .sum();
+    let w = vessel.launch_weight_kg + ballast;
+    // While aground the keel sits 1 m over the dock floor on the blocks;
+    // the immersed draft is the water level over the keel line, capped by
+    // the equilibrium draft (a level above float-off cannot immerse more).
+    let floating = w / (RHO_SEA * vessel.block_coefficient * vessel.length_m * vessel.breadth_m);
+    let draft = (water_level_m - 1.0).min(floating).max(0.0);
+    let displaced = displaced_mass_kg(vessel, draft).min(w);
+    let r_kn = (w - displaced) * G_ACC / 1000.0;
+    if r_kn <= 1e-9 || n_blocks == 0 {
+        return KeelReactions {
+            total_kn: 0.0,
+            centroid_from_midship_m: 0.0,
+            per_block_kn: vec![0.0; n_blocks],
+            lifted_off_ends: false,
+        };
+    }
+    // Moment balance about midship (buoyancy centroid at 0 in the
+    // prismatic model).
+    let x_r = w * vessel.lcg_from_midship_m / (w - displaced);
+    let half = vessel.length_m / 2.0;
+    let e = (x_r / half).clamp(-1.0, 1.0);
+    // p(-1) = R/2 (1 - 3e) goes negative once |x_R| > L/6.
+    let lifted = x_r.abs() > half / 3.0;
+    // Linear pressure over the row: R_i = R/n * (1 + 3 e xi), xi in
+    // [-1, 1] from aft (-1) to forward (+1). (Continuum moment balance:
+    // int p xi dxi = 2 beta/3 = R e, so beta = 1.5 R e and the midpoint
+    // load on block i is p(xi) * 2/n.)
+    let n = n_blocks as f64;
+    let mut per: Vec<f64> = (0..n_blocks)
+        .map(|i| {
+            let xi = 2.0 * (i as f64 + 0.5) / n - 1.0;
+            (r_kn / n) * (1.0 + 3.0 * e * xi)
+        })
+        .collect();
+    let wanted_negative = per.iter().any(|p| *p < 0.0);
+    if wanted_negative {
+        let positive: f64 = per.iter().map(|p| p.max(0.0)).sum();
+        if positive > 1e-9 {
+            for p in &mut per {
+                *p = p.max(0.0) * (r_kn / positive);
+            }
+        }
+    }
+    let centroid: f64 = per
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let xi = 2.0 * (i as f64 + 0.5) / n - 1.0;
+            p * xi * half
+        })
+        .sum::<f64>()
+        / r_kn;
+    KeelReactions {
+        total_kn: r_kn,
+        centroid_from_midship_m: centroid,
+        per_block_kn: per,
+        lifted_off_ends: lifted,
+    }
+}
+
 /// Metacentric height GM at draft `d`, m:
 /// `GM = KB + BM − KG` with `KB = d/2` and the fineness-corrected
 /// `BM = Cwp·B²/(12·Cb·d)`, where the waterplane coefficient is the
@@ -306,6 +566,7 @@ mod tests {
         DockedVessel {
             launch_weight_kg: 6_000_000.0,
             cog_above_keel_m: 5.5,
+            lcg_from_midship_m: 0.0,
             length_m: 140.0,
             breadth_m: 22.0,
             block_coefficient: 0.85,
@@ -420,6 +681,124 @@ mod tests {
         assert_eq!(
             dock().flooding_sequence(&deep, 5_000.0),
             Err(DockError::VesselDoesNotFit)
+        );
+    }
+
+    /// Review 7H: ballast sequencing — a tender vessel (KG so high the
+    /// unballasted float-off GM is negative) is stabilised by keel-line
+    /// ballast, planned before flooding begins.
+    #[test]
+    fn ballast_plan_stabilises_a_tender_vessel() {
+        // 4000 t, KG 16 m on a 90 x 20 x Cb 0.8 hull: draft 2.71 m,
+        // KM 14.68 m -> GM = -1.32 m, well below the 0.15 m minimum.
+        let mut vessel = barge();
+        vessel.launch_weight_kg = 4_000_000.0;
+        vessel.cog_above_keel_m = 16.0;
+        vessel.length_m = 90.0;
+        vessel.breadth_m = 20.0;
+        vessel.block_coefficient = 0.8;
+        vessel.ballast_tanks = vec![
+            BallastTank {
+                name: "AP WBT".into(),
+                volume_m3: 1000.0,
+                x_from_midship_m: -35.0,
+            },
+            BallastTank {
+                name: "FP WBT".into(),
+                volume_m3: 1000.0,
+                x_from_midship_m: 35.0,
+            },
+        ];
+
+        // Unballasted, the undocking is unstable (screen with the public
+        // hydrostatics).
+        let draft0 = floating_draft_m(&vessel);
+        assert!(gm_m(&vessel, draft0) < MIN_GM_M);
+
+        // The plan fills the tanks and reaches the target GM.
+        let plan = ballast_plan(&vessel, None).unwrap();
+        assert!(!plan.steps.is_empty());
+        assert_eq!(plan.steps.len(), 2, "both tanks used");
+        for step in &plan.steps {
+            assert_eq!(step.at_water_level_m, 0.0, "ballast goes in pre-flood");
+            assert!((0.0..=1.0).contains(&step.fill_frac));
+        }
+        assert!(
+            plan.float_off_gm_m >= MIN_GM_M,
+            "GM {:.2}",
+            plan.float_off_gm_m
+        );
+        assert!(plan.ballast_mass_kg > 0.0);
+        // Symmetric fills keep the LCG at midship (both tanks equal fill).
+        let fills: Vec<f64> = plan.steps.iter().map(|s| s.fill_frac).collect();
+        assert!((fills[0] - fills[1]).abs() < 1e-9);
+
+        // A target the tanks cannot reach is refused, not faked.
+        assert_eq!(
+            ballast_plan(&vessel, Some(5.0)),
+            Err(DockError::InsufficientBallast)
+        );
+
+        // With the ballast aboard, the flooding sequence is stable at
+        // every level including float-off.
+        let ballasted_w = vessel.launch_weight_kg + plan.ballast_mass_kg;
+        let mut ballasted = vessel.clone();
+        ballasted.launch_weight_kg = ballasted_w;
+        ballasted.cog_above_keel_m = 4_000_000.0 * 16.0 / ballasted_w;
+        ballasted.ballast_tanks = vec![];
+        let dock = Drydock {
+            length_m: 200.0,
+            width_m: 30.0,
+            depth_m: 10.0,
+        };
+        let seq = dock.flooding_sequence(&ballasted, 5_000.0).unwrap();
+        assert!(seq.stable_at_every_level);
+        assert!((seq.steps.last().unwrap().gm_m.unwrap() - plan.float_off_gm_m).abs() < 1e-6);
+    }
+
+    /// Review 7H: keel-block reaction distribution — total from
+    /// Archimedes, centroid from the moment balance, linear spread over
+    /// the row, single-end lift-off flagged past L/3.
+    #[test]
+    fn keel_reactions_distribute_and_flag_pivot() {
+        let mut vessel = barge(); // 6000 t, L 140, balanced
+        vessel.lcg_from_midship_m = 5.0;
+
+        // At level 0 (dry bottom) the blocks carry everything.
+        let r = keel_reaction_distribution(&vessel, &[], 0.0, 9);
+        assert!((r.total_kn - 6_000_000.0 * 9.81 / 1000.0).abs() < 1e-6);
+        let sum: f64 = r.per_block_kn.iter().sum();
+        assert!(
+            (sum - r.total_kn).abs() < 1e-6,
+            "reactions must sum to the total"
+        );
+        // Midpoint discretization over n=9 blocks gives the exact lever
+        // times (1 - 1/n^2): 4.938 m vs the continuum 5.0 m.
+        assert!(
+            (r.centroid_from_midship_m - 5.0 * (1.0 - 1.0 / 81.0)).abs() < 1e-9,
+            "{}",
+            r.centroid_from_midship_m
+        );
+        assert!(r.per_block_kn.iter().all(|p| *p > 0.0));
+        assert!(!r.lifted_off_ends);
+        // Forward-heavy: the forward blocks carry more.
+        assert!(*r.per_block_kn.last().unwrap() > *r.per_block_kn.first().unwrap());
+
+        // Afloat (level past float-off): nothing on the blocks.
+        let afloat = keel_reaction_distribution(&vessel, &[], 9.0, 9);
+        assert_eq!(afloat.total_kn, 0.0);
+
+        // CoG 50 m from midship on a 70 m half-length: x_R = W*50/W = 50
+        // > L/3 = 46.7 -> the linear law wants a negative end pressure.
+        let mut eccentric = vessel.clone();
+        eccentric.lcg_from_midship_m = 50.0;
+        let pivot = keel_reaction_distribution(&eccentric, &[], 0.0, 9);
+        assert!(pivot.lifted_off_ends);
+        assert!(pivot.per_block_kn.iter().all(|p| *p >= 0.0), "clamped");
+        let sum: f64 = pivot.per_block_kn.iter().sum();
+        assert!(
+            (sum - pivot.total_kn).abs() < 1e-6,
+            "clamped set still sums"
         );
     }
 

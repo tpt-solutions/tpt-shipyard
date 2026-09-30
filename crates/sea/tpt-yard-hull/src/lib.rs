@@ -179,6 +179,49 @@ pub struct HullConstruction {
     pub block_join_sequence: Vec<BlockJoin>,
 }
 
+/// One candidate block plan from [`Self::optimize_division`], scored.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CandidatePlan {
+    /// Depth bands of the plan.
+    pub depth_bands: u32,
+    /// Longitudinal divisions per tier.
+    pub x_divisions: u32,
+    /// Length of one block, m.
+    pub block_len_m: f64,
+    /// Heaviest block of the plan, t.
+    pub heaviest_block_t: f64,
+    /// Total erection seam length (transverse + longitudinal butts), m.
+    pub seam_length_m: f64,
+    /// Number of crane lifts in the erection.
+    pub n_lifts: u32,
+    /// Objective score: weld hours + lift hours, h (lower is better).
+    pub score_hours: f64,
+}
+
+/// Screening objective for [`Self::optimize_division`]. Defaults are
+/// documented pre-design values; override for a specific yard.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlanObjective {
+    /// Sustained erection-seam welding rate, m/h (default 2.0: a
+    /// station welding a boom weld plus back-welding averaged out).
+    pub weld_speed_m_h: f64,
+    /// Fixed dock time per crane lift (rigging, set, seam prep before
+    /// welding), h (default 6.0).
+    pub hours_per_lift: f64,
+    /// Cap on longitudinal divisions explored per tier (default 16).
+    pub max_x_divisions: u32,
+}
+
+impl Default for PlanObjective {
+    fn default() -> Self {
+        Self {
+            weld_speed_m_h: 2.0,
+            hours_per_lift: 6.0,
+            max_x_divisions: 16,
+        }
+    }
+}
+
 impl HullConstruction {
     /// Creates an empty construction for the given hull form.
     pub fn new(hull_form: HullGeometry) -> Self {
@@ -325,6 +368,75 @@ impl HullConstruction {
         self.blocks.iter().map(|b| b.weight_kg).sum()
     }
 
+    /// Design-for-construction search (review 7H roadmap item): rank block
+    /// divisions by an erection-effort proxy. For every depth-band count
+    /// from 1 to the hull's `depth_bands` and every longitudinal division
+    /// count (from the crane/workshop minimum to `objective.max_x_divisions`)
+    /// the plan is feasible when the heaviest block stays within the crane's
+    /// 0.9 rigging-derated capacity. The score is welding hours (seam length
+    /// / weld speed) plus lifting hours (lifts x hours per lift) — fewer,
+    /// bigger blocks weld less but lift heavier; the ranking makes the
+    /// trade-off explicit instead of hiding it in a single "right" answer.
+    ///
+    /// Returns feasible candidates, best score first.
+    pub fn optimize_division(
+        &self,
+        crane_capacity_kn: f64,
+        workshop_dimensions: Dimensions,
+        objective: &PlanObjective,
+    ) -> Vec<CandidatePlan> {
+        let g = self.hull_form;
+        if g.depth_bands == 0 || !crane_capacity_kn.is_finite() || crane_capacity_kn <= 0.0 {
+            return Vec::new();
+        }
+        let crane_limit_kn = crane_capacity_kn * 0.9;
+        let factor = 4.0; // internal-structure factor, see block_division
+
+        // Minimum longitudinal divisions from the crane and workshop length
+        // (same physics as block_division: heavier bands -> shorter blocks).
+        let mut candidates: Vec<CandidatePlan> = Vec::new();
+        for nz in 1..=g.depth_bands {
+            let band_height = g.depth_m / nz as f64;
+            let kg_per_m = factor * g.areal_density_kg_m2 * (g.boa_m + 2.0 * band_height);
+            let max_len_weight = crane_limit_kn * 1000.0 / 9.81 / kg_per_m.max(1e-6);
+            let max_len = max_len_weight.min(workshop_dimensions.length).max(1e-3);
+            let n_x_min = (g.loa_m / max_len).ceil().max(1.0) as u32;
+            for nx in n_x_min..=objective.max_x_divisions.max(1) {
+                let block_len = g.loa_m / nx as f64;
+                let heaviest_t = kg_per_m * block_len / 1000.0;
+                // Feasibility: heaviest block within the derated crane.
+                if heaviest_t * 1000.0 * 9.81 > crane_limit_kn * 1000.0 {
+                    continue;
+                }
+                // Seams: transverse butts between x-adjacent blocks per
+                // tier (length ~ beam) and longitudinal butts between
+                // tiers per x position (length ~ LOA).
+                let transverse = (nx - 1) as f64 * nz as f64 * g.boa_m;
+                let longitudinal = nx as f64 * (nz - 1) as f64 * g.loa_m;
+                let seam_length = transverse + longitudinal;
+                let lifts = nx * nz;
+                let weld_hours = seam_length / objective.weld_speed_m_h.max(1e-6);
+                let lift_hours = lifts as f64 * objective.hours_per_lift;
+                candidates.push(CandidatePlan {
+                    depth_bands: nz,
+                    x_divisions: nx,
+                    block_len_m: block_len,
+                    heaviest_block_t: heaviest_t,
+                    seam_length_m: seam_length,
+                    n_lifts: lifts,
+                    score_hours: weld_hours + lift_hours,
+                });
+            }
+        }
+        candidates.sort_by(|a, b| {
+            a.score_hours
+                .total_cmp(&b.score_hours)
+                .then(a.depth_bands.cmp(&b.depth_bands))
+                .then(a.x_divisions.cmp(&b.x_divisions))
+        });
+        candidates
+    }
+
     /// Checks that a block of this hull physically fits the workshop
     /// cross-section: every band block is the full beam wide and one band
     /// high, so the workshop breadth must admit `boa_m` and its depth the
@@ -383,6 +495,45 @@ mod tests {
             areal_density_kg_m2: 180.0,
             depth_bands: 2,
         })
+    }
+
+    /// Review 7H: the division optimizer's seam-length formula and the
+    /// bigger-blocks-weld-less / lighter-blocks-lift-easier trade-off.
+    #[test]
+    fn optimize_division_ranks_and_respects_the_crane() {
+        let hull = container_ship(); // 140 x 22 x 12 m, 180 kg/m2, 2 bands
+        let obj = PlanObjective::default();
+
+        // A 40 MN crane can lift anything this hull divides into: the best
+        // plan is the fewest-seams one (1 band x fewest x divisions the
+        // workshop length admits).
+        let plans = hull.optimize_division(40_000.0, Dimensions::new(24.0, 30.0, 14.0), &obj);
+        assert!(!plans.is_empty());
+        assert!(plans
+            .windows(2)
+            .all(|w| w[0].score_hours <= w[1].score_hours));
+        let best = &plans[0];
+        // Seam length formula: (nx-1)*nz*boa + nx*(nz-1)*loa.
+        let (nx, nz) = (best.x_divisions as f64, best.depth_bands as f64);
+        let expected_seam = (nx - 1.0) * nz * 22.0 + nx * (nz - 1.0) * 140.0;
+        assert!((best.seam_length_m - expected_seam).abs() < 1e-9);
+        // Feasibility: nothing in the list exceeds the derated crane.
+        for p in &plans {
+            assert!(p.heaviest_block_t * 1000.0 * 9.81 <= 40_000.0 * 0.9 * 1000.0 + 1e-6);
+        }
+
+        // A light crane forces more divisions: the feasible set shifts to
+        // lighter blocks and the best score cannot beat the heavy-crane one.
+        let light = hull.optimize_division(4_000.0, Dimensions::new(24.0, 30.0, 14.0), &obj);
+        assert!(!light.is_empty());
+        assert!(light[0].heaviest_block_t * 1000.0 * 9.81 <= 4_000.0 * 0.9 * 1000.0 + 1e-6);
+        assert!(light[0].score_hours >= best.score_hours);
+        assert!(light[0].x_divisions > best.x_divisions || light[0].depth_bands > best.depth_bands);
+
+        // An absurd crane cap leaves nothing liftable.
+        assert!(hull
+            .optimize_division(10.0, Dimensions::new(24.0, 30.0, 14.0), &obj)
+            .is_empty());
     }
 
     /// Review 7B leftover: an explicit workshop *cross-section* check —

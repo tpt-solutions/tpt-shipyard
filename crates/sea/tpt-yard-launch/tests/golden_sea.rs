@@ -140,6 +140,7 @@ fn golden_drydock_flooding_sequence() {
     let vessel = DockedVessel {
         launch_weight_kg: num(vessel_v, "launch_weight_kg"),
         cog_above_keel_m: num(vessel_v, "cog_above_keel_m"),
+        lcg_from_midship_m: num(vessel_v, "lcg_from_midship_m"),
         length_m: num(vessel_v, "length_m"),
         breadth_m: num(vessel_v, "breadth_m"),
         block_coefficient: num(vessel_v, "block_coefficient"),

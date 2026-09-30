@@ -561,6 +561,7 @@ impl LaunchAnalysis {
         let vessel = DockedVessel {
             launch_weight_kg: self.vessel_weight.mass_kg,
             cog_above_keel_m: self.vessel_weight.cog.z,
+            lcg_from_midship_m: 0.0,
             length_m: self.immersion_length_m,
             breadth_m: self.breadth_m,
             block_coefficient: self.block_coefficient,
