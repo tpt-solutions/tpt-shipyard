@@ -184,9 +184,7 @@ fn overlaps(a: &Facility, b: &Facility, clearance: f64) -> bool {
     // in conflict with it.
     let dz = (a.position.z - b.position.z).abs();
     let vz = (a.height_m + b.height_m) / 2.0;
-    dx < (aw + bw) / 2.0 + clearance
-        && dy < (ad + bd) / 2.0 + clearance
-        && dz < vz + clearance
+    dx < (aw + bw) / 2.0 + clearance && dy < (ad + bd) / 2.0 + clearance && dz < vz + clearance
 }
 
 #[cfg(test)]
@@ -253,8 +251,10 @@ mod tests {
             height_m: 12.0,
         });
         assert_eq!(plan.capacity_of(FacilityKind::Crane), 800.0);
-        assert!(!plan.check_capacity(FacilityKind::Crane, 900.0),
-            "800 t + 200 t cranes cannot make a 900 t single pick");
+        assert!(
+            !plan.check_capacity(FacilityKind::Crane, 900.0),
+            "800 t + 200 t cranes cannot make a 900 t single pick"
+        );
         plan.add(Facility {
             name: "W1".into(),
             kind: FacilityKind::Workshop,
@@ -271,8 +271,11 @@ mod tests {
             footprint_m: (100.0, 50.0),
             height_m: 12.0,
         });
-        assert_eq!(plan.capacity_of(FacilityKind::Workshop), 5_000.0,
-            "workshop area pools");
+        assert_eq!(
+            plan.capacity_of(FacilityKind::Workshop),
+            5_000.0,
+            "workshop area pools"
+        );
     }
 
     /// Regression (review 7B): facilities at different elevations do not

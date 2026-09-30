@@ -211,24 +211,22 @@ impl QualityManagement {
         let mut id = 1u64;
         for phase in build_phases {
             for a in &phase.activities {
-                let (method, coverage, criticality, timing): (NdtMethod, f64, u8, &str) =
-                    match &a.activity_type {
-                        ActivityType::WeldBlock => {
-                            (NdtMethod::UltrasonicTesting, 30.0, 1, "post-weld")
-                        }
-                        ActivityType::JoinBlock => {
-                            (NdtMethod::UltrasonicTesting, 30.0, 1, "post-erection")
-                        }
-                        ActivityType::Outfit {
-                            system: tpt_yard_core::OutfitSystem::Piping { .. },
-                        } => (NdtMethod::DyePenetrantTesting, 100.0, 2, "post-install"),
-                        ActivityType::Test {
-                            test_type:
-                                tpt_yard_core::TestType::Pressure
-                                | tpt_yard_core::TestType::Hydrostatic,
-                        } => (NdtMethod::PressureTesting, 100.0, 1, "on completion"),
-                        _ => (NdtMethod::VisualInspection, 100.0, 3, "on completion"),
-                    };
+                let (method, coverage, criticality, timing): (NdtMethod, f64, u8, &str) = match &a
+                    .activity_type
+                {
+                    ActivityType::WeldBlock => (NdtMethod::UltrasonicTesting, 30.0, 1, "post-weld"),
+                    ActivityType::JoinBlock => {
+                        (NdtMethod::UltrasonicTesting, 30.0, 1, "post-erection")
+                    }
+                    ActivityType::Outfit {
+                        system: tpt_yard_core::OutfitSystem::Piping { .. },
+                    } => (NdtMethod::DyePenetrantTesting, 100.0, 2, "post-install"),
+                    ActivityType::Test {
+                        test_type:
+                            tpt_yard_core::TestType::Pressure | tpt_yard_core::TestType::Hydrostatic,
+                    } => (NdtMethod::PressureTesting, 100.0, 1, "on completion"),
+                    _ => (NdtMethod::VisualInspection, 100.0, 3, "on completion"),
+                };
                 // Only prescribe methods the yard can actually perform;
                 // degrade to the best available (visual always is).
                 let method = if self.ndt_methods.contains(&method) {

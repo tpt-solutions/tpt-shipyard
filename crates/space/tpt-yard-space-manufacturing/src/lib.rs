@@ -380,18 +380,19 @@ mod tests {
         assert!((plan.deposition_power_kw - 40.0).abs() < 1e-9);
         // Net Stefan-Boltzmann flux against the 230 K effective sky
         // (review 7B: the old 0 K-ideal formula under-sized the area).
-        let expected =
-            40_000.0 / (0.85 * 5.670374419e-8 * (350.0f64.powi(4) - 230.0f64.powi(4)));
+        let expected = 40_000.0 / (0.85 * 5.670374419e-8 * (350.0f64.powi(4) - 230.0f64.powi(4)));
         assert!((plan.radiator_area_m2 - expected).abs() < 1e-9);
         assert!(plan.radiator_area_m2 > 5.0);
         // Solar-powered default: eclipse pauses the print.
         assert!(plan.eclipse_pauses);
         // A nuclear-powered facility prints through eclipse.
         let nuclear = ded().with_solar_power(false);
-        assert!(!nuclear
-            .thermal_control_during_print(5.0)
-            .unwrap()
-            .eclipse_pauses);
+        assert!(
+            !nuclear
+                .thermal_control_during_print(5.0)
+                .unwrap()
+                .eclipse_pauses
+        );
     }
 
     /// Regression (review 7B): a warmer sink shrinks the net flux and grows
@@ -400,8 +401,14 @@ mod tests {
     fn radiator_sizing_respects_sink_and_environment() {
         let cold = ded(); // sink 230 K
         let warm = ded().with_radiator_temps(350.0, 300.0);
-        let a_cold = cold.thermal_control_during_print(5.0).unwrap().radiator_area_m2;
-        let a_warm = warm.thermal_control_during_print(5.0).unwrap().radiator_area_m2;
+        let a_cold = cold
+            .thermal_control_during_print(5.0)
+            .unwrap()
+            .radiator_area_m2;
+        let a_warm = warm
+            .thermal_control_during_print(5.0)
+            .unwrap()
+            .radiator_area_m2;
         assert!(
             a_warm > a_cold * 1.5,
             "a 300 K sky must demand far more area: {a_warm} vs {a_cold}"

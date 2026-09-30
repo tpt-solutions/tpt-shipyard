@@ -6,6 +6,19 @@ follows [Semantic Versioning](https://semver.org/). The workspace versions as
 a single release train on a 6-week cadence — see the workspace
 [RELEASES.md](../../RELEASES.md).
 
+## [Unreleased]
+
+### Added
+
+- `advisor` module (review 7H): `SteelChemistry::cet`/`pcm`/`graville_class`,
+  `preheat_for_target_t8_5` (the Rosenthal t8/5 closed form inverted for
+  preheat by bisection), `advise` (end-to-end WPS screening against the
+  preheat floor and a supplier t8/5 `CoolingWindow`, with a recommended
+  preheat when the floor is missed), and `Pqr`/`WeldEnvelope` essential-
+  variable checks (ISO 15614-1 Table 5 thickness rule 0.5·t-2·t, heat input,
+  preheat/interpass, process and filler) covering ISO 15614-1 and ASME IX
+  screening.
+
 ## [0.1.0] - 2026-09-28
 
 ### Added

@@ -1,4 +1,5 @@
 {
+  "schema_version": 1,
   "id": 1,
   "name": "Container ship 1400 TEU",
   "vessel_type": {

@@ -203,16 +203,18 @@ mod tests {
                 tpt_yard_core::ActivityType::JoinBlock,
                 8.0,
             ));
-            weight.add_item(WeightItem {
-                id: ItemId(idx as u64 + 1),
-                name: phase.name.clone(),
-                group: "hull".into(),
-                weight_kg: 1_000.0,
-                cog: Vector3::new(20.0 * (idx + 1) as f64, 0.0, 6.0),
-                status: ItemStatus::Design,
-                margin_pct: 0.0,
-                installed_by: Some(activity_id),
-            }).expect("valid weight item");
+            weight
+                .add_item(WeightItem {
+                    id: ItemId(idx as u64 + 1),
+                    name: phase.name.clone(),
+                    group: "hull".into(),
+                    weight_kg: 1_000.0,
+                    cog: Vector3::new(20.0 * (idx + 1) as f64, 0.0, 6.0),
+                    status: ItemStatus::Design,
+                    margin_pct: 0.0,
+                    installed_by: Some(activity_id),
+                })
+                .expect("valid weight item");
         }
         let project = project;
         let mut twin = DigitalTwin::with_weight_model(

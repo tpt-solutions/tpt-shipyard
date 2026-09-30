@@ -514,9 +514,7 @@ mod tests {
         g.topological_order()
             .expect("duplicate dependency must not create a false cycle");
         let mut with_dup = ActivityGraph::new();
-        with_dup
-            .add_activity(ActivityId(1), "a", 1.0, &[])
-            .unwrap();
+        with_dup.add_activity(ActivityId(1), "a", 1.0, &[]).unwrap();
         with_dup
             .add_activity(ActivityId(2), "b", 1.0, &[ActivityId(1)])
             .unwrap();

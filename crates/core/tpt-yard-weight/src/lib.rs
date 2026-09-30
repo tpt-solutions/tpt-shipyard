@@ -143,7 +143,9 @@ impl std::fmt::Display for WeightError {
                 write!(f, "no countable items: centre of gravity undefined")
             }
             WeightError::DuplicateItem(id) => write!(f, "duplicate weight item {id}"),
-            WeightError::InvalidWeight(w) => write!(f, "invalid weight {w} (must be finite and >= 0)"),
+            WeightError::InvalidWeight(w) => {
+                write!(f, "invalid weight {w} (must be finite and >= 0)")
+            }
         }
     }
 }
@@ -179,7 +181,7 @@ impl WeightModel {
     /// present (a silent duplicate would double-count the mass), and
     /// [`WeightError::InvalidWeight`] on a NaN or negative weight.
     pub fn add_item(&mut self, item: WeightItem) -> Result<(), WeightError> {
-        if !(item.weight_kg >= 0.0) {
+        if !item.weight_kg.is_finite() || item.weight_kg < 0.0 {
             return Err(WeightError::InvalidWeight(item.weight_kg));
         }
         if self.items.iter().any(|i| i.id == item.id) {
@@ -195,7 +197,7 @@ impl WeightModel {
     ///
     /// [`WeightError::UnknownItem`] if the id is not in the model.
     pub fn mark_installed(&mut self, id: ItemId, as_built_kg: f64) -> Result<(), WeightError> {
-        if !(as_built_kg >= 0.0) {
+        if !as_built_kg.is_finite() || as_built_kg < 0.0 {
             return Err(WeightError::InvalidWeight(as_built_kg));
         }
         let item = self
@@ -333,7 +335,10 @@ impl WeightModel {
                             Value::Number(i.cog.z),
                         ]),
                     ),
-                    ("status".into(), Value::String(status_name(&i.status).into())),
+                    (
+                        "status".into(),
+                        Value::String(status_name(&i.status).into()),
+                    ),
                     ("margin_pct".into(), Value::Number(i.margin_pct)),
                     (
                         "installed_by".into(),
@@ -384,33 +389,47 @@ impl WeightModel {
                 .ok_or_else(|| CoreError::type_error(format!("weight model: {k} must be a number")))
         };
         let vec3 = |o: &Value, k: &str| -> Result<Vector3, CoreError> {
-            let a = o
-                .get(k)
-                .and_then(|x| x.as_array())
-                .ok_or_else(|| CoreError::type_error(format!("weight model: {k} must be [x,y,z]")))?;
+            let a = o.get(k).and_then(|x| x.as_array()).ok_or_else(|| {
+                CoreError::type_error(format!("weight model: {k} must be [x,y,z]"))
+            })?;
             if a.len() != 3 {
                 return Err(CoreError::type_error(format!(
                     "weight model: {k} must have 3 components"
                 )));
             }
-            Ok(Vector3::new(
-                a[0].as_f64().unwrap_or(f64::NAN),
-                a[1].as_f64().unwrap_or(f64::NAN),
-                a[2].as_f64().unwrap_or(f64::NAN),
-            ))
+            let comp = |i: usize| -> Result<f64, CoreError> {
+                a[i].as_f64()
+                    .ok_or_else(|| {
+                        CoreError::type_error(format!("weight model: {k}[{i}] must be a number"))
+                    })
+                    .and_then(|n| {
+                        n.is_finite().then_some(n).ok_or_else(|| {
+                            CoreError::type_error(format!("weight model: {k}[{i}] must be finite"))
+                        })
+                    })
+            };
+            Ok(Vector3::new(comp(0)?, comp(1)?, comp(2)?))
         };
 
         let design_weight_kg = num(v, "design_weight_kg")?;
+        if !design_weight_kg.is_finite() || design_weight_kg < 0.0 {
+            return Err(CoreError::type_error(
+                "weight model: design_weight_kg must be finite and non-negative",
+            ));
+        }
         let design_cog = vec3(v, "design_cog")?;
         let mut model = WeightModel::new(design_weight_kg, design_cog);
         let items = field("items")?
             .as_array()
             .ok_or_else(|| CoreError::type_error("weight model: items must be an array"))?;
-        for it in items {
+        for (idx, it) in items.iter().enumerate() {
+            let bad =
+                |msg: String| CoreError::type_error(format!("weight model: items[{idx}]: {msg}"));
             let status = match it
                 .get("status")
-                .and_then(|x| x.as_str())
-                .unwrap_or("Design")
+                .ok_or_else(|| bad("missing 'status'".into()))?
+                .as_str()
+                .ok_or_else(|| bad("'status' must be a string".into()))?
             {
                 "Design" => ItemStatus::Design,
                 "Ordered" => ItemStatus::Ordered,
@@ -418,38 +437,51 @@ impl WeightModel {
                 "Installed" => ItemStatus::Installed,
                 "Replaced" => ItemStatus::Replaced,
                 other => {
-                    return Err(CoreError::type_error(format!(
-                        "weight model: unknown item status '{other}'"
-                    )))
+                    return Err(bad(format!("unknown item status '{other}'")));
                 }
             };
+            let id_v = it.get("id").ok_or_else(|| bad("missing 'id'".into()))?;
+            let id = id_v
+                .as_u64()
+                .ok_or_else(|| bad("'id' must be a non-negative integer".into()))?;
+            let item_name = it
+                .get("name")
+                .ok_or_else(|| bad("missing 'name'".into()))?
+                .as_str()
+                .ok_or_else(|| bad("'name' must be a string".into()))?;
+            let group = it
+                .get("group")
+                .ok_or_else(|| bad("missing 'group'".into()))?
+                .as_str()
+                .ok_or_else(|| bad("'group' must be a string".into()))?;
+            let margin_pct = it
+                .get("margin_pct")
+                .ok_or_else(|| bad("missing 'margin_pct'".into()))?
+                .as_f64()
+                .ok_or_else(|| bad("'margin_pct' must be a number".into()))?;
+            if !margin_pct.is_finite() {
+                return Err(bad("'margin_pct' must be finite".into()));
+            }
             let installed_by = match it.get("installed_by") {
                 Some(Value::Number(n)) if *n >= 0.0 => {
                     Some(tpt_yard_assembly::ActivityId(*n as u64))
                 }
                 _ => None,
             };
-            model.add_item(WeightItem {
-                id: ItemId(num(it, "id")? as u64),
-                name: it
-                    .get("name")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                group: it
-                    .get("group")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                weight_kg: num(it, "weight_kg")?,
-                cog: vec3(it, "cog")?,
-                status,
-                margin_pct: it.get("margin_pct").and_then(|n| n.as_f64()).unwrap_or(0.0),
-                installed_by,
-            })
-            .map_err(|e| {
-                tpt_yard_core::CoreError::Validation(format!("weight model item: {e}"))
-            })?;
+            model
+                .add_item(WeightItem {
+                    id: ItemId(id),
+                    name: item_name.to_string(),
+                    group: group.to_string(),
+                    weight_kg: num(it, "weight_kg")?,
+                    cog: vec3(it, "cog")?,
+                    status,
+                    margin_pct,
+                    installed_by,
+                })
+                .map_err(|e| {
+                    tpt_yard_core::CoreError::Validation(format!("weight model item: {e}"))
+                })?;
         }
         Ok(model)
     }
@@ -497,28 +529,32 @@ mod tests {
         let mut model = WeightModel::new(190_000.0, Vector3::new(70.0, 0.0, 7.0));
         // Ten blocks: 8 hull blocks of 15 t + 2 machinery blocks of 35 t.
         for b in 0..8u64 {
-            model.add_item(WeightItem {
-                id: ItemId(b + 1),
-                name: format!("Hull block {b}"),
-                group: "hull".into(),
-                weight_kg: 15_000.0,
-                cog: Vector3::new(10.0 * b as f64, 0.0, 6.0),
-                status: ItemStatus::Installed,
-                margin_pct: 2.0,
-                installed_by: Some(ActivityId(b + 1)),
-            }).expect("valid weight item");
+            model
+                .add_item(WeightItem {
+                    id: ItemId(b + 1),
+                    name: format!("Hull block {b}"),
+                    group: "hull".into(),
+                    weight_kg: 15_000.0,
+                    cog: Vector3::new(10.0 * b as f64, 0.0, 6.0),
+                    status: ItemStatus::Installed,
+                    margin_pct: 2.0,
+                    installed_by: Some(ActivityId(b + 1)),
+                })
+                .expect("valid weight item");
         }
         for m in 0..2u64 {
-            model.add_item(WeightItem {
-                id: ItemId(100 + m),
-                name: format!("Machinery block {m}"),
-                group: "machinery".into(),
-                weight_kg: 35_000.0,
-                cog: Vector3::new(20.0 + 30.0 * m as f64, 0.0, 4.0),
-                status: ItemStatus::Design,
-                margin_pct: 5.0,
-                installed_by: Some(ActivityId(50 + m)),
-            }).expect("valid weight item");
+            model
+                .add_item(WeightItem {
+                    id: ItemId(100 + m),
+                    name: format!("Machinery block {m}"),
+                    group: "machinery".into(),
+                    weight_kg: 35_000.0,
+                    cog: Vector3::new(20.0 + 30.0 * m as f64, 0.0, 4.0),
+                    status: ItemStatus::Design,
+                    margin_pct: 5.0,
+                    installed_by: Some(ActivityId(50 + m)),
+                })
+                .expect("valid weight item");
         }
         let block_sum: f64 = model.items.iter().map(|i| i.weight_kg).sum();
         assert_eq!(model.total_weight(), block_sum);
@@ -529,18 +565,22 @@ mod tests {
     #[test]
     fn cog_is_weighted_mean() {
         let mut model = WeightModel::new(1.0, Vector3::ZERO);
-        model.add_item(item(
-            1,
-            100.0,
-            Vector3::new(0.0, 0.0, 0.0),
-            ItemStatus::Installed,
-        )).expect("valid weight item");
-        model.add_item(item(
-            2,
-            300.0,
-            Vector3::new(4.0, 0.0, 0.0),
-            ItemStatus::Installed,
-        )).expect("valid weight item");
+        model
+            .add_item(item(
+                1,
+                100.0,
+                Vector3::new(0.0, 0.0, 0.0),
+                ItemStatus::Installed,
+            ))
+            .expect("valid weight item");
+        model
+            .add_item(item(
+                2,
+                300.0,
+                Vector3::new(4.0, 0.0, 0.0),
+                ItemStatus::Installed,
+            ))
+            .expect("valid weight item");
         let cog = model.centre_of_gravity().unwrap();
         assert!((cog.x - 3.0).abs() < 1e-12);
         assert!(cog.y.abs() < 1e-12);
@@ -549,8 +589,12 @@ mod tests {
     #[test]
     fn replaced_items_never_count() {
         let mut model = WeightModel::new(0.0, Vector3::ZERO);
-        model.add_item(item(1, 100.0, Vector3::ZERO, ItemStatus::Installed)).expect("valid weight item");
-        model.add_item(item(2, 50.0, Vector3::ZERO, ItemStatus::Replaced)).expect("valid weight item");
+        model
+            .add_item(item(1, 100.0, Vector3::ZERO, ItemStatus::Installed))
+            .expect("valid weight item");
+        model
+            .add_item(item(2, 50.0, Vector3::ZERO, ItemStatus::Replaced))
+            .expect("valid weight item");
         assert_eq!(model.total_weight(), 100.0);
         model.items[1].status = ItemStatus::Design;
         assert_eq!(model.total_weight(), 150.0);
@@ -585,12 +629,14 @@ mod tests {
     #[test]
     fn mark_installed_updates_weight() {
         let mut model = WeightModel::new(500.0, Vector3::ZERO);
-        model.add_item(item(
-            1,
-            300.0,
-            Vector3::new(1.0, 0.0, 0.0),
-            ItemStatus::Received,
-        )).expect("valid weight item");
+        model
+            .add_item(item(
+                1,
+                300.0,
+                Vector3::new(1.0, 0.0, 0.0),
+                ItemStatus::Received,
+            ))
+            .expect("valid weight item");
         model.mark_installed(ItemId(1), 315.0).unwrap();
         assert_eq!(model.installed_weight(), 315.0);
         assert_eq!(model.items[0].weight_kg, 315.0);
@@ -603,9 +649,13 @@ mod tests {
     #[test]
     fn margins_add_up() {
         let mut model = WeightModel::new(0.0, Vector3::ZERO);
-        model.add_item(item(1, 100.0, Vector3::ZERO, ItemStatus::Design)).expect("valid weight item");
+        model
+            .add_item(item(1, 100.0, Vector3::ZERO, ItemStatus::Design))
+            .expect("valid weight item");
         model.items[0].margin_pct = 5.0;
-        model.add_item(item(2, 200.0, Vector3::ZERO, ItemStatus::Design)).expect("valid weight item");
+        model
+            .add_item(item(2, 200.0, Vector3::ZERO, ItemStatus::Design))
+            .expect("valid weight item");
         model.items[1].margin_pct = 10.0;
         assert!((model.total_margin_kg() - 25.0).abs() < 1e-9);
         assert!((model.items[0].weight_with_margin_kg() - 105.0).abs() < 1e-9);
@@ -680,7 +730,10 @@ mod tests {
         assert_eq!(WeightModel::from_json_value(&v).unwrap(), model);
 
         // Malformed documents are rejected, not defaulted.
-        assert!(WeightModel::from_json_value(&tpt_yard_core::json::Value::parse("{}").unwrap()).is_err());
+        assert!(
+            WeightModel::from_json_value(&tpt_yard_core::json::Value::parse("{}").unwrap())
+                .is_err()
+        );
         assert!(
             WeightModel::from_json_value(
                 &tpt_yard_core::json::Value::parse(
@@ -689,6 +742,42 @@ mod tests {
                 .unwrap()
             )
             .is_err()
+        );
+    }
+
+    /// Regression (review 7C): the loader must not silently default item
+    /// fields or accept NaN coordinates (a NaN CoG used to slip through as
+    /// a "number" placeholder and poisoned every downstream moment sum).
+    #[test]
+    fn json_loader_rejects_missing_or_malformed_item_fields() {
+        let full = r#"{"design_weight_kg":100,"design_cog":[0,0,0],"items":[{"id":1,"name":"B","group":"hull","weight_kg":10,"cog":[1,2,3],"status":"Design","margin_pct":0,"installed_by":null}]}"#;
+        assert!(
+            WeightModel::from_json_value(&tpt_yard_core::json::Value::parse(full).unwrap()).is_ok()
+        );
+
+        let drop_field = |field: &str| {
+            let text = full.replace(format!("\"{field}\":").as_str(), "\"_dropped\":");
+            WeightModel::from_json_value(&tpt_yard_core::json::Value::parse(&text).unwrap())
+        };
+        for field in ["status", "name", "group", "margin_pct", "weight_kg", "cog"] {
+            assert!(
+                drop_field(field).is_err(),
+                "missing '{field}' must be rejected"
+            );
+        }
+
+        // A non-numeric CoG component must be an error, not NaN.
+        let text = full.replace("[1,2,3]", "[1,\"x\",3]");
+        assert!(
+            WeightModel::from_json_value(&tpt_yard_core::json::Value::parse(&text).unwrap())
+                .is_err()
+        );
+
+        // A fractional item id is not an id.
+        let text = full.replace("\"id\":1,", "\"id\":1.5,");
+        assert!(
+            WeightModel::from_json_value(&tpt_yard_core::json::Value::parse(&text).unwrap())
+                .is_err()
         );
     }
 

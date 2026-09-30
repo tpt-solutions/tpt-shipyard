@@ -79,16 +79,18 @@ impl WasmDigitalTwin {
             for act in phase.activities.iter_mut() {
                 let aid = act.id;
                 activity_ids.push(aid);
-                weight.add_item(WeightItem {
-                    id: ItemId(seq as u64 + 1),
-                    name: act.name.clone(),
-                    group: phase.name.clone(),
-                    weight_kg: per_block,
-                    cog: Vector3::new(seq as f64 * 10.0, 0.0, 5.0),
-                    status: ItemStatus::Design,
-                    margin_pct: 0.0,
-                    installed_by: Some(aid),
-                }).expect("valid weight item");
+                weight
+                    .add_item(WeightItem {
+                        id: ItemId(seq as u64 + 1),
+                        name: act.name.clone(),
+                        group: phase.name.clone(),
+                        weight_kg: per_block,
+                        cog: Vector3::new(seq as f64 * 10.0, 0.0, 5.0),
+                        status: ItemStatus::Design,
+                        margin_pct: 0.0,
+                        installed_by: Some(aid),
+                    })
+                    .expect("valid weight item");
                 seq += 1;
             }
         }
@@ -429,7 +431,10 @@ mod tests {
         let Err(err) = WasmDigitalTwin::new("{ not json }") else {
             panic!("malformed JSON must be rejected");
         };
-        assert!(format!("{err:?}").contains("invalid project json"), "{err:?}");
+        assert!(
+            format!("{err:?}").contains("invalid project json"),
+            "{err:?}"
+        );
     }
 
     #[test]

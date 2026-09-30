@@ -82,7 +82,7 @@ async function loadTwin() {
     document.getElementById("stage").insertAdjacentHTML(
       "afterbegin",
       '<p class="bad" id="load-error">WASM module not available: build it with ' +
-      '<code>wasm-pack build crates/core/tpt-yard-wasm --target web --out-dir ../../../www/pkg</code> ' +
+      '<code>wasm-pack build crates/web/tpt-yard-wasm --target web --out-dir ../../../www/pkg</code> ' +
       'and reload. (' + err + ')</p>'
     );
     for (const id of ["step", "auto", "reset"]) {

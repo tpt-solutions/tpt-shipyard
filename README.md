@@ -51,7 +51,7 @@ deepen). **Stand-in** = a thin, honest bridge awaiting the companion
 | `tpt-yard-hull` | Hull block construction | Done (pre-design weight estimate) |
 | `tpt-yard-blocks` | Block lifting and sling loads | Done |
 | `tpt-yard-drydock` | Drydock flooding and ballast sequencing | Simplified model (rectangular-block hydrostatics) |
-| `tpt-yard-launch` | Launch calculations | Simplified model (statics screening; dynamic launch sim on roadmap) |
+| `tpt-yard-launch` | Launch calculations | Simplified model (statics screening + dynamic slipway simulation; stern-lift/poppet load split on roadmap) |
 | `tpt-yard-outfitting` | Systems installation and routing | Simplified model (AABB routing checks) |
 | `tpt-yard-sea-trials` | Sea-trial test planning | Done |
 | `tpt-yard-hydrostatics` | Hydrostatics, GZ curves, IMO 2008 stability | Simplified model (prismatic screening; Bonjean/damage stability on roadmap) |
@@ -68,8 +68,9 @@ deepen). **Stand-in** = a thin, honest bridge awaiting the companion
 | `tpt-yard-transport-link` | Vehicle design ⇄ construction bridge | Stand-in (awaits the `tpt-transport` substrate) |
 | `tpt-yard-process-link` | Process engineering bridge | Stand-in (awaits the `tpt-process` substrate) |
 | `tpt-yard-earth-link` | Weather/sea-state bridge | Stand-in (awaits the `tpt-earth` substrate) |
+| `tpt-yard-cli` | CLI: `validate` / `plan` / `schedule` / `report` / `new` / `html-report` | Done |
 | `tpt-yard` | Facade: one dependency, curated prelude, feature flags | Done |
-| `tpt-yard-wasm` | WebAssembly bindings for dashboards | Simplified (native tests; 3-D browser demo on roadmap) |
+| `tpt-yard-wasm` | WebAssembly bindings for dashboards | Simplified model (native tests; 3-D browser demo on roadmap) |
 
 ## Quick Start
 

@@ -175,8 +175,7 @@ impl Drydock {
         let mut levels: Vec<f64> = (0..=n_levels)
             .map(|i| final_level * i as f64 / n_levels as f64)
             .collect();
-        if floating_draft < final_level
-            && levels.iter().all(|&l| (l - floating_draft).abs() > 1e-9)
+        if floating_draft < final_level && levels.iter().all(|&l| (l - floating_draft).abs() > 1e-9)
         {
             levels.push(floating_draft);
             levels.sort_by(f64::total_cmp);
@@ -271,8 +270,7 @@ pub fn displaced_mass_kg(vessel: &DockedVessel, draft_m: f64) -> f64 {
 /// (weight minus buoyancy), floored at zero.
 pub fn virtual_gm_touchdown_m(vessel: &DockedVessel, draft_m: f64) -> f64 {
     let hs_weight_kn = vessel.launch_weight_kg * G_ACC / 1000.0;
-    let buoyancy_kn =
-        displaced_mass_kg(vessel, draft_m) * G_ACC / 1000.0;
+    let buoyancy_kn = displaced_mass_kg(vessel, draft_m) * G_ACC / 1000.0;
     let reaction_kn = (hs_weight_kn - buoyancy_kn).max(0.0);
     let gm_afloat = gm_m(vessel, draft_m);
     if reaction_kn <= 0.0 || hs_weight_kn <= 0.0 {
@@ -296,8 +294,7 @@ pub fn gm_m(vessel: &DockedVessel, draft_m: f64) -> f64 {
     let d = draft_m.max(1e-6);
     let kb = d / 2.0;
     let cwp = (1.0 + 2.0 * vessel.block_coefficient) / 3.0;
-    let bm = cwp * vessel.breadth_m * vessel.breadth_m
-        / (12.0 * vessel.block_coefficient * d);
+    let bm = cwp * vessel.breadth_m * vessel.breadth_m / (12.0 * vessel.block_coefficient * d);
     kb + bm - vessel.cog_above_keel_m
 }
 

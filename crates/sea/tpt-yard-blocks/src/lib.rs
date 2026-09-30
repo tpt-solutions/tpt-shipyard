@@ -347,11 +347,15 @@ pub fn spreader_beam_check(
         notes.push(format!("beam yield utilization {u_yield:.2} exceeds 1.0"));
     }
     if u_buckle > 1.0 {
-        notes.push(format!("Euler buckling utilization {u_buckle:.2} exceeds 1.0"));
+        notes.push(format!(
+            "Euler buckling utilization {u_buckle:.2} exceeds 1.0"
+        ));
     }
     if slenderness > 200.0 {
         safe = false;
-        notes.push(format!("slenderness {slenderness:.0} exceeds the 200 practice limit"));
+        notes.push(format!(
+            "slenderness {slenderness:.0} exceeds the 200 practice limit"
+        ));
     }
     if sling_angle_deg <= 0.0 {
         safe = false;
@@ -593,7 +597,11 @@ mod tests {
         assert!(ok.safe, "{:?}", ok.notes);
         assert_eq!(ok.design_load_kn, 50.0 * 9.81);
         // Bearing: 490.5e3 / (57 x 40) = 215 MPa vs 0.9 x 355 = 319.5.
-        assert!((ok.bearing_utilization - 0.673).abs() < 0.01, "{}", ok.bearing_utilization);
+        assert!(
+            (ok.bearing_utilization - 0.673).abs() < 0.01,
+            "{}",
+            ok.bearing_utilization
+        );
 
         // Thin plate: bearing and net section blow up, tear-out too.
         let mut thin = geo;
@@ -608,7 +616,11 @@ mod tests {
         let mut short = geo;
         short.edge_distance_mm = 50.0;
         let tear = padeye_check(&short, &steel, 50.0 * 9.81, 1.0, 0.0);
-        assert!(tear.tear_out_utilization > 1.0, "{}", tear.tear_out_utilization);
+        assert!(
+            tear.tear_out_utilization > 1.0,
+            "{}",
+            tear.tear_out_utilization
+        );
         assert!(tear.notes.iter().any(|n| n.contains("tear-out")));
 
         // Out-of-plane sling angle drives the root bending check.
@@ -655,7 +667,11 @@ mod tests {
         };
         // 1000 kN at 60 deg: compression = 1000/(2 tan60) = 288.7 kN.
         let check = spreader_beam_check(&beam, 1000.0, 60.0);
-        assert!((check.compression_kn - 288.675).abs() < 0.01, "{}", check.compression_kn);
+        assert!(
+            (check.compression_kn - 288.675).abs() < 0.01,
+            "{}",
+            check.compression_kn
+        );
         assert!((check.head_vertical_kn - 500.0).abs() < 1e-9);
         // Yield: 288.7 kN / 0.01 m2 = 28.9 MPa vs 355 -> 0.081.
         assert!((check.yield_utilization - 0.0813).abs() < 0.001);
@@ -678,7 +694,7 @@ mod tests {
     #[test]
     fn cog_envelope_widens_worst_case_leg() {
         let weight = 1000.0; // kN
-        // No uncertainty, 45 deg: each leg takes 707.1 kN tension.
+                             // No uncertainty, 45 deg: each leg takes 707.1 kN tension.
         let nominal = cog_uncertainty_envelope(weight, 10.0, 0.0, 45.0);
         assert!((nominal - weight / 2.0 / std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-9);
         // +-0.5 m on a 10 m span: share = 5.5/10 = 55%.
@@ -699,17 +715,21 @@ mod tests {
             LiftPoint::new(Vector3::new(6.0, 0.0, 0.0), 100.0),
         ];
         let hook = Vector3::new(3.0, 0.0, 4.0); // ~53° legs
-        let loads = sling_loads(120.0, Vector3::new(3.0, 0.0, 0.0), &points
-            .iter()
-            .map(|p| p.position)
-            .collect::<Vec<_>>(), hook);
+        let loads = sling_loads(
+            120.0,
+            Vector3::new(3.0, 0.0, 0.0),
+            &points.iter().map(|p| p.position).collect::<Vec<_>>(),
+            hook,
+        );
         // 60 kN share / sin 53° ≈ 75 kN < 100 kN WLL: fine.
         assert!(legs_within_allowable(&loads, &points));
         // Overload one padeye: 190 kN total → ~118 kN tension > 100 WLL.
-        let loads = sling_loads(190.0, Vector3::new(3.0, 0.0, 0.0), &points
-            .iter()
-            .map(|p| p.position)
-            .collect::<Vec<_>>(), hook);
+        let loads = sling_loads(
+            190.0,
+            Vector3::new(3.0, 0.0, 0.0),
+            &points.iter().map(|p| p.position).collect::<Vec<_>>(),
+            hook,
+        );
         assert!(!legs_within_allowable(&loads, &points));
     }
 }

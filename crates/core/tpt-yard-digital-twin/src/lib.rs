@@ -649,7 +649,6 @@ impl DigitalTwin {
     /// [`TwinError`] on malformed state or a project that fails
     /// [`VesselProject::validate`].
     pub fn from_json_value(v: &tpt_yard_core::json::Value) -> Result<Self, TwinError> {
-        use tpt_yard_core::json::Value;
         let malformed = |what: &str| TwinError::Malformed(format!("twin state: missing '{what}'"));
         let vessel = VesselProject::from_json_value(
             v.get("vessel")
@@ -667,32 +666,55 @@ impl DigitalTwin {
                 .get(k)
                 .and_then(|x| x.as_array())
                 .ok_or_else(|| malformed(k))?;
-            Ok(arr
-                .iter()
-                .filter_map(|n| n.as_f64().map(|f| ActivityId(f as u64)))
-                .collect())
+            let mut set = HashSet::new();
+            for (i, n) in arr.iter().enumerate() {
+                let f = n.as_f64().ok_or_else(|| {
+                    TwinError::Malformed(format!("twin state: {k}[{i}] must be an integer"))
+                })?;
+                if !f.is_finite() || f < 0.0 || f.fract() != 0.0 {
+                    return Err(TwinError::Malformed(format!(
+                        "twin state: {k}[{i}] must be a non-negative integer"
+                    )));
+                }
+                set.insert(ActivityId(f as u64));
+            }
+            Ok(set)
         };
         let completed = parse_set("completed")?;
         let in_progress = parse_set("in_progress")?;
         let blocked = parse_set("blocked")?;
-        let mp_v = v.get("mass_properties").ok_or_else(|| malformed("mass_properties"))?;
-        let num = |o: &Value, k: &str| o.get(k).and_then(|n| n.as_f64()).unwrap_or(0.0);
-        let cog_v = mp_v.get("cog").and_then(|c| c.as_array());
-        let cog = cog_v
-            .map(|a| {
-                Vector3::new(
-                    a.first().and_then(|n| n.as_f64()).unwrap_or(0.0),
-                    a.get(1).and_then(|n| n.as_f64()).unwrap_or(0.0),
-                    a.get(2).and_then(|n| n.as_f64()).unwrap_or(0.0),
-                )
+        let mp_v = v
+            .get("mass_properties")
+            .ok_or_else(|| malformed("mass_properties"))?;
+        let mp_num = |k: &str| -> Result<f64, TwinError> {
+            mp_v.get(k).and_then(|n| n.as_f64()).ok_or_else(|| {
+                TwinError::Malformed(format!("twin state: mass_properties.{k} must be a number"))
             })
-            .unwrap_or(Vector3::ZERO);
+        };
+        let mass_kg = mp_num("mass_kg")?;
+        if !mass_kg.is_finite() || mass_kg < 0.0 {
+            return Err(TwinError::Malformed(
+                "twin state: mass_properties.mass_kg must be finite and non-negative".into(),
+            ));
+        }
+        let cog_v = mp_v.get("cog").and_then(|c| c.as_array()).ok_or_else(|| {
+            TwinError::Malformed("twin state: mass_properties.cog must be [x,y,z]".into())
+        })?;
+        if cog_v.len() != 3 {
+            return Err(TwinError::Malformed(
+                "twin state: mass_properties.cog must have 3 components".into(),
+            ));
+        }
+        let cog_comp = |i: usize| -> Result<f64, TwinError> {
+            cog_v[i].as_f64().ok_or_else(|| {
+                TwinError::Malformed(format!(
+                    "twin state: mass_properties.cog[{i}] must be a number"
+                ))
+            })
+        };
+        let cog = Vector3::new(cog_comp(0)?, cog_comp(1)?, cog_comp(2)?);
 
-        let member_count = vessel
-            .build_phases
-            .iter()
-            .map(|p| p.activities.len())
-            .sum();
+        let member_count = vessel.build_phases.iter().map(|p| p.activities.len()).sum();
         let mut twin = Self {
             vessel,
             weight_model: weight,
@@ -705,22 +727,18 @@ impl DigitalTwin {
                 in_progress,
                 blocked,
                 current_geometry: tpt_yard_core::Geometry3D::new(),
-                current_mass_properties: MassProperties {
-                    mass_kg: num(mp_v, "mass_kg"),
-                    cog,
-                },
+                current_mass_properties: MassProperties { mass_kg, cog },
             },
             support_condition: SupportCondition::Floating,
             quality_records: Vec::new(),
             sensor_data: Vec::new(),
         };
-        twin.structural_model.connected_fraction =
-            if twin.structural_model.member_count > 0 {
-                twin.assembly_state.completed_activities.len() as f64
-                    / twin.structural_model.member_count as f64
-            } else {
-                0.0
-            };
+        twin.structural_model.connected_fraction = if twin.structural_model.member_count > 0 {
+            twin.assembly_state.completed_activities.len() as f64
+                / twin.structural_model.member_count as f64
+        } else {
+            0.0
+        };
         twin.activity_graph()?;
         Ok(twin)
     }
@@ -816,12 +834,7 @@ impl DigitalTwin {
         let set = |name: &str, items: &HashSet<ActivityId>| {
             (
                 name.to_string(),
-                Value::Array(
-                    items
-                        .iter()
-                        .map(|a| Value::Number(a.0 as f64))
-                        .collect(),
-                ),
+                Value::Array(items.iter().map(|a| Value::Number(a.0 as f64)).collect()),
             )
         };
         let mp = &self.assembly_state.current_mass_properties;
@@ -960,16 +973,18 @@ mod tests {
                 )
                 .with_dependencies(&deps),
             );
-            weight.add_item(WeightItem {
-                id: ItemId(i as u64 + 1),
-                name: format!("Block {}", i + 1),
-                group: "hull".into(),
-                weight_kg: kg,
-                cog: Vector3::new(i as f64 * dx, 0.0, 6.0),
-                status: ItemStatus::Design,
-                margin_pct: 0.0,
-                installed_by: Some(id),
-            }).expect("valid weight item");
+            weight
+                .add_item(WeightItem {
+                    id: ItemId(i as u64 + 1),
+                    name: format!("Block {}", i + 1),
+                    group: "hull".into(),
+                    weight_kg: kg,
+                    cog: Vector3::new(i as f64 * dx, 0.0, 6.0),
+                    status: ItemStatus::Design,
+                    margin_pct: 0.0,
+                    installed_by: Some(id),
+                })
+                .expect("valid weight item");
             phases.push(phase);
         }
         let project = VesselProject::new(
@@ -1041,33 +1056,40 @@ mod tests {
     fn dependencies_are_enforced() {
         // Phase 1 holds two chained activities (1 <- 2); phase 2 holds 3.
         let mut phase1 = BuildPhase::new(PhaseId(1), "Erect", 3.0);
-        phase1
-            .activities
-            .push(AssemblyActivity::new(ActivityId(1), "Block 1", ActivityType::JoinBlock, 8.0));
+        phase1.activities.push(AssemblyActivity::new(
+            ActivityId(1),
+            "Block 1",
+            ActivityType::JoinBlock,
+            8.0,
+        ));
         phase1.activities.push(
             AssemblyActivity::new(ActivityId(2), "Block 2", ActivityType::JoinBlock, 8.0)
                 .with_dependencies(&[ActivityId(1)]),
         );
         let mut phase2 = BuildPhase::new(PhaseId(2), "Outfit", 3.0);
-        phase2
-            .activities
-            .push(AssemblyActivity::new(ActivityId(3), "Wire", ActivityType::JoinBlock, 8.0));
+        phase2.activities.push(AssemblyActivity::new(
+            ActivityId(3),
+            "Wire",
+            ActivityType::JoinBlock,
+            8.0,
+        ));
         let (project, _w) = line_project(1, 100.0, 2.0);
         let mut project = project;
         project.build_phases = vec![phase1, phase2];
         let mut weight = WeightModel::new(200.0, Vector3::ZERO);
         for (i, aid) in [(1u64, ActivityId(1)), (2, ActivityId(2))] {
-            weight.add_item(WeightItem {
-                id: ItemId(i),
-                name: format!("block {i}"),
-                group: "hull".into(),
-                weight_kg: 100.0,
-                cog: Vector3::new(i as f64 * 2.0, 0.0, 6.0),
-                status: ItemStatus::Design,
-                margin_pct: 0.0,
-                installed_by: Some(aid),
-            })
-            .expect("valid weight item");
+            weight
+                .add_item(WeightItem {
+                    id: ItemId(i),
+                    name: format!("block {i}"),
+                    group: "hull".into(),
+                    weight_kg: 100.0,
+                    cog: Vector3::new(i as f64 * 2.0, 0.0, 6.0),
+                    status: ItemStatus::Design,
+                    margin_pct: 0.0,
+                    installed_by: Some(aid),
+                })
+                .expect("valid weight item");
         }
         let mut twin = DigitalTwin::with_weight_model(project, weight, SupportCondition::Orbital);
         // Within the current phase, incomplete dependencies are rejected.
@@ -1083,10 +1105,7 @@ mod tests {
     fn future_phase_activity_is_rejected() {
         let mut twin = twin_on_blocks(3);
         let err = twin.advance_phase(&ActivityId(2)).unwrap_err();
-        assert!(matches!(
-            err,
-            TwinError::ActivityNotInCurrentPhase { .. }
-        ));
+        assert!(matches!(err, TwinError::ActivityNotInCurrentPhase { .. }));
         // Completed activities in the current phase remain valid, and the
         // phase pointer advances normally afterwards.
         twin.advance_phase(&ActivityId(1)).unwrap();
@@ -1128,7 +1147,10 @@ mod tests {
         let summary = twin.ingest_telemetry(&batch).unwrap();
         assert_eq!(summary.readings_ingested, 3);
         assert_eq!(summary.deviations_scanned, 3);
-        assert_eq!(summary.corrections_flagged, 2, "deviations 7.8 and -6.3 exceed 5 mm");
+        assert_eq!(
+            summary.corrections_flagged, 2,
+            "deviations 7.8 and -6.3 exceed 5 mm"
+        );
         assert_eq!(twin.sensor_data.len(), 3);
         let rejected: Vec<_> = twin
             .quality_records
@@ -1136,7 +1158,9 @@ mod tests {
             .filter(|r| !r.accepted)
             .collect();
         assert_eq!(rejected.len(), 2);
-        assert!(rejected.iter().all(|r| r.description.contains("heat-straightening")));
+        assert!(rejected
+            .iter()
+            .all(|r| r.description.contains("heat-straightening")));
 
         // Malformed batches are rejected, not partially applied.
         let before = twin.sensor_data.len();
@@ -1180,6 +1204,19 @@ mod tests {
             DigitalTwin::from_json_value(&tpt_yard_core::json::Value::parse("{}").unwrap()),
             Err(TwinError::Malformed(_))
         ));
+
+        // Regression (review 7C): malformed progress-set entries and
+        // mass properties must be rejected, not dropped or zeroed.
+        let json_text = json.to_string_compact();
+        let swap = |from: &str, to: &str| {
+            DigitalTwin::from_json_value(
+                &tpt_yard_core::json::Value::parse(&json_text.replace(from, to)).unwrap(),
+            )
+        };
+        assert!(swap("\"completed\":[", "\"completed\":[\"1\",").is_err());
+        assert!(swap("\"completed\":[", "\"completed\":[1.5,").is_err());
+        assert!(swap("\"mass_kg\":", "\"mass_x_kg\":").is_err());
+        assert!(swap("\"cog\":[", "\"cog\":[1,2,").is_err());
     }
 
     /// Regression (review 7A/A3): every rejected advance must leave the twin

@@ -330,7 +330,9 @@ mod tests {
             lead_time_days: 10.0,
             footprint_m2: 100.0,
         });
-        let deliveries = flow.schedule_deliveries(&acts(), 5.0, 1_000.0, None).unwrap();
+        let deliveries = flow
+            .schedule_deliveries(&acts(), 5.0, 1_000.0, None)
+            .unwrap();
         assert_eq!(deliveries.len(), 2);
         // Activity 1 starts day 0: order at -35 (30 lead + 5 buffer).
         let d1 = &deliveries[0];
@@ -354,10 +356,14 @@ mod tests {
             lead_time_days: 1.0,
             footprint_m2: 2_000.0,
         });
-        let err = flow.schedule_deliveries(&acts(), 5.0, 1_000.0, None).unwrap_err();
+        let err = flow
+            .schedule_deliveries(&acts(), 5.0, 1_000.0, None)
+            .unwrap_err();
         assert!(matches!(err, LogisticsError::StagingOverflow { .. }));
         // With a big enough staging area it passes.
-        assert!(flow.schedule_deliveries(&acts(), 5.0, 2_000.0, None).is_ok());
+        assert!(flow
+            .schedule_deliveries(&acts(), 5.0, 2_000.0, None)
+            .is_ok());
     }
 
     #[test]

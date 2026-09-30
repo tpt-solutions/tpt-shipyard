@@ -231,9 +231,7 @@ impl JointGeometry {
         let profile = match self.groove {
             GrooveType::Square => 0.0,
             // V and Bevel: a single sharp wedge of the full groove depth.
-            GrooveType::V | GrooveType::Bevel => {
-                groove_depth * groove_depth * half_angle.tan()
-            }
+            GrooveType::V | GrooveType::Bevel => groove_depth * groove_depth * half_angle.tan(),
             // DoubleV / K: two opposing faces share the depth — each side
             // is welded over half the thickness (the root gap is common).
             GrooveType::DoubleV | GrooveType::K => {

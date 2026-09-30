@@ -5,7 +5,7 @@
   "tube_diameter_m": 20.0,
   "target_gravity_g": 1.0,
   "material": "AA5083",
-  "total_rotating_mass_kg": 10_000_000.0,
+  "total_rotating_mass_kg": 10000000.0,
   "safety_factor": 2.0,
   "notes": "1 g at 100 m radius requires ~2.99 rpm — above the 2 rpm Coriolis comfort limit; operational mitigations (adaptation, higher gravity threshold) documented in RFC 0005."
 }

@@ -148,7 +148,11 @@ impl OutfittingPlan {
     /// `clearance_m`. Two L-shaped routes whose boxes overlap but whose
     /// runs never approach each other do **not** clash (the old one-box-
     /// per-route check produced exactly those false clashes).
-    pub fn collision_detection(&self, hull_geometry: &Geometry3D, clearance_m: f64) -> Vec<Collision> {
+    pub fn collision_detection(
+        &self,
+        hull_geometry: &Geometry3D,
+        clearance_m: f64,
+    ) -> Vec<Collision> {
         let hull_bb = hull_geometry.bounding_box();
         let mut collisions = Vec::new();
 
@@ -419,10 +423,7 @@ mod tests {
         // (between the legs), 2.5 m away from every point of A.
         p.routes.push(Route {
             system: 1,
-            waypoints: vec![
-                Vector3::new(5.0, -2.5, 2.0),
-                Vector3::new(15.0, -2.5, 2.0),
-            ],
+            waypoints: vec![Vector3::new(5.0, -2.5, 2.0), Vector3::new(15.0, -2.5, 2.0)],
             cross_section_m: 0.2,
         });
         let hull = Geometry3D::from_box(60.0, 12.0, 12.0);
@@ -436,10 +437,7 @@ mod tests {
             "runs 2.5 m apart must not clash"
         );
         // Route B cutting across A at the same point does clash.
-        p.routes[1].waypoints = vec![
-            Vector3::new(10.0, -2.0, 2.0),
-            Vector3::new(10.0, 2.0, 2.0),
-        ];
+        p.routes[1].waypoints = vec![Vector3::new(10.0, -2.0, 2.0), Vector3::new(10.0, 2.0, 2.0)];
         let clashes = p.collision_detection(&hull, 0.1);
         assert_eq!(clashes.len(), 1);
         assert_eq!(clashes[0].between, (0, 1));

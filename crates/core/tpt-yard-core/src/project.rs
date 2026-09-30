@@ -163,16 +163,21 @@ pub struct VesselProject {
 impl VesselProject {
     /// Creates a project with `current_phase` set to the first phase.
     ///
-    /// Returns `None` if `build_phases` is empty.
+    /// # Errors
+    ///
+    /// [`CoreError::Validation`] when `build_phases` is empty.
     pub fn new(
         id: ProjectId,
         name: impl Into<String>,
         vessel_type: VesselType,
         construction_method: ConstructionMethod,
         build_phases: Vec<BuildPhase>,
-    ) -> Option<Self> {
-        let current_phase = build_phases.first()?.id;
-        Some(Self {
+    ) -> Result<Self, CoreError> {
+        let current_phase = build_phases
+            .first()
+            .map(|p| p.id)
+            .ok_or_else(|| CoreError::Validation("project has no build phases".into()))?;
+        Ok(Self {
             id,
             name: name.into(),
             vessel_type,
@@ -219,16 +224,16 @@ impl VesselProject {
             if !phase_ids.insert(phase.id) {
                 return err(format!("duplicate phase id {:?}", phase.id));
             }
-            if !(phase.duration_days >= 0.0) || !phase.duration_days.is_finite() {
+            if !phase.duration_days.is_finite() || phase.duration_days < 0.0 {
                 return err(format!(
                     "phase {:?} has non-finite or negative duration {}",
                     phase.id, phase.duration_days
                 ));
             }
-            if !(phase.weight_state.design_kg >= 0.0)
-                || !phase.weight_state.design_kg.is_finite()
-                || !(phase.weight_state.installed_kg >= 0.0)
+            if !phase.weight_state.design_kg.is_finite()
+                || phase.weight_state.design_kg < 0.0
                 || !phase.weight_state.installed_kg.is_finite()
+                || phase.weight_state.installed_kg < 0.0
             {
                 return err(format!(
                     "phase {:?} has non-finite or negative weight state",
@@ -236,7 +241,10 @@ impl VesselProject {
                 ));
             }
             if phase.weight_state.installed_kg > phase.weight_state.design_kg + 1e-9 {
-                return err(format!("phase {:?} installed kg exceeds design kg", phase.id));
+                return err(format!(
+                    "phase {:?} installed kg exceeds design kg",
+                    phase.id
+                ));
             }
             if phase.activities.is_empty() {
                 return err(format!("phase {:?} has no activities", phase.id));
@@ -245,7 +253,7 @@ impl VesselProject {
                 if !activity_ids.insert(a.id) {
                     return err(format!("duplicate activity id {}", a.id));
                 }
-                if !(a.duration_hours > 0.0) || !a.duration_hours.is_finite() {
+                if !a.duration_hours.is_finite() || a.duration_hours <= 0.0 {
                     return err(format!(
                         "activity {} has non-finite or non-positive duration",
                         a.id
@@ -407,11 +415,10 @@ impl VesselProject {
             .to_string(),
         );
         Value::Object(vec![
-        (
-            "schema_version".to_string(),
-            Value::Number(Self::SCHEMA_VERSION as f64),
-        ),
-
+            (
+                "schema_version".to_string(),
+                Value::Number(Self::SCHEMA_VERSION as f64),
+            ),
             ("id".into(), Value::Number(self.id.0 as f64)),
             ("name".into(), Value::String(self.name.clone())),
             ("vessel_type".into(), vessel_type),
@@ -436,6 +443,18 @@ impl VesselProject {
         let field = |k: &str| v.get(k).ok_or_else(|| CoreError::missing_field(k));
         let err = |msg: &str| CoreError::type_error(msg.to_string());
 
+        if let Some(sv) = v.get("schema_version") {
+            let n = sv
+                .as_u64()
+                .ok_or_else(|| err("schema_version must be an integer"))?;
+            if n != Self::SCHEMA_VERSION {
+                return Err(err(&format!(
+                    "unsupported schema_version {n} (loader accepts {})",
+                    Self::SCHEMA_VERSION
+                )));
+            }
+        }
+
         let id = ProjectId(field("id")?.as_u64().ok_or_else(|| err("id must be u64"))?);
         let name = field("name")?
             .as_str()
@@ -445,48 +464,80 @@ impl VesselProject {
         let vessel_type_v = field("vessel_type")?;
         let kind_tag = vessel_type_v
             .get("kind")
-            .and_then(|k| k.as_str())
-            .unwrap_or("");
+            .ok_or_else(|| CoreError::missing_field("vessel_type.kind"))?
+            .as_str()
+            .ok_or_else(|| err("vessel_type.kind must be a string"))?;
         let vessel_type = match kind_tag {
             "hybrid" => VesselType::Hybrid,
             "sea" => {
                 let inner = vessel_type_v
                     .get("value")
                     .ok_or_else(|| err("sea vessel needs a value"))?;
-                let kind = inner.get("kind").and_then(|k| k.as_str()).unwrap_or("");
-                let num = |k: &str| inner.get(k).and_then(|n| n.as_f64());
+                let kind = inner
+                    .get("kind")
+                    .ok_or_else(|| CoreError::missing_field("vessel_type.value.kind"))?
+                    .as_str()
+                    .ok_or_else(|| err("vessel_type.value.kind must be a string"))?;
+                let num = |k: &str| -> Result<f64, CoreError> {
+                    inner
+                        .get(k)
+                        .ok_or_else(|| CoreError::missing_field(format!("vessel_type.value.{k}")))?
+                        .as_f64()
+                        .ok_or_else(|| err(&format!("vessel_type.value.{k} must be a number")))
+                };
+                let u32_num = |k: &str| -> Result<u32, CoreError> {
+                    let n = num(k)?;
+                    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 || n > u32::MAX as f64 {
+                        return Err(err(&format!(
+                            "vessel_type.value.{k} must be a non-negative integer"
+                        )));
+                    }
+                    Ok(n as u32)
+                };
+                let string = |k: &str| -> Result<String, CoreError> {
+                    inner
+                        .get(k)
+                        .ok_or_else(|| CoreError::missing_field(format!("vessel_type.value.{k}")))?
+                        .as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| err(&format!("vessel_type.value.{k} must be a string")))
+                };
                 VesselType::Sea(match kind {
                     "container_ship" => SeaVesselType::ContainerShip {
-                        teu_capacity: num("teu_capacity").unwrap_or(0.0) as u32,
+                        teu_capacity: u32_num("teu_capacity")?,
                     },
                     "tanker" => SeaVesselType::Tanker {
-                        deadweight_tonnes: num("deadweight_tonnes").unwrap_or(0.0),
+                        deadweight_tonnes: num("deadweight_tonnes")?,
                     },
                     "lng_carrier" => SeaVesselType::LngCarrier {
-                        cargo_volume_m3: num("cargo_volume_m3").unwrap_or(0.0),
+                        cargo_volume_m3: num("cargo_volume_m3")?,
                     },
                     "cruise_ship" => SeaVesselType::CruiseShip {
-                        passengers: num("passengers").unwrap_or(0.0) as u32,
+                        passengers: u32_num("passengers")?,
                     },
                     "naval_vessel" => SeaVesselType::NavalVessel {
-                        classification: inner
-                            .get("classification")
-                            .and_then(|s| s.as_str())
-                            .unwrap_or("")
-                            .to_string(),
+                        classification: string("classification")?,
                     },
                     "submarine" => SeaVesselType::Submarine {
-                        hull_type: match inner.get("hull_type").and_then(|s| s.as_str()) {
-                            Some("DoubleHull") => HullType::DoubleHull,
-                            _ => HullType::SingleHull,
+                        hull_type: match inner.get("hull_type") {
+                            None => {
+                                return Err(CoreError::missing_field(
+                                    "vessel_type.value.hull_type",
+                                ))
+                            }
+                            Some(s) => match s.as_str() {
+                                Some("SingleHull") => HullType::SingleHull,
+                                Some("DoubleHull") => HullType::DoubleHull,
+                                _ => {
+                                    return Err(err(
+                                        "vessel_type.value.hull_type must be 'SingleHull' or 'DoubleHull'",
+                                    ))
+                                }
+                            },
                         },
                     },
                     "offshore_vessel" => SeaVesselType::OffshoreVessel {
-                        vessel_class: inner
-                            .get("vessel_class")
-                            .and_then(|s| s.as_str())
-                            .unwrap_or("")
-                            .to_string(),
+                        vessel_class: string("vessel_class")?,
                     },
                     "fishing_vessel" => SeaVesselType::FishingVessel,
                     other => return Err(err(&format!("unknown sea vessel type '{other}'"))),
@@ -496,30 +547,61 @@ impl VesselProject {
                 let inner = vessel_type_v
                     .get("value")
                     .ok_or_else(|| err("space vessel needs a value"))?;
-                let kind = inner.get("kind").and_then(|k| k.as_str()).unwrap_or("");
-                let num = |k: &str| inner.get(k).and_then(|n| n.as_f64());
+                let kind = inner
+                    .get("kind")
+                    .ok_or_else(|| CoreError::missing_field("vessel_type.value.kind"))?
+                    .as_str()
+                    .ok_or_else(|| err("vessel_type.value.kind must be a string"))?;
+                let num = |k: &str| -> Result<f64, CoreError> {
+                    inner
+                        .get(k)
+                        .ok_or_else(|| CoreError::missing_field(format!("vessel_type.value.{k}")))?
+                        .as_f64()
+                        .ok_or_else(|| err(&format!("vessel_type.value.{k} must be a number")))
+                };
+                let u32_num = |k: &str| -> Result<u32, CoreError> {
+                    let n = num(k)?;
+                    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 || n > u32::MAX as f64 {
+                        return Err(err(&format!(
+                            "vessel_type.value.{k} must be a non-negative integer"
+                        )));
+                    }
+                    Ok(n as u32)
+                };
                 VesselType::Space(match kind {
                     "space_station" => SpaceVesselType::SpaceStation {
-                        modules: num("modules").unwrap_or(0.0) as u32,
+                        modules: u32_num("modules")?,
                     },
                     "orbital_habitat" => SpaceVesselType::OrbitalHabitat {
-                        rotation_rpm: num("rotation_rpm").unwrap_or(0.0),
-                        radius_m: num("radius_m").unwrap_or(0.0),
+                        rotation_rpm: num("rotation_rpm")?,
+                        radius_m: num("radius_m")?,
                     },
                     "solar_power_station" => SpaceVesselType::SolarPowerStation {
-                        array_area_m2: num("array_area_m2").unwrap_or(0.0),
+                        array_area_m2: num("array_area_m2")?,
                     },
                     "deep_space_vessel" => SpaceVesselType::DeepSpaceVessel {
-                        propulsion: match inner.get("propulsion").and_then(|s| s.as_str()) {
-                            Some("NuclearThermal") => PropulsionType::NuclearThermal,
-                            Some("NuclearElectric") => PropulsionType::NuclearElectric,
-                            Some("SolarElectric") => PropulsionType::SolarElectric,
-                            Some("SolarSail") => PropulsionType::SolarSail,
-                            Some("Solid") => PropulsionType::Solid,
-                            Some("ChemicalMonoPropellant") => {
-                                PropulsionType::ChemicalMonoPropellant
+                        propulsion: match inner.get("propulsion") {
+                            None => {
+                                return Err(CoreError::missing_field(
+                                    "vessel_type.value.propulsion",
+                                ))
                             }
-                            _ => PropulsionType::ChemicalBiPropellant,
+                            Some(s) => match s.as_str() {
+                                Some("ChemicalBiPropellant") => {
+                                    PropulsionType::ChemicalBiPropellant
+                                }
+                                Some("ChemicalMonoPropellant") => {
+                                    PropulsionType::ChemicalMonoPropellant
+                                }
+                                Some("Solid") => PropulsionType::Solid,
+                                Some("NuclearThermal") => PropulsionType::NuclearThermal,
+                                Some("NuclearElectric") => PropulsionType::NuclearElectric,
+                                Some("SolarElectric") => PropulsionType::SolarElectric,
+                                Some("SolarSail") => PropulsionType::SolarSail,
+                                _ => return Err(err(
+                                    "vessel_type.value.propulsion is not a known PropulsionType",
+                                )),
+                            },
                         },
                     },
                     "lunar_vehicle" => SpaceVesselType::LunarVehicle,
@@ -532,7 +614,9 @@ impl VesselProject {
             other => return Err(err(&format!("unknown vessel kind '{other}'"))),
         };
 
-        let method_tag = field("construction_method")?.as_str().unwrap_or("");
+        let method_tag = field("construction_method")?
+            .as_str()
+            .ok_or_else(|| err("construction_method must be a string"))?;
         let construction_method = match method_tag {
             "sea_block_construction" => ConstructionMethod::SeaBlockConstruction,
             "sea_slipway_launch" => ConstructionMethod::SeaSlipwayLaunch,
@@ -602,14 +686,12 @@ mod tests {
     /// Helper: a minimal valid project for validation tests.
     fn valid_project() -> VesselProject {
         let mut phase = BuildPhase::new(PhaseId(1), "P1", 3.0);
-        phase
-            .activities
-            .push(crate::AssemblyActivity::new(
-                ActivityId(1),
-                "a",
-                crate::ActivityType::CutSteel,
-                4.0,
-            ));
+        phase.activities.push(crate::AssemblyActivity::new(
+            ActivityId(1),
+            "a",
+            crate::ActivityType::CutSteel,
+            4.0,
+        ));
         phase.weight_state = super::super::phase::WeightState {
             design_kg: 100.0,
             installed_kg: 0.0,
@@ -634,10 +716,7 @@ mod tests {
         // Dangling dependency.
         let mut p = valid_project();
         p.build_phases[0].activities[0].dependencies = vec![ActivityId(99)];
-        assert!(matches!(
-            p.validate(),
-            Err(CoreError::Validation(_))
-        ));
+        assert!(matches!(p.validate(), Err(CoreError::Validation(_))));
 
         // current_phase not a phase of the project.
         let mut p = valid_project();
@@ -679,6 +758,252 @@ mod tests {
         p.build_phases[0].activities[0].dependencies = vec![ActivityId(99)];
         let json = p.to_json().to_string_compact();
         assert!(VesselProject::from_json_str(&json).is_err());
+    }
+
+    // -------------------------------------------------- strict JSON loading
+
+    /// A minimal *valid* project JSON tree that individual tests mutate to
+    /// prove the loader rejects malformed input instead of defaulting.
+    fn strict_base() -> Value {
+        let activity = |extra: Vec<(String, Value)>| {
+            let mut o = vec![
+                ("id".to_string(), Value::Number(1.0)),
+                ("name".to_string(), Value::String("a".into())),
+                (
+                    "activity_type".to_string(),
+                    Value::Object(vec![(
+                        "kind".to_string(),
+                        Value::String("cut_steel".into()),
+                    )]),
+                ),
+                ("dependencies".to_string(), Value::Array(vec![])),
+                ("duration_hours".to_string(), Value::Number(4.0)),
+                ("resources".to_string(), Value::Array(vec![])),
+            ];
+            o.extend(extra);
+            Value::Object(o)
+        };
+        let phase = Value::Object(vec![
+            ("id".to_string(), Value::Number(1.0)),
+            ("name".to_string(), Value::String("P1".into())),
+            (
+                "activities".to_string(),
+                Value::Array(vec![activity(vec![])]),
+            ),
+            (
+                "structural_state".to_string(),
+                Value::Object(vec![(
+                    "kind".to_string(),
+                    Value::String("not_started".into()),
+                )]),
+            ),
+            (
+                "weight_state".to_string(),
+                Value::Object(vec![
+                    ("design_kg".to_string(), Value::Number(100.0)),
+                    ("installed_kg".to_string(), Value::Number(0.0)),
+                ]),
+            ),
+            ("duration_days".to_string(), Value::Number(3.0)),
+        ]);
+        Value::Object(vec![
+            ("schema_version".to_string(), Value::Number(1.0)),
+            ("id".to_string(), Value::Number(1.0)),
+            ("name".to_string(), Value::String("strict".into())),
+            (
+                "vessel_type".to_string(),
+                Value::Object(vec![
+                    ("kind".to_string(), Value::String("sea".into())),
+                    (
+                        "value".to_string(),
+                        Value::Object(vec![
+                            ("kind".to_string(), Value::String("container_ship".into())),
+                            ("teu_capacity".to_string(), Value::Number(100.0)),
+                        ]),
+                    ),
+                ]),
+            ),
+            (
+                "construction_method".to_string(),
+                Value::String("sea_drydock".into()),
+            ),
+            ("build_phases".to_string(), Value::Array(vec![phase])),
+            ("current_phase".to_string(), Value::Number(1.0)),
+        ])
+    }
+
+    /// Mutable borrow of `key` inside a JSON object (test helper).
+    fn slot<'a>(v: &'a mut Value, key: &str) -> &'a mut Value {
+        match v {
+            Value::Object(pairs) => {
+                &mut pairs
+                    .iter_mut()
+                    .find(|(k, _)| k == key)
+                    .unwrap_or_else(|| panic!("no key {key}"))
+                    .1
+            }
+            _ => panic!("not an object"),
+        }
+    }
+
+    fn remove_key(v: &mut Value, key: &str) {
+        if let Value::Object(pairs) = v {
+            pairs.retain(|(k, _)| k != key);
+        }
+    }
+
+    /// Mutable borrow of element `i` inside a JSON array (test helper).
+    fn elem(v: &mut Value, i: usize) -> &mut Value {
+        match v {
+            Value::Array(items) => &mut items[i],
+            _ => panic!("not an array"),
+        }
+    }
+
+    fn strict_load(v: &Value) -> Result<VesselProject, CoreError> {
+        VesselProject::from_json_value(v)
+    }
+
+    #[test]
+    fn strict_json_rejects_missing_and_wrong_typed_fields() {
+        // Baseline must load.
+        assert!(strict_load(&strict_base()).is_ok());
+
+        // Missing vessel payload field: no silent 0.
+        let mut j = strict_base();
+        remove_key(slot(slot(&mut j, "vessel_type"), "value"), "teu_capacity");
+        assert!(matches!(strict_load(&j), Err(CoreError::MissingField(_))));
+
+        // Wrong type (string where number belongs): no silent 0 cast.
+        let mut j = strict_base();
+        *slot(slot(slot(&mut j, "vessel_type"), "value"), "teu_capacity") =
+            Value::String("many".into());
+        assert!(matches!(strict_load(&j), Err(CoreError::TypeError(_))));
+
+        // Fractional/negative counts are not u32s.
+        let mut j = strict_base();
+        *slot(slot(slot(&mut j, "vessel_type"), "value"), "teu_capacity") = Value::Number(99.5);
+        assert!(matches!(strict_load(&j), Err(CoreError::TypeError(_))));
+
+        // Missing vessel kind tag: not an empty-string unknown.
+        let mut j = strict_base();
+        remove_key(slot(&mut j, "vessel_type"), "kind");
+        assert!(matches!(strict_load(&j), Err(CoreError::MissingField(_))));
+
+        // construction_method of the wrong JSON type: a type error, not
+        // "unknown construction method ''".
+        let mut j = strict_base();
+        *slot(&mut j, "construction_method") = Value::Number(3.0);
+        assert!(matches!(strict_load(&j), Err(CoreError::TypeError(_))));
+
+        // weight_state with a missing component: not silently zero.
+        let mut j = strict_base();
+        remove_key(
+            slot(elem(slot(&mut j, "build_phases"), 0), "weight_state"),
+            "design_kg",
+        );
+        assert!(matches!(strict_load(&j), Err(CoreError::MissingField(_))));
+
+        // weight_state component of the wrong type: not silently zero.
+        let mut j = strict_base();
+        *slot(
+            slot(elem(slot(&mut j, "build_phases"), 0), "weight_state"),
+            "installed_kg",
+        ) = Value::String("heavy".into());
+        assert!(matches!(strict_load(&j), Err(CoreError::TypeError(_))));
+    }
+
+    #[test]
+    fn strict_json_rejects_unknown_enums_and_bad_schema_version() {
+        // Unknown submarine hull type must not become SingleHull.
+        let mut j = strict_base();
+        {
+            let value = slot(slot(&mut j, "vessel_type"), "value");
+            *value = Value::Object(vec![
+                ("kind".to_string(), Value::String("submarine".into())),
+                ("hull_type".to_string(), Value::String("TrebleHull".into())),
+            ]);
+        }
+        assert!(matches!(strict_load(&j), Err(CoreError::TypeError(_))));
+
+        // Missing hull_type must not become SingleHull either.
+        let mut j = strict_base();
+        {
+            let value = slot(slot(&mut j, "vessel_type"), "value");
+            *value = Value::Object(vec![(
+                "kind".to_string(),
+                Value::String("submarine".into()),
+            )]);
+        }
+        assert!(matches!(strict_load(&j), Err(CoreError::MissingField(_))));
+
+        // Unknown propulsion must not silently become ChemicalBiPropellant.
+        let mut j = strict_base();
+        {
+            let value = slot(slot(&mut j, "vessel_type"), "value");
+            *value = Value::Object(vec![
+                (
+                    "kind".to_string(),
+                    Value::String("deep_space_vessel".into()),
+                ),
+                ("propulsion".to_string(), Value::String("Warp".into())),
+            ]);
+        }
+        assert!(matches!(strict_load(&j), Err(CoreError::TypeError(_))));
+
+        // A future schema version must be refused, not loaded as-is.
+        let mut j = strict_base();
+        *slot(&mut j, "schema_version") = Value::Number(2.0);
+        assert!(matches!(strict_load(&j), Err(CoreError::TypeError(_))));
+    }
+
+    #[test]
+    fn strict_json_rejects_malformed_dependency_and_resource_entries() {
+        fn set_activity_field(j: &mut Value, key: &str, new: Value) {
+            let acts = elem(slot(j, "build_phases"), 0);
+            let acts = slot(acts, "activities");
+            if let Value::Object(pairs) = elem(acts, 0) {
+                for (k, v) in pairs.iter_mut() {
+                    if k == key {
+                        *v = new.clone();
+                    }
+                }
+            }
+        }
+
+        // A non-integer dependency must be an error, not dropped.
+        let mut j = strict_base();
+        set_activity_field(
+            &mut j,
+            "dependencies",
+            Value::Array(vec![Value::String("1".into())]),
+        );
+        assert!(matches!(strict_load(&j), Err(CoreError::TypeError(_))));
+
+        // A resource with an unknown kind must be an error, not dropped.
+        let mut j = strict_base();
+        set_activity_field(
+            &mut j,
+            "resources",
+            Value::Array(vec![Value::Object(vec![
+                ("name".to_string(), Value::String("Goliath".into())),
+                ("kind".to_string(), Value::String("Skyhook".into())),
+                ("capacity".to_string(), Value::Number(800.0)),
+            ])]),
+        );
+        assert!(matches!(strict_load(&j), Err(CoreError::TypeError(_))));
+
+        // A resource with a missing capacity must be an error, not defaulted.
+        let mut j = strict_base();
+        set_activity_field(
+            &mut j,
+            "resources",
+            Value::Array(vec![Value::Object(vec![
+                ("name".to_string(), Value::String("Goliath".into())),
+                ("kind".to_string(), Value::String("Crane".into())),
+            ])]),
+        );
+        assert!(matches!(strict_load(&j), Err(CoreError::TypeError(_))));
     }
 
     fn sample() -> VesselProject {

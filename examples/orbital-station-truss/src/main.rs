@@ -13,15 +13,13 @@ fn main() {
     // 1. The truss manifest (review 7F: examples read their test data and
     //    accept a path argument). Defaults to the repo's ISS reference
     //    manifest; pass another manifest path to plan a different truss.
-    let manifest_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| {
-            concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../test-data/orbital-structures/iss-truss-manifest.json"
-            )
-            .to_string()
-        });
+    let manifest_path = std::env::args().nth(1).unwrap_or_else(|| {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test-data/orbital-structures/iss-truss-manifest.json"
+        )
+        .to_string()
+    });
     let text = std::fs::read_to_string(&manifest_path)
         .unwrap_or_else(|e| panic!("reading {manifest_path}: {e}"));
     let manifest = Value::parse(&text).expect("manifest parses");
@@ -34,10 +32,17 @@ fn main() {
     let pitch = num(&manifest, "bay_pitch_m");
     let bay = manifest.get("bay").expect("bay");
     let (bay_mass, dims) = {
-        let d = bay.get("dimensions_m").and_then(|d| d.as_array()).expect("dims");
+        let d = bay
+            .get("dimensions_m")
+            .and_then(|d| d.as_array())
+            .expect("dims");
         (
             num(bay, "mass_kg"),
-            Vector3::new(d[0].as_f64().unwrap(), d[1].as_f64().unwrap(), d[2].as_f64().unwrap()),
+            Vector3::new(
+                d[0].as_f64().unwrap(),
+                d[1].as_f64().unwrap(),
+                d[2].as_f64().unwrap(),
+            ),
         )
     };
     let mut orbit = OrbitalParameters::default();
@@ -74,7 +79,10 @@ fn main() {
     let force_n = num(robot_spec, "gripper_force_n");
     let mut robot = RoboticArm::new(
         tpt_yard_core::RobotId(1),
-        links.iter().map(|_| Joint::revolute(-3.0, 3.0, 0.5)).collect(),
+        links
+            .iter()
+            .map(|_| Joint::revolute(-3.0, 3.0, 0.5))
+            .collect(),
         links.clone(),
         EndEffector::Gripper { force_n },
     );

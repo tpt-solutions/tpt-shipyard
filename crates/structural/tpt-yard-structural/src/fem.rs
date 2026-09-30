@@ -452,7 +452,8 @@ pub fn check_member_buckling(
     let slenderness = l_eff / section.radius_of_gyration_m.max(1e-6);
     let e_mpa = material.youngs_modulus_gpa * 1000.0;
     let sigma_y = material.yield_mpa;
-    let euler_mpa = std::f64::consts::PI * std::f64::consts::PI * e_mpa / (slenderness * slenderness);
+    let euler_mpa =
+        std::f64::consts::PI * std::f64::consts::PI * e_mpa / (slenderness * slenderness);
     // Transition slenderness where Euler stress = yield: lambda_p =
     // pi·sqrt(E/sigma_y).
     let lambda_p = std::f64::consts::PI * (e_mpa / sigma_y).sqrt();
@@ -471,7 +472,9 @@ pub fn check_member_buckling(
         ));
     }
     if slenderness > 200.0 {
-        notes.push(format!("slenderness {slenderness:.0} exceeds the 200 practice limit"));
+        notes.push(format!(
+            "slenderness {slenderness:.0} exceeds the 200 practice limit"
+        ));
     }
     BucklingCheck {
         slenderness_ratio: slenderness,
@@ -638,12 +641,17 @@ mod tests {
             radius_of_gyration_m: r_m,
         };
         let length = 4.0; // m: lambda = 4000 / (20/sqrt(12)) = 692 — slender
-        let check = check_member_buckling(&section, &material, length, EndFixity::PinnedPinned, 1.0);
-        assert!(check.slenderness_ratio > lambda_p_for(&material), "must be slender: {}", check.slenderness_ratio);
+        let check =
+            check_member_buckling(&section, &material, length, EndFixity::PinnedPinned, 1.0);
+        assert!(
+            check.slenderness_ratio > lambda_p_for(&material),
+            "must be slender: {}",
+            check.slenderness_ratio
+        );
         // P_cr = pi^2 E I / L^2; stress form = P_cr / A = pi^2 E r^2 / L^2.
-        let expected_mpa = std::f64::consts::PI.powi(2) * material.youngs_modulus_gpa * 1000.0
-            * r_m * r_m
-            / (length * length);
+        let expected_mpa =
+            std::f64::consts::PI.powi(2) * material.youngs_modulus_gpa * 1000.0 * r_m * r_m
+                / (length * length);
         assert!(
             (check.euler_critical_stress_mpa - expected_mpa).abs() < 1e-6,
             "{} vs {}",
@@ -652,7 +660,8 @@ mod tests {
         );
         // Utilization against the Euler capacity for a known demand.
         let p_cr_n = expected_mpa * 1.0e6 * area_m2; // MPa -> Pa, x m^2 -> N
-        let at_capacity = check_member_buckling(&section, &material, length, EndFixity::PinnedPinned, p_cr_n);
+        let at_capacity =
+            check_member_buckling(&section, &material, length, EndFixity::PinnedPinned, p_cr_n);
         assert!((at_capacity.utilization - 1.0).abs() < 1e-9);
         assert!(!at_capacity.passed || at_capacity.utilization <= 1.0);
         // Fixed-fixed quadruples the capacity (K = 0.5 -> lambda /2 -> 4x stress).
@@ -676,7 +685,11 @@ mod tests {
         };
         let check = check_member_buckling(&section, &material, 2.0, EndFixity::PinnedPinned, 100.0);
         assert!(check.slenderness_ratio < lambda_p_for(&material));
-        assert!((check.governing_capacity_mpa - material.yield_mpa).abs() < 1e-9, "{:?}", check.notes);
+        assert!(
+            (check.governing_capacity_mpa - material.yield_mpa).abs() < 1e-9,
+            "{:?}",
+            check.notes
+        );
         assert!(check.passed);
         // Spindly member: lambda > 200, flagged even at no load.
         let spindly = MemberSection {

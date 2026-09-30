@@ -269,12 +269,14 @@ impl ShipyardScheduler {
         // Placed activities for the resource-conflict scan.
         let mut placed: Vec<(ActivityId, f64, f64)> = Vec::new(); // (id, start, end)
         let mut order: Vec<ActivityId> = Vec::with_capacity(topo.len());
-        let mut remaining: std::collections::BTreeSet<ActivityId> =
-            topo.iter().copied().collect();
+        let mut remaining: std::collections::BTreeSet<ActivityId> = topo.iter().copied().collect();
         while !remaining.is_empty() {
             let next = if duration_mode {
                 // First in topological order.
-                *topo.iter().find(|id| remaining.contains(id)).expect("non-empty")
+                *topo
+                    .iter()
+                    .find(|id| remaining.contains(id))
+                    .expect("non-empty")
             } else {
                 // Levelling priority among eligible activities.
                 *remaining
@@ -286,9 +288,7 @@ impl ShipyardScheduler {
                             .iter()
                             .all(|d| start.contains_key(d))
                     })
-                    .min_by(|&a, &b| {
-                        cpm[&a].float_h.total_cmp(&cpm[&b].float_h).then(a.cmp(&b))
-                    })
+                    .min_by(|x, y| cpm[*x].float_h.total_cmp(&cpm[*y].float_h).then(x.cmp(y)))
                     .expect("acyclic network always has an eligible activity")
             };
             remaining.remove(&next);
@@ -479,11 +479,8 @@ impl ShipyardScheduler {
         let mut rng = XorShift(if seed == 0 { 0x853c49e6748fea9b } else { seed });
 
         let mut makespans = Vec::with_capacity(n as usize);
-        let mut critical_counts: BTreeMap<ActivityId, u32> = self
-            .activities
-            .iter()
-            .map(|a| (a.id, 0))
-            .collect();
+        let mut critical_counts: BTreeMap<ActivityId, u32> =
+            self.activities.iter().map(|a| (a.id, 0)).collect();
 
         for _ in 0..n {
             let sampled: Vec<AssemblyActivity> = self
@@ -491,8 +488,11 @@ impl ShipyardScheduler {
                 .iter()
                 .map(|a| {
                     let mut copy = a.clone();
-                    copy.duration_hours =
-                        rng.triangular(a.duration_hours * (1.0 - u), a.duration_hours, a.duration_hours * (1.0 + u));
+                    copy.duration_hours = rng.triangular(
+                        a.duration_hours * (1.0 - u),
+                        a.duration_hours,
+                        a.duration_hours * (1.0 + u),
+                    );
                     copy
                 })
                 .collect();
@@ -652,7 +652,11 @@ mod tests {
         assert!(risky.p50_makespan_h > 0.0);
         // P90 must stay inside the triangular envelope: 34 * 1.3 at the
         // very worst (all-critical chain at max simultaneously).
-        assert!(risky.p90_makespan_h <= 34.0 * 1.3 + 1e-6, "{}", risky.p90_makespan_h);
+        assert!(
+            risky.p90_makespan_h <= 34.0 * 1.3 + 1e-6,
+            "{}",
+            risky.p90_makespan_h
+        );
         // Frequencies: between 0 and 1, and the truly-critical B dominates.
         for (id, f) in &risky.criticality_frequency {
             assert!((0.0..=1.0).contains(f), "{id:?} -> {f}");
@@ -674,7 +678,10 @@ mod tests {
         // A different seed moves the percentiles (with overwhelming
         // probability for 2000 samples).
         let other = s.monte_carlo_risk(0.3, 2_000, 7).unwrap();
-        assert!(other.p50_makespan_h != risky.p50_makespan_h || other.mean_makespan_h != risky.mean_makespan_h);
+        assert!(
+            other.p50_makespan_h != risky.p50_makespan_h
+                || other.mean_makespan_h != risky.mean_makespan_h
+        );
     }
 
     #[test]
@@ -761,7 +768,11 @@ mod tests {
         order: &[ActivityId],
         objective: ScheduleObjective,
     ) {
-        assert_eq!(order.len(), acts.len(), "{objective:?}: every activity placed");
+        assert_eq!(
+            order.len(),
+            acts.len(),
+            "{objective:?}: every activity placed"
+        );
         let mut seen = std::collections::BTreeSet::new();
         for id in order {
             let act = acts.iter().find(|a| a.id == *id).unwrap();

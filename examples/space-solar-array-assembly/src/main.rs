@@ -3,7 +3,7 @@
 //! plan, and the robotic assembly of the printed bays into the deployed
 //! wing.
 
-use tpt_yard_core::{ComponentId, Material, RobotId, Vector3};
+use tpt_yard_core::{json::Value, ComponentId, Material, RobotId, Vector3};
 use tpt_yard_orbital_assembly::{
     AssemblyState, ComponentSpec, OrbitalAssembly, OrbitalParameters, SpaceStructure,
 };
@@ -12,12 +12,43 @@ use tpt_yard_space_manufacturing::{
     AdditiveTechnique, Feedstock, InSpaceManufacturing, ManufacturingProcess,
 };
 
-const PANELS: u64 = 8;
-const PANEL_MASS_KG: f64 = 85.0;
-/// Substrate area of one panel: 12 m x 3 m x 4 mm aluminium.
-const PANEL_VOLUME_M3: f64 = 12.0 * 3.0 * 0.004;
-
 fn main() {
+    // The array manifest (review 7F: examples read their test data and
+    // accept a path argument). Defaults to the repo's reference array;
+    // pass another manifest path to plan a different array.
+    let manifest_path = std::env::args().nth(1).unwrap_or_else(|| {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test-data/orbital-structures/solar-array-manifest.json"
+        )
+        .to_string()
+    });
+    let text = std::fs::read_to_string(&manifest_path)
+        .unwrap_or_else(|e| panic!("reading {manifest_path}: {e}"));
+    let manifest = Value::parse(&text).expect("manifest parses");
+    let num = |o: &Value, k: &str| o.get(k).and_then(|n| n.as_f64()).expect(k);
+    let panel_v = manifest.get("panel").expect("panel");
+    let panels = manifest
+        .get("panels")
+        .and_then(|n| n.as_u64())
+        .expect("panels");
+    let panel_mass_kg = num(panel_v, "mass_kg");
+    let panel_length_m = num(panel_v, "length_m");
+    let panel_width_m = num(panel_v, "width_m");
+    let substrate_m = num(panel_v, "substrate_thickness_m");
+    let print_rate = num(panel_v, "print_rate_m2_hr");
+    // Print volume of one panel substrate: length x width x thickness.
+    let panel_volume_m3 = panel_length_m * panel_width_m * substrate_m;
+    let robot_v = manifest.get("robot").expect("robot");
+    let links: Vec<f64> = robot_v
+        .get("links_m")
+        .and_then(|l| l.as_array())
+        .expect("links")
+        .iter()
+        .map(|n| n.as_f64().expect("link length"))
+        .collect();
+    let gripper_force_n = num(robot_v, "gripper_force_n");
+
     // 1. The printer: wire-arc additive for the panel substrates.
     let printer = InSpaceManufacturing::new(
         ManufacturingProcess::AdditiveManufacturing {
@@ -28,16 +59,18 @@ fn main() {
         Material::aa5083(),
     );
 
-    println!("== Solar array: {PANELS} panels, wire-arc additive substrates ==");
+    println!(
+        "== Solar array: {panels} panels, wire-arc additive substrates (from {manifest_path}) =="
+    );
     let print_hours = printer
-        .print_time_estimate(PANEL_VOLUME_M3, 6.0)
+        .print_time_estimate(panel_volume_m3, print_rate)
         .expect("valid inputs");
-    let energy = printer.energy_kwh(PANEL_VOLUME_M3).unwrap();
-    let thermal = printer.thermal_control_during_print(6.0).unwrap();
+    let energy = printer.energy_kwh(panel_volume_m3).unwrap();
+    let thermal = printer.thermal_control_during_print(print_rate).unwrap();
     let quality = printer.quality_verification();
     println!(
         "  per panel: {:.1} kg feedstock, {:.1} h print, {:.0} kWh",
-        printer.feedstock_mass_kg(PANEL_VOLUME_M3),
+        printer.feedstock_mass_kg(panel_volume_m3),
         print_hours,
         energy
     );
@@ -50,9 +83,9 @@ fn main() {
         quality.layer_imaging_pct,
         quality.in_situ_ndt.join(" + ")
     );
-    let total_print_hours = print_hours * PANELS as f64;
+    let total_print_hours = print_hours * panels as f64;
     println!(
-        "  batch: {PANELS} panels = {:.0} h ({:.0} days of printing)",
+        "  batch: {panels} panels = {:.0} h ({:.0} days of printing)",
         total_print_hours,
         total_print_hours / 24.0
     );
@@ -60,28 +93,34 @@ fn main() {
     // 2. Robotic assembly of the printed panels into the deployed wing.
     let mut assembly = OrbitalAssembly::new(
         SpaceStructure::SolarArray {
-            panel_count: PANELS as u32,
-            area_m2: 12.0 * 3.0 * PANELS as f64,
+            panel_count: panels as u32,
+            area_m2: panel_length_m * panel_width_m * panels as f64,
         },
         OrbitalParameters::default(),
     );
-    for i in 1..=PANELS {
+    for i in 1..=panels {
         assembly.add_component(ComponentSpec {
             id: ComponentId(i),
             name: format!("panel {i}"),
-            mass_kg: PANEL_MASS_KG,
-            dimensions: Vector3::new(12.0, 3.0, 0.05),
-            target_position: Vector3::new(6.0 + 12.0 * (i - 1) as f64, 0.0, 0.0),
+            mass_kg: panel_mass_kg,
+            dimensions: Vector3::new(panel_length_m, panel_width_m, 0.05),
+            target_position: Vector3::new(
+                panel_length_m / 2.0 + panel_length_m * (i - 1) as f64,
+                0.0,
+                0.0,
+            ),
         });
     }
     let mut robot = RoboticArm::new(
         RobotId(1),
-        vec![
-            Joint::revolute(-3.0, 3.0, 0.5),
-            Joint::revolute(-3.0, 3.0, 0.5),
-        ],
-        vec![4.0, 4.0],
-        EndEffector::Gripper { force_n: 400.0 },
+        links
+            .iter()
+            .map(|_| Joint::revolute(-3.0, 3.0, 0.5))
+            .collect(),
+        links.clone(),
+        EndEffector::Gripper {
+            force_n: gripper_force_n,
+        },
     );
     robot.base = Pose::origin();
     assembly.add_robot(robot);
@@ -112,7 +151,7 @@ fn main() {
     );
     println!(
         "  deployed wing: {} m2, root stress {:.3} MPa (util {:.1}%)",
-        12.0 * 3.0 * PANELS as f64,
+        panel_length_m * panel_width_m * panels as f64,
         check.root_stress_mpa,
         check.utilization * 100.0
     );
@@ -120,13 +159,13 @@ fn main() {
     // 3. Milestone summary.
     let total_days = (total_print_hours + total_assembly_hours) / 24.0;
     println!(
-        "\nMilestone: in-space additive manufacturing of a solar array planned end-to-end — \
-{PANELS} panels, {:.0} kg feedstock, {:.0} kWh, total {:.1} days",
-        printer.feedstock_mass_kg(PANEL_VOLUME_M3) * PANELS as f64,
-        energy * PANELS as f64,
+        "\nMilestone: in-space additive manufacturing of a solar array planned end-to-end: \
+{panels} panels, {:.0} kg feedstock, {:.0} kWh, total {:.1} days",
+        printer.feedstock_mass_kg(panel_volume_m3) * panels as f64,
+        energy * panels as f64,
         total_days
     );
     assert!(all_ok);
     assert!(check.passed);
-    assert_eq!(state.installed_components.len(), PANELS as usize);
+    assert_eq!(state.installed_components.len(), panels as usize);
 }

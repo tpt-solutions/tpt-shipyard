@@ -1,4 +1,5 @@
 {
+  "schema_version": 1,
   "id": 1,
   "name": "Space solar array",
   "vessel_type": {

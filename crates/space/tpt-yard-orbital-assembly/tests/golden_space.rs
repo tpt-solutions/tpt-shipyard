@@ -165,6 +165,23 @@ fn golden_iss_truss_integrity_screening() {
             .and_then(|b| b.as_bool())
             .unwrap()
     );
+
+    // Independent physics reference (review 7D): the truss is a tip-loaded
+    // cantilever; the root stress is the force couple over the two flanges,
+    // sigma = F * L / (A * h), with L the tip extent = n * pitch
+    // (last bay centre at (n - 1/2) pitch plus its half-bay extent).
+    // 20 000 N * 75 m / (0.01 m2 * 3 m) = 50 MPa.
+    let tip_extent = n_bays as f64 * pitch;
+    let sigma_hand = num(p, "docking_impulse_n") * tip_extent
+        / (num(p, "chord_area_m2") * num(p, "bay_height_m"))
+        / 1e6;
+    assert!(
+        (check.root_stress_mpa - sigma_hand).abs() <= sigma_hand * 1e-9,
+        "root stress {} vs hand cantilever couple {sigma_hand} MPa",
+        check.root_stress_mpa
+    );
+    let util_hand = sigma_hand / num(p, "allowable_stress_mpa");
+    assert!((check.utilization - util_hand).abs() <= 1e-12);
 }
 
 #[test]

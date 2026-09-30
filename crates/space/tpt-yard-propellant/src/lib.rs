@@ -244,13 +244,14 @@ impl LoadingPlanner {
         tank: &TankSpec,
         fill_rate_kg_s: f64,
     ) -> Result<PropellantLoadingPlan, LoadingError> {
-        if !(fill_rate_kg_s > 0.0) {
+        if fill_rate_kg_s <= 0.0 || !fill_rate_kg_s.is_finite() {
             return Err(LoadingError::InvalidFillRate);
         }
         if tank.volume_m3 <= 0.0
             || tank.ullage_frac < 0.0
             || tank.ullage_frac >= 1.0
-            || !(tank.heat_leak_w >= 0.0)
+            || !tank.heat_leak_w.is_finite()
+            || tank.heat_leak_w < 0.0
         {
             return Err(LoadingError::InvalidTank);
         }
@@ -322,8 +323,7 @@ impl LoadingPlanner {
             boil_off_pct_day: pct_day,
             time_to_vent_days,
             zero_boil_off_achieved: pct_day < 0.1,
-            cooler_power_w: self
-                .cooler_input_power_w(tank.heat_leak_w, propellant.boiling_point_k),
+            cooler_power_w: self.cooler_input_power_w(tank.heat_leak_w, propellant.boiling_point_k),
         }
     }
 
@@ -335,7 +335,11 @@ impl LoadingPlanner {
     /// (The previous version multiplied the leak by a flat 100:1 — inverted
     /// and identical for 20 K hydrogen and 90 K oxygen.)
     pub fn cooler_input_power_w(&self, heat_leak_w: f64, t_cold_k: f64) -> f64 {
-        if !(heat_leak_w > 0.0) || !(t_cold_k > 0.0) {
+        if !heat_leak_w.is_finite()
+            || heat_leak_w <= 0.0
+            || !t_cold_k.is_finite()
+            || t_cold_k <= 0.0
+        {
             return 0.0;
         }
         let carnot_ratio = 300.0 / t_cold_k - 1.0;
@@ -474,8 +478,7 @@ mod tests {
         // Cooler input power is Carnot-scaled at the LOX boiling point
         // (review 7B: the old flat 100:1 multiplier was inverted and
         // temperature-blind).
-        let expected =
-            planner.cooler_input_power_w(good_tank.heat_leak_w, lox.boiling_point_k);
+        let expected = planner.cooler_input_power_w(good_tank.heat_leak_w, lox.boiling_point_k);
         assert!((report.cooler_power_w - expected).abs() < 1e-6);
         // Hydrogen (20 K) needs far more input power per watt lifted than
         // LOX (90 K) — the ratio must be temperature-dependent.

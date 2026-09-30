@@ -43,16 +43,18 @@ fn barge_project() -> (VesselProject, WeightModel) {
             design_kg: BLOCK_KG,
             installed_kg: 0.0,
         };
-        weight.add_item(WeightItem {
-            id: ItemId(i as u64 + 1),
-            name: format!("Block {}", 200 + i),
-            group: "hull".into(),
-            weight_kg: BLOCK_KG,
-            cog: Vector3::new(i as f64 * BLOCK_PITCH, 0.0, 5.0),
-            status: ItemStatus::Design,
-            margin_pct: 2.0,
-            installed_by: Some(activity_id),
-        }).expect("valid weight item");
+        weight
+            .add_item(WeightItem {
+                id: ItemId(i as u64 + 1),
+                name: format!("Block {}", 200 + i),
+                group: "hull".into(),
+                weight_kg: BLOCK_KG,
+                cog: Vector3::new(i as f64 * BLOCK_PITCH, 0.0, 5.0),
+                status: ItemStatus::Design,
+                margin_pct: 2.0,
+                installed_by: Some(activity_id),
+            })
+            .expect("valid weight item");
         phases.push(phase);
     }
 

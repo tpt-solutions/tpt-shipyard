@@ -52,8 +52,29 @@ Calibrated contraction estimates (see RFC 0004 for the formulas):
 ranks candidate sequences by a heat-concentration heuristic: spread-out,
 alternating-direction (backstep-style) sequences beat concentrated ones.
 
+## Procedure advisor
+
+Before a seam is welded, `tpt_yard_welding::advisor` screens the WPS:
+
+- **Weldability** — carbon equivalents CE(IIW), CET (EN 1011-2) and Pcm
+  (Ito-Bessyo) from the ladle chemistry, and the Graville class that says
+  whether cracking risk is chemistry-driven or hydrogen/heat-input-driven.
+- **Preheat** — the SEW 088-style screening table (`advise_preheat`), and
+  `preheat_for_target_t8_5`: the Rosenthal t8/5 closed form inverted for
+  the preheat that hits a target cooling time (monotone in T0, solved by
+  bisection).
+- **Cooling window** — `advise` screens the proposed procedure against a
+  supplier t8/5 window (hardenability floor, toughness ceiling) and
+  proposes a preheat when the floor is missed.
+- **Qualification** — `Pqr::qualifies` checks the WPS inside the PQR
+  essential-variable envelope (process, heat input, preheat/interpass,
+  filler, and the ISO 15614-1 Table 5 thickness rule 0.5t to 2t; ASME IX
+  screening uses the same envelope with finer deposit rules left manual).
+
 ## Verification
 
 - Golden panel: `test-data/golden/sea/welding-distortion-panel.json`,
-  enforced to ±5 % by the crate's golden test.
+  enforced to ±5 % by the crate's golden test — and independently
+  re-derived in the test from the closed-form Rykalin t8/5 (29.08 s) and a
+  dense analytic Rosenthal peak scan.
 - Sample WPS records in `test-data/welding-procedures/` load and validate.

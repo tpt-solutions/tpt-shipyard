@@ -11,22 +11,55 @@ use tpt_yard_hull::{HullConstruction, HullGeometry};
 use tpt_yard_weight::{ItemStatus, WeightItem, WeightModel};
 
 fn main() {
-    let crane_kn = 40_000.0;
-    let workshop = Dimensions::new(24.0, 30.0, 14.0);
+    // The block-division manifest (review 7F: examples read their test data
+    // and accept a path argument). Defaults to the repo's 140 m container
+    // ship; pass another manifest path to plan a different hull.
+    let manifest_path = std::env::args().nth(1).unwrap_or_else(|| {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test-data/hull-blocks/container-ship-140m.json"
+        )
+        .to_string()
+    });
+    let text = std::fs::read_to_string(&manifest_path)
+        .unwrap_or_else(|e| panic!("reading {manifest_path}: {e}"));
+    let manifest = tpt_yard_core::json::Value::parse(&text).expect("manifest parses");
+    let num = |o: &tpt_yard_core::json::Value, k: &str| o.get(k).and_then(|n| n.as_f64()).expect(k);
+    let hull_v = manifest.get("hull").expect("hull");
+    let yard = manifest
+        .get("yard_capabilities")
+        .expect("yard_capabilities");
+    let workshop_v = yard.get("workshop").expect("workshop");
+    let vessel_name = manifest
+        .get("vessel")
+        .and_then(|s| s.as_str())
+        .unwrap_or("Container ship")
+        .to_string();
+
+    let crane_kn = num(yard, "crane_capacity_kn");
+    let workshop = Dimensions::new(
+        num(workshop_v, "length_m"),
+        num(workshop_v, "breadth_m"),
+        num(workshop_v, "depth_m"),
+    );
+    let loa = num(hull_v, "loa_m");
 
     // 1. Divide the hull into erection blocks.
     let mut hull = HullConstruction::new(HullGeometry {
-        loa_m: 140.0,
-        boa_m: 22.0,
-        depth_m: 12.0,
-        areal_density_kg_m2: 180.0,
-        depth_bands: 2,
+        loa_m: loa,
+        boa_m: num(hull_v, "boa_m"),
+        depth_m: num(hull_v, "depth_m"),
+        areal_density_kg_m2: num(hull_v, "areal_density_kg_m2"),
+        depth_bands: hull_v
+            .get("depth_bands")
+            .and_then(|n| n.as_u64())
+            .expect("depth_bands") as u32,
     });
     hull.blocks = hull.block_division(crane_kn, workshop);
     let joins = hull.erection_sequence(&hull.blocks);
 
     println!(
-        "Container ship 140 m: {} blocks ({:.0} t steel), crane {:.0} kN, workshop {:.0}x{:.0}x{:.0} m",
+        "{vessel_name} (from {manifest_path}): {} blocks ({:.0} t steel), crane {:.0} kN, workshop {:.0}x{:.0}x{:.0} m",
         hull.blocks.len(),
         hull.total_steel_kg() / 1000.0,
         crane_kn,
@@ -41,7 +74,7 @@ fn main() {
     let mut phases = Vec::new();
     let mut weight = WeightModel::new(
         hull.total_steel_kg(),
-        tpt_yard_core::Vector3::new(70.0, 0.0, 6.0),
+        tpt_yard_core::Vector3::new(loa / 2.0, 0.0, 6.0),
     );
     for (seq, join) in joins.iter().enumerate() {
         let block = hull.blocks.iter().find(|b| b.id == join.block).unwrap();
@@ -66,16 +99,18 @@ fn main() {
             )
             .with_dependencies(&deps),
         );
-        weight.add_item(WeightItem {
-            id: ItemId(seq as u64 + 1),
-            name: block.name.clone(),
-            group: "hull".into(),
-            weight_kg: block.weight_kg,
-            cog: block.cog,
-            status: ItemStatus::Design,
-            margin_pct: 2.0,
-            installed_by: Some(activity_id),
-        }).expect("valid weight item");
+        weight
+            .add_item(WeightItem {
+                id: ItemId(seq as u64 + 1),
+                name: block.name.clone(),
+                group: "hull".into(),
+                weight_kg: block.weight_kg,
+                cog: block.cog,
+                status: ItemStatus::Design,
+                margin_pct: 2.0,
+                installed_by: Some(activity_id),
+            })
+            .expect("valid weight item");
         phases.push(phase);
     }
 
@@ -93,12 +128,19 @@ fn main() {
         project,
         weight,
         SupportCondition::KeelBlocks {
-            positions: vec![
-                tpt_yard_core::Vector3::new(-5.0, -4.0, 0.0),
-                tpt_yard_core::Vector3::new(-5.0, 4.0, 0.0),
-                tpt_yard_core::Vector3::new(145.0, -4.0, 0.0),
-                tpt_yard_core::Vector3::new(145.0, 4.0, 0.0),
-            ],
+            // Keel blocks 3.6% of LOA beyond each end, at ~B/5.5 off the
+            // centreline (the 5 m / 4 m offsets of the 140 m reference,
+            // scaled with the hull).
+            positions: {
+                let overhang = 0.0357 * loa;
+                let half_track = num(hull_v, "boa_m") / 5.5;
+                vec![
+                    tpt_yard_core::Vector3::new(-overhang, -half_track, 0.0),
+                    tpt_yard_core::Vector3::new(-overhang, half_track, 0.0),
+                    tpt_yard_core::Vector3::new(loa + overhang, -half_track, 0.0),
+                    tpt_yard_core::Vector3::new(loa + overhang, half_track, 0.0),
+                ]
+            },
         },
     );
 

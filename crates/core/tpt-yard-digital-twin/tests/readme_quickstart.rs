@@ -12,10 +12,19 @@ use tpt_yard_digital_twin::DigitalTwin;
 fn readme_quick_start_works() {
     let mut phase = BuildPhase::new(PhaseId(1), "Erection", 4.0);
     for i in 1..=3u64 {
-        let deps: Vec<ActivityId> = if i == 1 { vec![] } else { vec![ActivityId(i - 1)] };
+        let deps: Vec<ActivityId> = if i == 1 {
+            vec![]
+        } else {
+            vec![ActivityId(i - 1)]
+        };
         phase.activities.push(
-            AssemblyActivity::new(ActivityId(i), format!("Erect block {i}"), ActivityType::JoinBlock, 6.0)
-                .with_dependencies(&deps),
+            AssemblyActivity::new(
+                ActivityId(i),
+                format!("Erect block {i}"),
+                ActivityType::JoinBlock,
+                6.0,
+            )
+            .with_dependencies(&deps),
         );
     }
     let project = VesselProject::new(
@@ -36,7 +45,8 @@ fn readme_quick_start_works() {
         .collect();
     assert_eq!(ids.len(), 3);
     for id in &ids {
-        twin.advance_phase(id).expect("activity must be sound to run");
+        twin.advance_phase(id)
+            .expect("activity must be sound to run");
     }
     assert_eq!(twin.assembly_state.completed_activities.len(), 3);
     // The single-phase plan stays on phase 1; `DigitalTwin::new` carries no

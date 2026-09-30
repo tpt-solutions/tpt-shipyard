@@ -256,8 +256,7 @@ impl LaunchAnalysis {
             * t_pivot
             * theta.sin();
         let pivot_load_n = (w * G * theta.cos() - buoyancy_at_pivot_n).max(0.0);
-        let pivot_kpa =
-            pivot_load_n / (self.end_bearing_m * self.way_width_m).max(1e-6);
+        let pivot_kpa = pivot_load_n / (self.end_bearing_m * self.way_width_m).max(1e-6);
         // Sample the pressure: contact, 75 % contact, 50 % contact, pivot.
         let mut way_pressure_mpa = Vec::with_capacity(5);
         for frac in [1.0, 0.75, 0.5] {
@@ -404,13 +403,18 @@ impl LaunchAnalysis {
             let poppet = if s >= self.poppet_to_cog_m {
                 (weight_kn * (s - self.poppet_to_cog_m)
                     / (way_end - self.poppet_to_cog_m).max(1e-6))
-                    .min(reaction_kn.max(0.0))
+                .min(reaction_kn.max(0.0))
             } else {
                 0.0
             };
             (stern_lift, poppet, moment)
         };
-        let push_sample = |samples: &mut Vec<LaunchSample>, s: f64, v: f64, t: f64, buoy_kn: f64, reaction_kn: f64| {
+        let push_sample = |samples: &mut Vec<LaunchSample>,
+                           s: f64,
+                           v: f64,
+                           t: f64,
+                           buoy_kn: f64,
+                           reaction_kn: f64| {
             let (stern_lift, poppet, moment) = series(s, buoy_kn, reaction_kn);
             samples.push(LaunchSample {
                 time_s: t,
@@ -460,23 +464,31 @@ impl LaunchAnalysis {
                 notes.push(format!(
                     "tip-up at travel {s:.1} m: buoyancy carries only {relief_at_pivot:.0} % of the weight"
                 ));
-                push_sample(&mut samples, s, v, t, buoy_n / 1000.0, (w * G - buoy_n) * theta.cos() / 1000.0);
+                push_sample(
+                    &mut samples,
+                    s,
+                    v,
+                    t,
+                    buoy_n / 1000.0,
+                    (w * G - buoy_n) * theta.cos() / 1000.0,
+                );
                 break;
             }
 
             // Off the way end: afloat.
             if s >= self.way_length_m {
                 end = LaunchEnd::Afloat;
-                notes.push(format!(
-                    "afloat after {t:.1} s at {:.2} m/s",
-                    v
-                ));
+                notes.push(format!("afloat after {t:.1} s at {:.2} m/s", v));
                 push_sample(&mut samples, s, v, t, buoy_n / 1000.0, 0.0);
                 break;
             }
 
             // Along-ways acceleration.
-            let drag = if buoy_n > 0.0 { drag_area_at(s) * v * v } else { 0.0 };
+            let drag = if buoy_n > 0.0 {
+                drag_area_at(s) * v * v
+            } else {
+                0.0
+            };
             let a = G * theta.sin()
                 - mu * G * theta.cos() * (1.0 - buoy_share)
                 - buoy_share * G * theta.sin()
@@ -581,8 +593,8 @@ impl LaunchAnalysis {
         let draft =
             mass / (RHO_SEA * self.block_coefficient * self.immersion_length_m * self.breadth_m);
         let cwp = (1.0 + 2.0 * self.block_coefficient) / 3.0;
-        let bm =
-            cwp * self.breadth_m * self.breadth_m / (12.0 * self.block_coefficient * draft.max(1e-6));
+        let bm = cwp * self.breadth_m * self.breadth_m
+            / (12.0 * self.block_coefficient * draft.max(1e-6));
         let gm = draft / 2.0 + bm - cog.z;
         let stable = gm >= tpt_yard_drydock::MIN_GM_M;
         if !stable {
@@ -694,7 +706,11 @@ mod tests {
         // of the same expression. a = g(sin 3 - 0.02 cos 3) = 0.3174844;
         // v = sqrt(2 a L) = sqrt(2 * 0.3174844 * 120) = 8.72904 m/s.
         let r = analysis(70.0).slipway_launch();
-        assert!((r.sliding_velocity_ms - 8.7290).abs() < 1e-3, "{}", r.sliding_velocity_ms);
+        assert!(
+            (r.sliding_velocity_ms - 8.7290).abs() < 1e-3,
+            "{}",
+            r.sliding_velocity_ms
+        );
     }
 
     #[test]
@@ -719,7 +735,8 @@ mod tests {
             status: tpt_yard_weight::ItemStatus::Installed,
             margin_pct: 0.0,
             installed_by: None,
-        }).expect("valid weight item");
+        })
+        .expect("valid weight item");
         let s = a.launch_stability(&wm);
         // Beamy hull at modest KG: GM comfortably positive.
         assert!(s.stable, "{:?}", s.notes);
@@ -749,9 +766,9 @@ mod tests {
         let r = a.dynamic_launch();
         assert_eq!(r.end, LaunchEnd::Afloat, "{:?}", r.notes);
         let theta = 3.0f64.to_radians();
-        let expected = (2.0 * G * (theta.sin() - a.friction_coefficient * theta.cos())
-            * a.way_length_m)
-            .sqrt();
+        let expected =
+            (2.0 * G * (theta.sin() - a.friction_coefficient * theta.cos()) * a.way_length_m)
+                .sqrt();
         assert!(
             (r.end_velocity_ms - expected).abs() < 0.05 * expected,
             "sim {} vs energy {}",
@@ -844,7 +861,11 @@ mod tests {
         assert!(lifts.last().unwrap() > lifts.first().unwrap());
         // The moment curve is finite everywhere, starts near zero (free
         // aft end), and is bounded by W x way length.
-        let mags: Vec<f64> = r.samples.iter().map(|s| s.end_of_ways_moment_knm.abs()).collect();
+        let mags: Vec<f64> = r
+            .samples
+            .iter()
+            .map(|s| s.end_of_ways_moment_knm.abs())
+            .collect();
         let peak = mags.iter().cloned().fold(0.0, f64::max);
         assert!(peak > 0.0);
         let weight_knm = 2.0 * 4_000_000.0 * 9.81 / 1000.0 * 120.0; // x2: both sides of the way end contribute

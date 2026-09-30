@@ -6,7 +6,6 @@ members = [
     "crates/core/tpt-yard-assembly",
     "crates/core/tpt-yard-weight",
     "crates/core/tpt-yard-digital-twin",
-    "crates/core/tpt-yard-wasm",
     # Structural During Construction
     "crates/structural/tpt-yard-structural",
     "crates/structural/tpt-yard-welding",
@@ -32,6 +31,8 @@ members = [
     "crates/planning/tpt-yard-logistics",
     "crates/planning/tpt-yard-facility",
     "crates/planning/tpt-yard-quality",
+    # Web bindings (wasm)
+    "crates/web/tpt-yard-wasm",
     # Integration
     "crates/integration/tpt-yard-transport-link",
     "crates/integration/tpt-yard-process-link",
@@ -87,10 +88,13 @@ tpt-yard-hydrostatics = { path = "crates/sea/tpt-yard-hydrostatics", version = "
 tpt-yard-transport-link = { path = "crates/integration/tpt-yard-transport-link", version = "0.1.0" }
 tpt-yard-process-link = { path = "crates/integration/tpt-yard-process-link", version = "0.1.0" }
 tpt-yard-earth-link = { path = "crates/integration/tpt-yard-earth-link", version = "0.1.0" }
-tpt-yard-wasm = { path = "crates/core/tpt-yard-wasm", version = "0.1.0" }
+tpt-yard-wasm = { path = "crates/web/tpt-yard-wasm", version = "0.1.0" }
 tpt-yard = { path = "crates/facade/tpt-yard", version = "0.1.0" }
 # External
 wasm-bindgen = "=0.2.128"
+# wasm-bindgen-test ships its own 0.3.x line; 0.3.78 pins wasm-bindgen
+# "=0.2.128" exactly (the two crates' version numbers diverged in 2019).
+wasm-bindgen-test = "=0.3.78"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

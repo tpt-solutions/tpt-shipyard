@@ -311,7 +311,8 @@ impl OrbitalAssembly {
             allowable_stress_mpa: 250.0,
             docking_impulse_n: 20_000.0,
             chord_area_m2: 0.01,
-            bay_height_m: 3.0,}
+            bay_height_m: 3.0,
+        }
     }
 
     /// Adds a component to the manifest.

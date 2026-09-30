@@ -6,6 +6,23 @@ follows [Semantic Versioning](https://semver.org/). The workspace versions as
 a single release train on a 6-week cadence — see the workspace
 [RELEASES.md](../../RELEASES.md).
 
+## [Unreleased]
+
+### Added
+
+- `#[wasm_bindgen_test]` browser smoke tests (`tests/browser.rs`): twin load,
+  dependency-gated advance, weight/structural JSON reports, geometry index
+  bounds, and a full orbital step sequence — executed under headless Chrome
+  by the CI `wasm` job with the pinned `wasm-bindgen-cli@0.2.128`
+  (`wasm-bindgen-test = "=0.3.78"`, the line that pins `wasm-bindgen
+  =0.2.128` exactly). Compiled out on native targets.
+
+### Changed
+
+- Moved the crate from `crates/core/` to `crates/web/`: a WASM-bindings crate
+  that depends on the space-domain planners does not belong in the core layer
+  (review 7E layering). Package name, API and features are unchanged.
+
 ## [0.1.0] - 2026-09-28
 
 ### Added

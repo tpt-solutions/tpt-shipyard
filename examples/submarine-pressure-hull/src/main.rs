@@ -2,7 +2,7 @@
 //! division, circumferential weld joints, and a workshop weld-procedure
 //! check of the full-penetration circumferential seam.
 
-use tpt_yard_core::{Material, PhaseId, Vector3};
+use tpt_yard_core::{json::Value, Material, PhaseId, Vector3};
 use tpt_yard_joints::{GrooveType, JointGeometry, JointKind};
 use tpt_yard_structural::{
     ConstructionLoad, ConstructionStructuralSolver, PartialElement, PartialStructure, Support,
@@ -12,21 +12,45 @@ use tpt_yard_welding::{WeldProcedure, WeldProcess, WeldingSimulation};
 const RING_COUNT: usize = 12;
 
 fn main() {
-    // 1. Ring-section division of the 55 m pressure hull (test-data/
-    //    hull-blocks/submarine-pressure-hull.json).
-    let length = 55.0;
-    let ring_len = length / RING_COUNT as f64;
-    println!("Pressure hull: {RING_COUNT} ring sections of {ring_len:.2} m, Ø8.0 m, 40 mm shell");
+    // The pressure-hull section manifest (review 7F: examples read their
+    // test data and accept a path argument). Defaults to the repo's
+    // reference hull; pass another manifest path to plan a different hull.
+    let manifest_path = std::env::args().nth(1).unwrap_or_else(|| {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test-data/hull-blocks/submarine-pressure-hull.json"
+        )
+        .to_string()
+    });
+    let text = std::fs::read_to_string(&manifest_path)
+        .unwrap_or_else(|e| panic!("reading {manifest_path}: {e}"));
+    let manifest = Value::parse(&text).expect("manifest parses");
+    let num = |o: &Value, k: &str| o.get(k).and_then(|n| n.as_f64()).expect(k);
+    let hull_v = manifest.get("hull").expect("hull");
+    let diameter_m = num(hull_v, "pressure_hull_diameter_m");
+    let length = num(hull_v, "pressure_hull_length_m");
+    let shell_mm = num(hull_v, "shell_thickness_mm");
+    let n_sections = manifest
+        .get("sections")
+        .and_then(|s| s.as_array())
+        .map(|a| a.len())
+        .filter(|n| *n > 0 && RING_COUNT.is_multiple_of(*n))
+        .expect("sections must divide the ring count");
 
-    // 2. The circumferential seam: single-V full-penetration butt, 40 mm.
+    // 1. Ring-section division of the pressure hull.
+    let ring_len = length / RING_COUNT as f64;
+    println!(
+        "Pressure hull: {RING_COUNT} ring sections of {ring_len:.2} m, Ø{diameter_m:.1} m, {shell_mm:.0} mm shell (from {manifest_path})"
+    );
+
+    // 2. The circumferential seam: full-penetration double-V butt.
     let seam = JointGeometry::new(JointKind::Butt)
-        .with_thickness_mm(40.0)
+        .with_thickness_mm(shell_mm)
         .with_groove(GrooveType::DoubleV)
         .with_groove_angle_deg(60.0)
         .with_root_gap_mm(2.0)
         .with_root_face_mm(2.0)
-        .with_length_mm(8_000.0 / std::f64::consts::PI) // circumference = πD
-        .with_length_mm(std::f64::consts::PI * 8000.0);
+        .with_length_mm(std::f64::consts::PI * diameter_m * 1000.0); // circumference = πD
     println!(
         "Circumferential seam: double-V 60°, weld area {:.0} mm², {:.1} kg of filler per seam",
         seam.weld_area_mm2_total(),
@@ -132,10 +156,12 @@ fn main() {
         if result.passed { "OK" } else { "OVERSTRESSED" }
     );
 
+    let rings_per_section = RING_COUNT / n_sections;
     println!(
-        "\nSection plan: weld all {RING_COUNT} rings into 4 sections (3 seams each) in the \
-workshop, pressure-test, then join the sections in the dock — 3 circumferential \
-dock joints with 100% RT."
+        "\nSection plan: weld all {RING_COUNT} rings into {n_sections} sections ({rings_per_section} seams each) in the \
+workshop, pressure-test, then join the sections in the dock — {} circumferential \
+dock joints with 100% RT.",
+        n_sections - 1
     );
 }
 

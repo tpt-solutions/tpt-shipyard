@@ -59,7 +59,7 @@ jobs:
           done
 
   wasm:
-    name: WASM build
+    name: WASM build + browser tests
     needs: fmt
     runs-on: ubuntu-latest
     steps:
@@ -70,6 +70,33 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build tpt-yard-wasm for wasm32
         run: cargo build -p tpt-yard-wasm --target wasm32-unknown-unknown --locked
+      # Review 7G: the pinned wasm-bindgen-cli matches the workspace's
+      # `wasm-bindgen = "=0.2.128"`, and .cargo/config.toml wires
+      # wasm-bindgen-test-runner so `cargo test` drives headless Chrome
+      # through the #[wasm_bindgen_test] browser tests.
+      - name: Install pinned wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli@0.2.128 --locked
+      - name: Install chromedriver matching the runner's Chrome
+        run: |
+          CHROME_VERSION="$(google-chrome --version | awk '{print $3}')"
+          MILESTONE="${CHROME_VERSION%.*}"
+          DRIVER_VERSION="$(curl -s https://googlechromelabs.github.io/chrome-for-testing/latest-patch-versions-per-build.json | python3 -c "import json,sys; print(json.load(sys.stdin)['builds']['$MILESTONE']['version'])")"
+          echo "Chrome $CHROME_VERSION -> chromedriver $DRIVER_VERSION"
+          curl -sSLo /tmp/cd.zip \
+            "https://storage.googleapis.com/chrome-for-testing-public/${DRIVER_VERSION}/linux64/chromedriver-linux64.zip"
+          sudo unzip -o /tmp/cd.zip -d /usr/local/bin
+          sudo chmod +x /usr/local/bin/chromedriver-linux64/chromedriver
+          sudo ln -sf /usr/local/bin/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
+      - name: Browser tests (wasm-bindgen-test, headless Chrome)
+        run: cargo test -p tpt-yard-wasm --target wasm32-unknown-unknown --locked
+      - name: Build www/pkg for the dashboard
+        run: |
+          wasm-bindgen --out-dir www/pkg --target web \
+            target/wasm32-unknown-unknown/debug/tpt_yard_wasm.wasm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tpt-yard-wasm-web
+          path: www/pkg/
 
   msrv:
     name: MSRV

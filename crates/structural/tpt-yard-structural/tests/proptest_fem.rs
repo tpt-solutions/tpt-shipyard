@@ -7,7 +7,7 @@
 use proptest::prelude::*;
 
 use tpt_yard_core::Vector3;
-use tpt_yard_structural::fem::{Element, Node, NodalLoad, Support, TrussModel};
+use tpt_yard_structural::fem::{Element, NodalLoad, Node, Support, TrussModel};
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]

@@ -293,9 +293,7 @@ impl RoboticArm {
                 let Some(q2) = wrap(sign * cos2.acos(), 1) else {
                     continue;
                 };
-                let Some(q1) =
-                    wrap(phi - (l2 * q2.sin()).atan2(l1 + l2 * q2.cos()), 0)
-                else {
+                let Some(q1) = wrap(phi - (l2 * q2.sin()).atan2(l1 + l2 * q2.cos()), 0) else {
                     continue;
                 };
                 return Ok(Some(vec![q1, q2]));
@@ -350,7 +348,9 @@ impl RoboticArm {
         let mut lambda = 0.2;
         let clamp = |v: f64, i: usize| -> f64 {
             let (lo, hi) = self.joints[i].range;
-            if matches!(self.joints[i].joint_type, JointType::Revolute) && (hi - lo) >= 2.0 * std::f64::consts::PI {
+            if matches!(self.joints[i].joint_type, JointType::Revolute)
+                && (hi - lo) >= 2.0 * std::f64::consts::PI
+            {
                 // Full-turn revolute joints wrap instead of clamping
                 // (a solution at -4.18 rad is the same joint as +2.10 rad).
                 Self::wrap_into_range(v, (lo, hi)).unwrap_or_else(|| v.clamp(lo, hi))
@@ -390,9 +390,7 @@ impl RoboticArm {
             let mut b = vec![0.0f64; n];
             for r in 0..n {
                 for c in 0..n {
-                    a[r][c] = jac[r][0] * jac[c][0]
-                        + jac[r][1] * jac[c][1]
-                        + jac[r][2] * jac[c][2];
+                    a[r][c] = jac[r][0] * jac[c][0] + jac[r][1] * jac[c][1] + jac[r][2] * jac[c][2];
                 }
                 a[r][r] += lambda;
                 b[r] = jac[r][0] * err[0] + jac[r][1] * err[1] + jac[r][2] * err[2];
@@ -595,9 +593,9 @@ impl RoboticArm {
         // Verify every chain edge rather than asserting freedom by
         // construction (the flag then tells the truth even if a later
         // refactor weakens a check).
-        let collision_free = !chain.windows(2).any(|w| {
-            Self::segment_collides(self, &w[0], &w[1], obstacles, clearance_m)
-        });
+        let collision_free = !chain
+            .windows(2)
+            .any(|w| Self::segment_collides(self, &w[0], &w[1], obstacles, clearance_m));
         Ok(Some(MotionPlan {
             waypoints,
             joint_trajectories: chain,
@@ -705,9 +703,7 @@ impl RoboticArm {
         let reach: f64 = self.link_lengths_m.iter().sum();
         let grasp_points: Vec<Pose> = all_points
             .into_iter()
-            .filter(|p| {
-                self.base.position.distance(p.position) <= reach + 1e-9
-            })
+            .filter(|p| self.base.position.distance(p.position) <= reach + 1e-9)
             .collect();
         // Friction-limited grip: the jaws must transmit the handling force
         // (0.2 m/s^2 with a 2x factor) through friction on two faces.
@@ -764,16 +760,15 @@ fn yaw_diff(target: f64, current: f64) -> f64 {
 
 /// Solves the dense `n × n` system `a·x = b` in place by Gaussian
 /// elimination with partial pivoting. Returns `None` when singular.
-fn solve_dense(a: &mut Vec<Vec<f64>>, b: &mut Vec<f64>) -> Option<Vec<f64>> {
+fn solve_dense(a: &mut [Vec<f64>], b: &mut [f64]) -> Option<Vec<f64>> {
     let n = b.len();
     for col in 0..n {
-        let pivot = (col..n)
-            .max_by(|&r1, &r2| {
-                a[r1][col]
-                    .abs()
-                    .partial_cmp(&a[r2][col].abs())
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })?;
+        let pivot = (col..n).max_by(|&r1, &r2| {
+            a[r1][col]
+                .abs()
+                .partial_cmp(&a[r2][col].abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })?;
         a.swap(col, pivot);
         b.swap(col, pivot);
         if a[col][col].abs() < 1e-12 {
@@ -781,8 +776,9 @@ fn solve_dense(a: &mut Vec<Vec<f64>>, b: &mut Vec<f64>) -> Option<Vec<f64>> {
         }
         for r in (col + 1)..n {
             let f = a[r][col] / a[col][col];
-            for c in col..n {
-                a[r][c] -= f * a[col][c];
+            let pivot_row = a[col][col..n].to_vec();
+            for (target, pv) in a[r][col..n].iter_mut().zip(pivot_row) {
+                *target -= f * pv;
             }
             b[r] -= f * b[col];
         }

@@ -212,9 +212,7 @@ mod tests {
         let mut a = slipway();
         a.site.max_sea_state = 1;
         let forecast = SeaStateForecast {
-            hourly_sea_state: (0..24)
-                .map(|h| if h < 6 { 2.0 } else { 1.0 })
-                .collect(),
+            hourly_sea_state: (0..24).map(|h| if h < 6 { 2.0 } else { 1.0 }).collect(),
         };
         let window = plan_launch_window(&a, &forecast).unwrap();
         // SS 2 hours would pass a bare method limit of 2 but must wait.

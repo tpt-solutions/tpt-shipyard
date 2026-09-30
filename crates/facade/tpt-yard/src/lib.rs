@@ -42,8 +42,8 @@ pub use tpt_yard_joints;
 pub use tpt_yard_process_link;
 pub use tpt_yard_structural;
 pub use tpt_yard_transport_link;
-pub use tpt_yard_welding;
 pub use tpt_yard_weight;
+pub use tpt_yard_welding;
 
 #[cfg(feature = "sea")]
 pub use tpt_yard_blocks;
@@ -137,10 +137,20 @@ pub mod prelude {
 mod tests {
     #[test]
     fn feature_gates_are_consistent() {
-        // The default build carries all three domain layers.
-        assert!(cfg!(feature = "sea"));
-        assert!(cfg!(feature = "space"));
-        assert!(cfg!(feature = "planning"));
-        assert!(!cfg!(feature = "wasm"), "wasm is opt-in");
+        // The default build carries all three domain layers. (`if` +
+        // `panic!` rather than `assert!`: the conditions are compile-time
+        // constants and clippy rightly objects to asserting constants.)
+        if !cfg!(feature = "sea") {
+            panic!("default build must carry the sea layer");
+        }
+        if !cfg!(feature = "space") {
+            panic!("default build must carry the space layer");
+        }
+        if !cfg!(feature = "planning") {
+            panic!("default build must carry the planning layer");
+        }
+        if cfg!(feature = "wasm") {
+            panic!("wasm is opt-in, not a default feature");
+        }
     }
 }

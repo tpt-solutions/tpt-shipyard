@@ -7,19 +7,47 @@ use tpt_yard_habitat::{HabitatDesigner, HabitatType};
 use tpt_yard_space_structural::SpaceStructuralDesigner;
 
 fn main() {
-    // ---- Stanford torus: 100 m radius, 20 m tube -----------------------
+    // The habitat reference parameters (review 7F: examples read their test
+    // data and accept a path argument). Defaults to the repo's Stanford
+    // torus reference (RFC 0005).
+    let manifest_path = std::env::args().nth(1).unwrap_or_else(|| {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test-data/orbital-structures/rotating-habitat-torus.json"
+        )
+        .to_string()
+    });
+    let text = std::fs::read_to_string(&manifest_path)
+        .unwrap_or_else(|e| panic!("reading {manifest_path}: {e}"));
+    let manifest = tpt_yard_core::json::Value::parse(&text).expect("manifest parses");
+    let num = |o: &tpt_yard_core::json::Value, k: &str| o.get(k).and_then(|n| n.as_f64()).expect(k);
+    let radius_m = num(&manifest, "radius_m");
+    let tube_diameter_m = num(&manifest, "tube_diameter_m");
+    let target_g = num(&manifest, "target_gravity_g");
+    let rotating_mass_kg = num(&manifest, "total_rotating_mass_kg");
+    let safety_factor = num(&manifest, "safety_factor");
+    let material = match manifest.get("material").and_then(|s| s.as_str()) {
+        Some("AA5083") => Material::aa5083(),
+        Some("AH36") => Material::ah36(),
+        other => panic!("unsupported habitat material {other:?} (AA5083, AH36)"),
+    };
+
+    // ---- Stanford torus from the manifest -------------------------------
     let torus = HabitatDesigner::new(
         HabitatType::StanfordTorus {
-            radius_m: 100.0,
-            tube_diameter_m: 20.0,
+            radius_m,
+            tube_diameter_m,
         },
-        Material::aa5083(),
+        material.clone(),
     );
 
-    println!("== Stanford torus (r = 100 m, tube 20 m, AA5083) ==");
-    for g in [1.0, 0.38] {
-        let rpm = torus.required_rotation_rpm(100.0, g);
-        let report = torus.coriolis_effects(100.0, rpm);
+    println!(
+        "== Stanford torus (r = {radius_m:.0} m, tube {tube_diameter_m:.0} m, {}, from {manifest_path}) ==",
+        material.name
+    );
+    for g in [target_g, 0.38] {
+        let rpm = torus.required_rotation_rpm(radius_m, g);
+        let report = torus.coriolis_effects(radius_m, rpm);
         println!(
             "  {g:.2} g -> {:>5.2} rpm (rim {:>6.1} m/s) — Coriolis {:>4.1}% g: {}",
             rpm,
@@ -33,8 +61,8 @@ fn main() {
         );
     }
 
-    // Structural sizing at 1 g for a 10,000 t rotating mass.
-    let design = torus.structural_design(10_000_000.0, 2.0);
+    // Structural sizing at the target gravity for the manifest's rotating mass.
+    let design = torus.structural_design(rotating_mass_kg, safety_factor);
     println!(
         "  structure: shell {:.1} mm, hoop {:.1} MPa (util {:.2}%), mass {:.0} t",
         design.shell_thickness_mm,
@@ -44,10 +72,11 @@ fn main() {
     );
 
     // ---- Hoop stress verification against sigma = rho*omega^2*r^2 ------
-    let structural = SpaceStructuralDesigner::new(Material::aa5083());
-    let stress = structural.rotating_habitat_stress(100.0, 2.99, 10_000_000.0);
+    let structural = SpaceStructuralDesigner::new(material.clone());
+    let rpm_1g = torus.required_rotation_rpm(radius_m, target_g);
+    let stress = structural.rotating_habitat_stress(radius_m, rpm_1g, rotating_mass_kg);
     println!(
-        "  ring self-stress at 2.99 rpm: {:.2} MPa (util {:.2}%)",
+        "  ring self-stress at {rpm_1g:.2} rpm: {:.2} MPa (util {:.2}%)",
         stress.hoop_stress_mpa,
         stress.utilization * 100.0
     );
@@ -59,7 +88,8 @@ fn main() {
         fatigue.strain_range, fatigue.life_fraction
     );
 
-    // ---- O'Neill cylinder: 4 km radius ---------------------------------
+    // ---- O'Neill cylinder: a second reference design, not in the
+    //      manifest (4 km radius, 32 km long, steel) -----------------------
     let oneill = HabitatDesigner::new(
         HabitatType::ONeillCylinder {
             radius_m: 4000.0,
@@ -99,7 +129,12 @@ fn main() {
         shield.areal_density_kg_m2
     );
 
-    assert!(torus.required_rotation(100.0, 1.0) > 0.0);
-    assert!(!torus.coriolis_effects(100.0, 2.99).within_comfort);
+    assert!(torus.required_rotation(radius_m, target_g) > 0.0);
+    let rpm_at_limit = torus.required_rotation_rpm(radius_m, 1.0);
+    assert!(
+        !torus
+            .coriolis_effects(radius_m, rpm_at_limit)
+            .within_comfort
+    );
     assert!(oneill.coriolis_effects(4000.0, rpm).within_comfort);
 }

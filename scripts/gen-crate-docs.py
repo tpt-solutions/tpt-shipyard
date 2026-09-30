@@ -227,7 +227,7 @@ let report = twin.centre_of_gravity_tracking()?;""",
         "keywords": ["digital-twin", "construction", "simulation", "monitoring", "shipbuilding"],
         "categories": ["science", "simulation"],
     },
-    "crates/core/tpt-yard-wasm": {
+    "crates/web/tpt-yard-wasm": {
         "tagline": "WebAssembly bindings for interactive shipyard construction dashboards.",
         "overview": [
             "`tpt-yard-wasm` compiles the construction engine to WebAssembly so a "

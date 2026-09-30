@@ -491,46 +491,72 @@ impl AssemblyActivity {
     /// [`CoreError`] on malformed payloads.
     pub fn from_json(v: &Value) -> Result<Self, CoreError> {
         let field = |k: &str| v.get(k).ok_or_else(|| CoreError::missing_field(k));
+        let err = |msg: &str| CoreError::type_error(msg.to_string());
         let id = ActivityId(
             field("id")?
                 .as_u64()
-                .ok_or_else(|| CoreError::missing_field("id"))?,
+                .ok_or_else(|| err("activity.id must be an integer"))?,
         );
         let name = field("name")?
             .as_str()
-            .ok_or_else(|| CoreError::missing_field("name"))?;
+            .ok_or_else(|| err("activity.name must be a string"))?;
         let activity_type = ActivityType::from_json(field("activity_type")?)?;
-        let dependencies = field("dependencies")?
+        let deps_v = field("dependencies")?;
+        let deps_arr = deps_v
             .as_array()
-            .unwrap_or(&[])
-            .iter()
-            .filter_map(|d| d.as_u64())
-            .map(ActivityId)
-            .collect();
+            .ok_or_else(|| err("activity.dependencies must be an array"))?;
+        let mut dependencies = Vec::with_capacity(deps_arr.len());
+        for (i, d) in deps_arr.iter().enumerate() {
+            let n = d
+                .as_u64()
+                .ok_or_else(|| err(&format!("activity.dependencies[{i}] must be an integer")))?;
+            dependencies.push(ActivityId(n));
+        }
         let duration_hours = field("duration_hours")?
             .as_f64()
-            .ok_or_else(|| CoreError::missing_field("duration_hours"))?;
-        let resources = field("resources")?
+            .ok_or_else(|| err("activity.duration_hours must be a number"))?;
+        let res_v = field("resources")?;
+        let res_arr = res_v
             .as_array()
-            .unwrap_or(&[])
-            .iter()
-            .filter_map(|r| {
-                Some(Resource {
-                    name: r.get("name")?.as_str()?.to_string(),
-                    kind: match r.get("kind")?.as_str()? {
-                        "Crane" => ResourceKind::Crane,
-                        "Workshop" => ResourceKind::Workshop,
-                        "Drydock" => ResourceKind::Drydock,
-                        "WeldingStation" => ResourceKind::WeldingStation,
-                        "Robot" => ResourceKind::Robot,
-                        "Crew" => ResourceKind::Crew,
-                        "Transport" => ResourceKind::Transport,
-                        _ => return None,
-                    },
-                    capacity: r.get("capacity")?.as_f64()?,
-                })
-            })
-            .collect();
+            .ok_or_else(|| err("activity.resources must be an array"))?;
+        let mut resources = Vec::with_capacity(res_arr.len());
+        for (i, r) in res_arr.iter().enumerate() {
+            let bad =
+                |msg: String| CoreError::type_error(format!("activity.resources[{i}]: {msg}"));
+            let name = r
+                .get("name")
+                .ok_or_else(|| bad("missing 'name'".into()))?
+                .as_str()
+                .ok_or_else(|| bad("'name' must be a string".into()))?;
+            let kind_str = r
+                .get("kind")
+                .ok_or_else(|| bad("missing 'kind'".into()))?
+                .as_str()
+                .ok_or_else(|| bad("'kind' must be a string".into()))?;
+            let kind = match kind_str {
+                "Crane" => ResourceKind::Crane,
+                "Workshop" => ResourceKind::Workshop,
+                "Drydock" => ResourceKind::Drydock,
+                "WeldingStation" => ResourceKind::WeldingStation,
+                "Robot" => ResourceKind::Robot,
+                "Crew" => ResourceKind::Crew,
+                "Transport" => ResourceKind::Transport,
+                other => return Err(bad(format!("unknown resource kind '{other}'"))),
+            };
+            let capacity = r
+                .get("capacity")
+                .ok_or_else(|| bad("missing 'capacity'".into()))?
+                .as_f64()
+                .ok_or_else(|| bad("'capacity' must be a number".into()))?;
+            if !capacity.is_finite() {
+                return Err(bad("'capacity' must be finite".into()));
+            }
+            resources.push(Resource {
+                name: name.to_string(),
+                kind,
+                capacity,
+            });
+        }
         Ok(Self {
             id,
             name: name.to_string(),
@@ -647,14 +673,15 @@ impl BuildPhase {
     /// [`CoreError`] on malformed payloads.
     pub fn from_json(v: &Value) -> Result<Self, CoreError> {
         let field = |k: &str| v.get(k).ok_or_else(|| CoreError::missing_field(k));
+        let err = |msg: &str| CoreError::type_error(msg.to_string());
         let id = PhaseId(
             field("id")?
                 .as_u64()
-                .ok_or_else(|| CoreError::missing_field("id"))?,
+                .ok_or_else(|| err("phase.id must be an integer"))?,
         );
         let name = field("name")?
             .as_str()
-            .ok_or_else(|| CoreError::missing_field("name"))?;
+            .ok_or_else(|| err("phase.name must be a string"))?;
         let activities = field("activities")?
             .as_array()
             .ok_or_else(|| CoreError::missing_field("activities"))?
@@ -677,16 +704,19 @@ impl BuildPhase {
             }
         };
         let ws = field("weight_state")?;
+        let weight_num = |k: &str| -> Result<f64, CoreError> {
+            ws.get(k)
+                .ok_or_else(|| CoreError::missing_field(format!("weight_state.{k}")))?
+                .as_f64()
+                .ok_or_else(|| err(&format!("weight_state.{k} must be a number")))
+        };
         let weight_state = WeightState {
-            design_kg: ws.get("design_kg").and_then(|n| n.as_f64()).unwrap_or(0.0),
-            installed_kg: ws
-                .get("installed_kg")
-                .and_then(|n| n.as_f64())
-                .unwrap_or(0.0),
+            design_kg: weight_num("design_kg")?,
+            installed_kg: weight_num("installed_kg")?,
         };
         let duration_days = field("duration_days")?
             .as_f64()
-            .ok_or_else(|| CoreError::missing_field("duration_days"))?;
+            .ok_or_else(|| err("phase.duration_days must be a number"))?;
         Ok(Self {
             id,
             name: name.to_string(),

@@ -133,6 +133,13 @@ pub enum WeldDirection {
     Reverse,
 }
 
+pub mod advisor;
+
+pub use advisor::{
+    advise, preheat_for_target_t8_5, AdvisorReport, CoolingWindow, GravilleClass, Pqr,
+    QualificationStandard, WeldEnvelope,
+};
+
 /// The qualified welding procedure (WPS subset used by the models).
 #[derive(Debug, Clone, PartialEq)]
 pub struct WeldProcedure {
@@ -344,10 +351,11 @@ impl WeldingSimulation {
     /// efficiency η from [`WeldProcess::efficiency`].
     pub fn net_power_w(&self) -> Result<f64, WeldingError> {
         let v = self.weld_procedure.travel_speed_mm_s;
-        if !(v > 0.0) {
+        if v <= 0.0 || !v.is_finite() {
             return Err(WeldingError::NonPositiveTravelSpeed);
         }
-        if !(self.weld_procedure.heat_input_kj_mm > 0.0) {
+        let h = self.weld_procedure.heat_input_kj_mm;
+        if h <= 0.0 || !h.is_finite() {
             return Err(WeldingError::NonPositiveHeatInput);
         }
         let eta = self.weld_procedure.process.efficiency();
@@ -372,13 +380,15 @@ impl WeldingSimulation {
     /// [`WeldingError`] on non-positive (or NaN) heat input/speed or
     /// negative distance.
     pub fn thermal_cycle(&self, distance_from_weld_mm: f64) -> Result<ThermalCycle, WeldingError> {
-        if !(self.weld_procedure.heat_input_kj_mm > 0.0) {
+        let h = self.weld_procedure.heat_input_kj_mm;
+        if h <= 0.0 || !h.is_finite() {
             return Err(WeldingError::NonPositiveHeatInput);
         }
-        if !(self.weld_procedure.travel_speed_mm_s > 0.0) {
+        let v = self.weld_procedure.travel_speed_mm_s;
+        if v <= 0.0 || !v.is_finite() {
             return Err(WeldingError::NonPositiveTravelSpeed);
         }
-        if !(distance_from_weld_mm >= 0.0) {
+        if !distance_from_weld_mm.is_finite() || distance_from_weld_mm < 0.0 {
             return Err(WeldingError::NegativeDistance);
         }
 
@@ -386,8 +396,8 @@ impl WeldingSimulation {
         let k = self.material.conductivity_w_mk;
         let alpha = self.material.thermal_diffusivity_m2_s();
         let v = self.weld_procedure.travel_speed_mm_s / 1000.0; // m/s
-        // The 3D point source is singular at the seam; keep the evaluation
-        // point a hair off it so temperatures stay finite.
+                                                                // The 3D point source is singular at the seam; keep the evaluation
+                                                                // point a hair off it so temperatures stay finite.
         let d = (distance_from_weld_mm.max(1e-3)) / 1000.0;
         let t0_c = self.weld_procedure.preheat_temp_c;
 
@@ -449,7 +459,7 @@ impl WeldingSimulation {
     /// [`WeldingError::NonPositiveHeatInput`] / [`WeldingError::NonPositiveTravelSpeed`]
     /// on an invalid procedure.
     pub fn peak_temperature_at(&self, distance_from_weld_mm: f64) -> Result<f64, WeldingError> {
-        if !(distance_from_weld_mm >= 0.0) {
+        if !distance_from_weld_mm.is_finite() || distance_from_weld_mm < 0.0 {
             return Err(WeldingError::NegativeDistance);
         }
         let q = self.net_power_w()?;
@@ -592,8 +602,7 @@ impl WeldingSimulation {
     /// point the material has negligible strength, so cooling from there
     /// produces residual effects.
     fn mechanical_response_temp_k(&self) -> f64 {
-        self.mech_response_frac.clamp(1e-3, 1.0)
-            * (self.material.melting_point_c + 273.15)
+        self.mech_response_frac.clamp(1e-3, 1.0) * (self.material.melting_point_c + 273.15)
     }
 
     /// Transverse half-width (mm) at which the Rosenthal peak temperature
@@ -674,7 +683,8 @@ impl WeldingSimulation {
     ///
     /// [`WeldingError::NonPositiveHeatInput`] when there is no heat.
     pub fn thin_plate_warning(&self) -> Result<Option<String>, WeldingError> {
-        if !(self.weld_procedure.heat_input_kj_mm > 0.0) {
+        let h = self.weld_procedure.heat_input_kj_mm;
+        if h <= 0.0 || !h.is_finite() {
             return Err(WeldingError::NonPositiveHeatInput);
         }
         let t_melt_k = self.material.melting_point_c + 273.15;
@@ -790,8 +800,7 @@ impl SteelChemistry {
     /// Carbon equivalent per the IIW relation (EN 1011-2):
     /// `CE = C + Mn/6 + (Cr + Mo + V)/5 + (Ni + Cu)/15`.
     pub fn carbon_equivalent_iiw(&self) -> f64 {
-        self.c + self.mn / 6.0 + (self.cr + self.mo + self.v) / 5.0
-            + (self.ni + self.cu) / 15.0
+        self.c + self.mn / 6.0 + (self.cr + self.mo + self.v) / 5.0 + (self.ni + self.cu) / 15.0
     }
 
     /// AH36-like shipbuilding steel: C 0.16, Mn 1.4, Si 0.40, traces.
@@ -878,9 +887,7 @@ pub fn advise_preheat(
         [100.0, 100.0, 150.0, 150.0, 200.0, 200.0],
         [150.0, 150.0, 200.0, 200.0, 200.0, 200.0],
     ];
-    rationale.push_str(&format!(
-        ", t {thickness_mm:.0} mm -> SEW 088-style band"
-    ));
+    rationale.push_str(&format!(", t {thickness_mm:.0} mm -> SEW 088-style band"));
     PreheatAdvice {
         carbon_equivalent: ce,
         recommended_preheat_c: TABLE[row][col],
@@ -1017,19 +1024,47 @@ mod tests {
     #[test]
     fn preheat_table_follows_ce_and_thickness() {
         let mild = SteelChemistry::ah36_like(); // CEV ~ 0.405
-        // 12 mm, low hydrogen: row 1 (0.39-0.44), col 1 -> 100 C.
-        assert_eq!(advise_preheat(&mild, 12.0, true).recommended_preheat_c, 100.0);
+                                                // 12 mm, low hydrogen: row 1 (0.39-0.44), col 1 -> 100 C.
+        assert_eq!(
+            advise_preheat(&mild, 12.0, true).recommended_preheat_c,
+            100.0
+        );
         // 8 mm: col 0 -> 20 C (no preheat).
         assert_eq!(advise_preheat(&mild, 8.0, true).recommended_preheat_c, 20.0);
         // 35 mm: col 3 -> 100 C.
-        assert_eq!(advise_preheat(&mild, 35.0, true).recommended_preheat_c, 100.0);
+        assert_eq!(
+            advise_preheat(&mild, 35.0, true).recommended_preheat_c,
+            100.0
+        );
         // Non-low-hydrogen: bumped to row 2 -> 150 C at 35 mm.
-        assert_eq!(advise_preheat(&mild, 35.0, false).recommended_preheat_c, 150.0);
+        assert_eq!(
+            advise_preheat(&mild, 35.0, false).recommended_preheat_c,
+            150.0
+        );
         // A hot heat (CEV >= 0.49): top row everywhere.
-        let hot = SteelChemistry { c: 0.25, mn: 1.65, si: 0.5, cr: 0.05, mo: 0.02, ni: 0.0, cu: 0.0, v: 0.01 };
-        assert!(hot.carbon_equivalent_iiw() >= 0.49, "{}", hot.carbon_equivalent_iiw());
-        assert_eq!(advise_preheat(&hot, 12.0, true).recommended_preheat_c, 150.0);
-        assert_eq!(advise_preheat(&hot, 45.0, true).recommended_preheat_c, 200.0);
+        let hot = SteelChemistry {
+            c: 0.25,
+            mn: 1.65,
+            si: 0.5,
+            cr: 0.05,
+            mo: 0.02,
+            ni: 0.0,
+            cu: 0.0,
+            v: 0.01,
+        };
+        assert!(
+            hot.carbon_equivalent_iiw() >= 0.49,
+            "{}",
+            hot.carbon_equivalent_iiw()
+        );
+        assert_eq!(
+            advise_preheat(&hot, 12.0, true).recommended_preheat_c,
+            150.0
+        );
+        assert_eq!(
+            advise_preheat(&hot, 45.0, true).recommended_preheat_c,
+            200.0
+        );
     }
 
     /// The WPS preheat check flags an underheated procedure and passes an
@@ -1040,7 +1075,12 @@ mod tests {
         let mut procedure = saw_procedure(12.0, 12.0).weld_procedure;
         procedure.preheat_temp_c = 20.0;
         let advice = check_wps_preheat(&chem, &procedure, 12.0, true);
-        assert_eq!(advice.procedure_adequate, Some(false), "{}", advice.rationale);
+        assert_eq!(
+            advice.procedure_adequate,
+            Some(false),
+            "{}",
+            advice.rationale
+        );
         procedure.preheat_temp_c = 100.0;
         let advice = check_wps_preheat(&chem, &procedure, 12.0, true);
         assert_eq!(advice.procedure_adequate, Some(true));
@@ -1124,8 +1164,7 @@ mod tests {
         );
         // Equal heats: area-driven terms also scale by pass count.
         assert!(
-            (multi.longitudinal_shrinkage_mm - single.longitudinal_shrinkage_mm * 3.0).abs()
-                < 1e-9
+            (multi.longitudinal_shrinkage_mm - single.longitudinal_shrinkage_mm * 3.0).abs() < 1e-9
         );
     }
 

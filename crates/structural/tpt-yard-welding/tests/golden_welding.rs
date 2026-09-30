@@ -151,6 +151,70 @@ fn golden_welding_distortion_panel() {
         cy_g.get("t8_5_s").and_then(|v| v.as_f64()).unwrap(),
         0.10,
     );
+
+    // -------------------------------------------------------------
+    // Independent physics references (review 7D). The golden file only
+    // pins the model against regressions; these checks pin it against
+    // closed-form heat-flow theory computed from the inputs alone.
+
+    let proc_v = golden.get("procedure").expect("procedure");
+    let num_p = |o: &Value, k: &str| o.get(k).and_then(|n| n.as_f64()).expect(k);
+    let eta = sim.weld_procedure.process.efficiency();
+    let q_net =
+        eta * num_p(proc_v, "heat_input_kj_mm") * 1_000.0 * num_p(proc_v, "travel_speed_mm_s"); // W
+    let k = Material::ah36().conductivity_w_mk; // 50 W/mK
+    let alpha = Material::ah36().thermal_diffusivity_m2_s(); // 1.30e-5 m^2/s
+    let v_ms = num_p(proc_v, "travel_speed_mm_s") / 1000.0;
+    let t0 = num_p(proc_v, "preheat_temp_c");
+
+    // (1) Rykalin 3-D point-source cooling time:
+    //     t8/5 = Q / (2 pi k v) * (1/(500 - T0) - 1/(800 - T0)) = 29.08 s
+    //     for Q = 0.95 * 12 kJ/mm * 8 mm/s = 91.2 kW.
+    let t85_hand =
+        q_net / (2.0 * std::f64::consts::PI * k * v_ms) * (1.0 / (500.0 - t0) - 1.0 / (800.0 - t0));
+    assert!(
+        ((t85_hand - 29.08) / 29.08).abs() <= 0.02,
+        "hand Rykalin t8/5 {t85_hand} s drifted from the verified 29.08 s"
+    );
+    let t85_lib = cycle.t8_5_s.expect("t8/5 defined");
+    assert!(
+        ((t85_lib - t85_hand) / t85_hand).abs() <= 0.05,
+        "library t8/5 {t85_lib} s vs closed-form {t85_hand} s"
+    );
+    let t85_golden = cy_g.get("t8_5_s").and_then(|v| v.as_f64()).unwrap();
+    assert!(
+        ((t85_golden - t85_hand) / t85_hand).abs() <= 0.05,
+        "golden t8/5 {t85_golden} s vs closed-form {t85_hand} s"
+    );
+
+    // (2) Analytic Rosenthal peak at d = 8 mm: the peak temperature and
+    // its location follow from T(xi) = T0 + Q/(2 pi k r) * exp(-v(r+xi)/2alpha),
+    // r = sqrt(xi^2 + d^2). A dense independent scan of that closed form
+    // (finer and over a wider window than the library's sampler) is the
+    // reference: ~9 605 C at xi = -10.9 mm.
+    let d = 8.0 / 1000.0;
+    let temp_at = |xi: f64| -> f64 {
+        let r = (xi * xi + d * d).sqrt();
+        t0 + (q_net / (2.0 * std::f64::consts::PI * k * r))
+            * (-v_ms * (r + xi) / (2.0 * alpha)).exp()
+    };
+    let n_scan = 400_000;
+    let xi_min = -0.2; // 200 mm behind the source
+    let xi_max = d;
+    let step = (xi_max - xi_min) / n_scan as f64;
+    let peak_scan = (0..=n_scan)
+        .map(|i| temp_at(xi_min + i as f64 * step))
+        .fold(f64::MIN, f64::max);
+    assert!(
+        ((cycle.peak_temp_c - peak_scan) / peak_scan).abs() <= 0.02,
+        "library peak {} C vs analytic scan {peak_scan} C",
+        cycle.peak_temp_c
+    );
+    let peak_golden = cy_g.get("peak_temp_c").and_then(|v| v.as_f64()).unwrap();
+    assert!(
+        ((peak_golden - peak_scan) / peak_scan).abs() <= 0.02,
+        "golden peak {peak_golden} C vs analytic scan {peak_scan} C"
+    );
 }
 
 #[test]

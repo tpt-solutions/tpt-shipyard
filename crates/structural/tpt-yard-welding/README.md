@@ -19,6 +19,7 @@ It is engineering-grade, not thermo-mechanical FEM: fast enough to evaluate ever
 - Seven processes with arc efficiencies (SMAW through EBW and laser)
 - Multi-pass superposition and candidate-sequence optimisation
 - WPS record loading from JSON (`test-data/welding-procedures/`)
+- Procedure advisor: carbon equivalents (CE(IIW), CET, Pcm), Graville class, SEW 088-style preheat screening, closed-form preheat for a target t8/5, supplier t8/5 windows, and WPS-inside-PQR essential-variable checks (ISO 15614-1 / ASME IX style)
 
 ## Installation
 

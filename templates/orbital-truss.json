@@ -1,4 +1,5 @@
 {
+  "schema_version": 1,
   "id": 1,
   "name": "ISS-class truss",
   "vessel_type": {

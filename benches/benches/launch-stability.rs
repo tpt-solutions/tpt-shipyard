@@ -56,7 +56,10 @@ fn bench_launch(c: &mut Criterion) {
     // Throughput = flood rate so the numbers read as m3/h processed.
     group.throughput(Throughput::Bytes(5_000));
     group.bench_function("5000_m3_hr", |b| {
-        b.iter(|| dock.flooding_sequence(std::hint::black_box(&vessel), 5_000.0).unwrap())
+        b.iter(|| {
+            dock.flooding_sequence(std::hint::black_box(&vessel), 5_000.0)
+                .unwrap()
+        })
     });
     group.finish();
 }

@@ -268,16 +268,13 @@ impl HullForm {
         let area_40 = area_to(40.0);
         // Ties resolve to the LARGEST heel (a flat curve attains its max
         // at every angle, so "max GZ at >= 25 deg" must hold).
-        let (max_gz, max_heel) = gz
-            .points
-            .iter()
-            .fold((0.0f64, 0.0f64), |(gm, gh), p| {
-                if p.gz_m >= gm {
-                    (p.gz_m, p.heel_deg)
-                } else {
-                    (gm, gh)
-                }
-            });
+        let (max_gz, max_heel) = gz.points.iter().fold((0.0f64, 0.0f64), |(gm, gh), p| {
+            if p.gz_m >= gm {
+                (p.gz_m, p.heel_deg)
+            } else {
+                (gm, gh)
+            }
+        });
         let mut failures = Vec::new();
         if area_30 < 0.055 {
             failures.push(format!("area to 30° {area_30:.4} < 0.055 m·rad"));
@@ -379,9 +376,7 @@ impl HullForm {
         }
 
         // Load curve q(x) = buoyancy - weight (positive = net upward).
-        let load: Vec<f64> = (0..n)
-            .map(|i| buoy_per_m_t - weight_t[i])
-            .collect();
+        let load: Vec<f64> = (0..n).map(|i| buoy_per_m_t - weight_t[i]).collect();
 
         // Shear: cumulative integral of load; start at zero (free ends).
         let mut swsf = vec![0.0f64; n + 1];
@@ -402,16 +397,16 @@ impl HullForm {
             swbm[i] -= swbm[n] * frac;
         }
 
-        let (peak_idx, peak, sign) = swbm
-            .iter()
-            .enumerate()
-            .fold((0usize, 0.0f64, 1.0f64), |acc, (i, &m)| {
-                if m.abs() > acc.1 {
-                    (i, m.abs(), m.signum())
-                } else {
-                    acc
-                }
-            });
+        let (peak_idx, peak, sign) =
+            swbm.iter()
+                .enumerate()
+                .fold((0usize, 0.0f64, 1.0f64), |acc, (i, &m)| {
+                    if m.abs() > acc.1 {
+                        (i, m.abs(), m.signum())
+                    } else {
+                        acc
+                    }
+                });
 
         // Screening allowable: C x L^2 x B x Cb, C ~ 17.5 (CSR-style
         // coefficient for this size range; weak length dependence
@@ -479,14 +474,21 @@ mod tests {
         let gm0 = hs.km_m - 8.0;
         // At 10°: (GM0)·sin10 + wall-sided term.
         let expected = gm0 * 10f64.to_radians().sin()
-            + 0.5 * (hs.km_m - hs.kb_m) * 10f64.to_radians().tan().powi(2)
+            + 0.5
+                * (hs.km_m - hs.kb_m)
+                * 10f64.to_radians().tan().powi(2)
                 * 10f64.to_radians().sin();
         let point = gz_clean
             .points
             .iter()
             .find(|p| p.heel_deg == 10.0)
             .expect("10° point");
-        assert!((point.gz_m - expected).abs() < 1e-9, "{} vs {}", point.gz_m, expected);
+        assert!(
+            (point.gz_m - expected).abs() < 1e-9,
+            "{} vs {}",
+            point.gz_m,
+            expected
+        );
         // FSC = 2000 t·m / displacement; curve drops by FSC·sinφ.
         let fsc = 2_000.0 / hs.displacement_t;
         assert!((gz_clean.free_surface_correction_m - 0.0).abs() < 1e-12);
@@ -504,17 +506,22 @@ mod tests {
     #[test]
     fn imo_criteria_pass_and_fail() {
         let hull = feeder();
-        let good = hull.imo_2008_general(&hull.gz_curve(LoadingCondition::new(6.0, 8.0), 40.0), 6.0);
+        let good =
+            hull.imo_2008_general(&hull.gz_curve(LoadingCondition::new(6.0, 8.0), 40.0), 6.0);
         assert!(good.passed, "{good}");
         // KG above KM at 6 m draft: negative GM, everything fails.
-        let bad = hull.imo_2008_general(&hull.gz_curve(LoadingCondition::new(6.0, 14.0), 40.0), 6.0);
+        let bad =
+            hull.imo_2008_general(&hull.gz_curve(LoadingCondition::new(6.0, 14.0), 40.0), 6.0);
         assert!(!bad.passed);
         assert!(bad.failures.iter().any(|f| f.contains("GM")));
         assert!(bad.failures.iter().any(|f| f.contains("30°")));
         // Free surface degrades a marginal case.
         let marginal = LoadingCondition::new(6.0, 12.5);
         let dry = hull.imo_2008_general(&hull.gz_curve(marginal, 40.0), 6.0);
-        let wet = hull.imo_2008_general(&hull.gz_curve(marginal.with_free_surface_tm(3_000.0), 40.0), 6.0);
+        let wet = hull.imo_2008_general(
+            &hull.gz_curve(marginal.with_free_surface_tm(3_000.0), 40.0),
+            6.0,
+        );
         assert!(dry.gm_corrected_m > wet.gm_corrected_m);
         let _ = wet;
     }
@@ -527,7 +534,10 @@ mod tests {
         let hull = feeder();
         // One 3000 t weight at midship: sagging — peak positive midship.
         let sag = hull.hull_girder_strength(
-            &[WeightItem { x_m: 70.0, mass_t: 3000.0 }],
+            &[WeightItem {
+                x_m: 70.0,
+                mass_t: 3000.0,
+            }],
             40,
         );
         assert!(sag.peak_sign > 0.0, "midship weight must sag");
@@ -540,8 +550,14 @@ mod tests {
         // Two weights at the ends: hogging — peak negative at midship.
         let hog = hull.hull_girder_strength(
             &[
-                WeightItem { x_m: 10.0, mass_t: 1500.0 },
-                WeightItem { x_m: 130.0, mass_t: 1500.0 },
+                WeightItem {
+                    x_m: 10.0,
+                    mass_t: 1500.0,
+                },
+                WeightItem {
+                    x_m: 130.0,
+                    mass_t: 1500.0,
+                },
             ],
             40,
         );
@@ -554,13 +570,18 @@ mod tests {
     fn shear_zero_crossing_at_peak_moment() {
         let hull = feeder();
         let r = hull.hull_girder_strength(
-            &[WeightItem { x_m: 60.0, mass_t: 2500.0 }],
+            &[WeightItem {
+                x_m: 60.0,
+                mass_t: 2500.0,
+            }],
             50,
         );
         // Find the shear zero crossing nearest the peak moment station.
-        let zero = r.swsf_t.windows(2).enumerate().find(|(_, w)| {
-            w[0].signum() != w[1].signum()
-        });
+        let zero = r
+            .swsf_t
+            .windows(2)
+            .enumerate()
+            .find(|(_, w)| w[0].signum() != w[1].signum());
         if let Some((i, _)) = zero {
             assert!(
                 (i as i32 - r.peak_station as i32).abs() <= 2,
@@ -607,7 +628,10 @@ mod tests {
         // Absurd single concentration: pure math check of the failure
         // branch (not a physical loading).
         let absurd = hull.hull_girder_strength(
-            &[WeightItem { x_m: 70.0, mass_t: 1_000_000.0 }],
+            &[WeightItem {
+                x_m: 70.0,
+                mass_t: 1_000_000.0,
+            }],
             40,
         );
         assert!(absurd.utilization > 1.0);

@@ -101,10 +101,7 @@ impl StraighteningModel {
     pub fn shrinkage_mm_per_kj_mm(&self) -> f64 {
         let t_m = self.plate_thickness_mm.max(1e-3) / 1000.0;
         let eta = self.thermal_efficiency.clamp(0.01, 1.0);
-        let m_per_kj = 0.5
-            * self.material.thermal_expansion_1_k
-            * eta
-            * 1e6
+        let m_per_kj = 0.5 * self.material.thermal_expansion_1_k * eta * 1e6
             / (self.material.density_kg_m3 * self.material.specific_heat_j_kg_k * t_m);
         m_per_kj * 1000.0
     }
@@ -538,7 +535,11 @@ mod tests {
         }
         let dc = DistortionControl::new(target, displaced);
         let raw = dc.deviation_map().unwrap();
-        assert!(raw.max_deviation_mm > 5.0, "raw map shows the shift: {}", raw.max_deviation_mm);
+        assert!(
+            raw.max_deviation_mm > 5.0,
+            "raw map shows the shift: {}",
+            raw.max_deviation_mm
+        );
         let form = dc.deviation_map_form().unwrap();
         assert!(
             form.max_deviation_mm < 0.5,
@@ -570,7 +571,10 @@ mod tests {
             thermal_efficiency: 0.4,
         };
         let rate = model.shrinkage_mm_per_kj_mm();
-        assert!(rate > 0.01 && rate < 1.0, "shrinkage rate {rate} mm per kJ/mm");
+        assert!(
+            rate > 0.01 && rate < 1.0,
+            "shrinkage rate {rate} mm per kJ/mm"
+        );
         let mut dc = DistortionControl::new(target, measured).with_straightening_model(model);
         let plan = dc.correction_plan(3.0);
         for action in &plan {

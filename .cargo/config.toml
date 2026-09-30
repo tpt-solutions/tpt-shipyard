@@ -1,0 +1,10 @@
+# Workspace cargo configuration.
+#
+# `wasm-bindgen-test-runner` drives the #[wasm_bindgen_test] browser tests
+# under a real (headless) browser: `cargo test -p tpt-yard-wasm --target
+# wasm32-unknown-unknown` after installing the pinned `wasm-bindgen-cli`
+# (the `=0.2.128` the workspace pins for `wasm-bindgen`). Native targets
+# are unaffected.
+
+[target.wasm32-unknown-unknown]
+runner = "wasm-bindgen-test-runner"

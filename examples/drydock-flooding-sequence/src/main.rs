@@ -7,34 +7,48 @@ use tpt_yard_launch::{LaunchAnalysis, LaunchMethod, SiteConditions};
 use tpt_yard_weight::{ItemStatus, WeightItem, WeightModel};
 
 fn main() {
+    // The float-out case (review 7F: examples read their test data and
+    // accept a path argument). Defaults to the golden drydock case; pass
+    // another case file to float out a different vessel.
+    let manifest_path = std::env::args().nth(1).unwrap_or_else(|| {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test-data/golden/sea/drydock-flooding-sequence.json"
+        )
+        .to_string()
+    });
+    let text = std::fs::read_to_string(&manifest_path)
+        .unwrap_or_else(|e| panic!("reading {manifest_path}: {e}"));
+    let manifest = tpt_yard_core::json::Value::parse(&text).expect("manifest parses");
+    let num = |o: &tpt_yard_core::json::Value, k: &str| o.get(k).and_then(|n| n.as_f64()).expect(k);
+    let dock_v = manifest.get("dock").expect("dock");
+    let vessel_v = manifest.get("vessel").expect("vessel");
+    let rate = num(&manifest, "flood_rate_m3_hr");
     let dock = Drydock {
-        length_m: 200.0,
-        width_m: 30.0,
-        depth_m: 10.0,
+        length_m: num(dock_v, "length_m"),
+        width_m: num(dock_v, "width_m"),
+        depth_m: num(dock_v, "depth_m"),
     };
 
-    // Launch weight from the digital twin's weight model (as-built).
-    let mut weight = WeightModel::new(4_000_000.0, Vector3::new(45.0, 0.0, 6.0));
-    weight.add_item(WeightItem {
-        id: tpt_yard_core::ItemId(1),
-        name: "hull + machinery".into(),
-        group: "lightship".into(),
-        weight_kg: 3_700_000.0,
-        cog: Vector3::new(45.0, 0.0, 5.6),
-        status: ItemStatus::Installed,
-        margin_pct: 0.0,
-        installed_by: None,
-    }).expect("valid weight item");
-    weight.add_item(WeightItem {
-        id: tpt_yard_core::ItemId(2),
-        name: "outfit afloat items".into(),
-        group: "outfit".into(),
-        weight_kg: 300_000.0,
-        cog: Vector3::new(48.0, 0.0, 8.5),
-        status: ItemStatus::Installed,
-        margin_pct: 0.0,
-        installed_by: None,
-    }).expect("valid weight item");
+    // Launch weight from the digital twin's weight model (as-built): one
+    // installed item at the manifest's launch weight and KG, at half the
+    // vessel length.
+    let launch_weight = num(vessel_v, "launch_weight_kg");
+    let kg = num(vessel_v, "cog_above_keel_m");
+    let l_v = num(vessel_v, "length_m");
+    let mut weight = WeightModel::new(launch_weight, Vector3::new(l_v / 2.0, 0.0, kg));
+    weight
+        .add_item(WeightItem {
+            id: tpt_yard_core::ItemId(1),
+            name: "hull + machinery + outfit afloat".into(),
+            group: "lightship".into(),
+            weight_kg: launch_weight,
+            cog: Vector3::new(l_v / 2.0, 0.0, kg),
+            status: ItemStatus::Installed,
+            margin_pct: 0.0,
+            installed_by: None,
+        })
+        .expect("valid weight item");
 
     let cog = weight
         .installed_centre_of_gravity()
@@ -50,20 +64,26 @@ fn main() {
         friction_coefficient: 0.0,
         poppet_to_cog_m: 0.0,
         end_bearing_m: 0.0,
-        immersion_length_m: 90.0,
-        block_coefficient: 0.8,
-        breadth_m: 20.0,
+        immersion_length_m: l_v,
+        block_coefficient: num(vessel_v, "block_coefficient"),
+        breadth_m: num(vessel_v, "breadth_m"),
         site: SiteConditions { max_sea_state: 3 },
     };
 
     println!(
-        "Float-out: {:.0} t, KG {:.2} m, Lx90 Bx20 Cb0.8 into a 200x30x10 m dock at 5,000 m³/h",
+        "Float-out: {:.0} t, KG {:.2} m, Lx{:.0} Bx{:.0} Cb{:.2} into a {:.0}x{:.0}x{:.0} m dock at {rate:.0} m³/h (from {manifest_path})",
         weight.installed_weight() / 1000.0,
-        cog.z
+        cog.z,
+        l_v,
+        num(vessel_v, "breadth_m"),
+        num(vessel_v, "block_coefficient"),
+        dock.length_m,
+        dock.width_m,
+        dock.depth_m
     );
 
     let seq = launch_analysis
-        .drydock_flooding(&dock, 5_000.0)
+        .drydock_flooding(&dock, rate)
         .expect("the vessel must fit and float out");
 
     println!("\n level | draft | displaced |   GM   | state       | note");

@@ -49,20 +49,29 @@ fn run(args: &[&str], json_mode: bool) -> Result<(), String> {
     let (cmd, rest) = args.split_first().ok_or("missing subcommand")?;
     match *cmd {
         "validate" => validate(rest.first().ok_or("validate needs a file path")?),
-        "plan" => plan(rest.first().ok_or("plan needs a hull manifest path")?, json_mode),
+        "plan" => plan(
+            rest.first().ok_or("plan needs a hull manifest path")?,
+            json_mode,
+        ),
         "schedule" => schedule(rest.first().ok_or("schedule needs a file path")?, json_mode),
         "report" => report(rest.first().ok_or("report needs a file path")?, json_mode),
         "new" => new(rest, json_mode),
         "html-report" => {
             let (out, rest): (String, &[&str]) = if rest.first() == Some(&"--out") {
                 (
-                    rest.get(1).copied().ok_or("--out needs a path")?.to_string(),
+                    rest.get(1)
+                        .copied()
+                        .ok_or("--out needs a path")?
+                        .to_string(),
                     rest.get(2..).unwrap_or_default(),
                 )
             } else {
                 ("report.html".to_string(), rest)
             };
-            html_report(rest.first().ok_or("html-report needs a project path")?, &out)
+            html_report(
+                rest.first().ok_or("html-report needs a project path")?,
+                &out,
+            )
         }
         other => Err(format!("unknown subcommand '{other}'")),
     }
@@ -73,8 +82,8 @@ fn run(args: &[&str], json_mode: bool) -> Result<(), String> {
 fn html_report(path: &str, out_path: &str) -> Result<(), String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
     let v = tpt_yard_core::json::Value::parse(&text).map_err(|e| format!("{path}: {e}"))?;
-    let project = tpt_yard_core::VesselProject::from_json_value(&v)
-        .map_err(|e| format!("{path}: {e}"))?;
+    let project =
+        tpt_yard_core::VesselProject::from_json_value(&v).map_err(|e| format!("{path}: {e}"))?;
     let twin = tpt_yard::tpt_yard_digital_twin::DigitalTwin::new(project);
     let report = twin.weight_model().weight_report();
     let check = twin.structural_check();
@@ -171,10 +180,18 @@ fn validate(path: &str) -> Result<(), String> {
     } else {
         // Hull manifest: validate the shape the planner consumes.
         let num = |o: &Value, k: &str| {
-            o.get(k).and_then(|n| n.as_f64()).ok_or(format!("manifest: '{k}' missing or not a number"))
+            o.get(k)
+                .and_then(|n| n.as_f64())
+                .ok_or(format!("manifest: '{k}' missing or not a number"))
         };
         let hull = v.get("hull").ok_or("manifest: 'hull' section missing")?;
-        for k in ["loa_m", "boa_m", "depth_m", "areal_density_kg_m2", "depth_bands"] {
+        for k in [
+            "loa_m",
+            "boa_m",
+            "depth_m",
+            "areal_density_kg_m2",
+            "depth_bands",
+        ] {
             num(hull, k)?;
         }
         let yard = v
@@ -210,7 +227,9 @@ fn plan(path: &str, json_mode: bool) -> Result<(), String> {
             .and_then(|n| n.as_u64())
             .ok_or("manifest: 'depth_bands' missing")? as u32,
     };
-    let yard = v.get("yard_capabilities").ok_or("manifest: 'yard_capabilities' missing")?;
+    let yard = v
+        .get("yard_capabilities")
+        .ok_or("manifest: 'yard_capabilities' missing")?;
     let crane_kn = num(yard, "crane_capacity_kn")?;
     let ws = yard.get("workshop").ok_or("manifest: 'workshop' missing")?;
     let workshop = tpt_yard::tpt_yard_core::Dimensions::new(
@@ -220,7 +239,7 @@ fn plan(path: &str, json_mode: bool) -> Result<(), String> {
     );
 
     // 1. Block division.
-    let construction = tpt_yard::tpt_yard_hull::HullConstruction::new(hull.clone());
+    let construction = tpt_yard::tpt_yard_hull::HullConstruction::new(hull);
     let blocks = construction.block_division(crane_kn, workshop);
     if blocks.is_empty() {
         return Err("block division produced no blocks (depth_bands == 0?)".into());
@@ -234,7 +253,10 @@ fn plan(path: &str, json_mode: bool) -> Result<(), String> {
         .iter()
         .max_by(|a, b| a.weight_kg.total_cmp(&b.weight_kg))
         .expect("non-empty");
-    let (hw, hd) = (heaviest.dimensions().length / 2.0, heaviest.dimensions().breadth / 2.0);
+    let (hw, hd) = (
+        heaviest.dimensions().length / 2.0,
+        heaviest.dimensions().breadth / 2.0,
+    );
     let c = heaviest.geometry.centre;
     let lift_points = [
         Vector3::new(c.x - hw, c.y - hd, 0.0),
@@ -296,7 +318,9 @@ fn plan(path: &str, json_mode: bool) -> Result<(), String> {
     let levelled = scheduler
         .resource_leveling()
         .map_err(|e| format!("levelling: {e}"))?;
-    let cp = scheduler.critical_path().map_err(|e| format!("critical path: {e}"))?;
+    let cp = scheduler
+        .critical_path()
+        .map_err(|e| format!("critical path: {e}"))?;
 
     // 5. Report.
     if json_mode {
@@ -313,10 +337,20 @@ fn plan(path: &str, json_mode: bool) -> Result<(), String> {
         return Ok(());
     }
     let total_steel: f64 = blocks.iter().map(|b| b.weight_kg).sum();
-    println!("Construction plan for {}", v.get("vessel").and_then(|x| x.as_str()).unwrap_or(path));
+    println!(
+        "Construction plan for {}",
+        v.get("vessel").and_then(|x| x.as_str()).unwrap_or(path)
+    );
     println!("======================================================");
-    println!("1. Block division: {} blocks, {:.0} t total steel", blocks.len(), total_steel / 1000.0);
-    println!("2. Erection order: {} joins; first block on the dock floor, tiers bottom-up", joins.len());
+    println!(
+        "1. Block division: {} blocks, {:.0} t total steel",
+        blocks.len(),
+        total_steel / 1000.0
+    );
+    println!(
+        "2. Erection order: {} joins; first block on the dock floor, tiers bottom-up",
+        joins.len()
+    );
     println!(
         "3. Lift check (heaviest block {:.0} t, 4-point pick): {}",
         heaviest.weight_kg / 1000.0,
@@ -327,7 +361,9 @@ fn plan(path: &str, json_mode: bool) -> Result<(), String> {
     }
     println!(
         "4. Schedule: makespan {:.1} h (levelled {:.1} h), critical path {} activities",
-        early.makespan_hours, levelled.makespan_hours, cp.len()
+        early.makespan_hours,
+        levelled.makespan_hours,
+        cp.len()
     );
     println!("5. Drydock/launch: run the drydock and launch crates on the launch weight for the float-out plan");
     Ok(())
@@ -338,8 +374,8 @@ fn plan(path: &str, json_mode: bool) -> Result<(), String> {
 fn schedule(path: &str, json_mode: bool) -> Result<(), String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
     let v = Value::parse(&text).map_err(|e| format!("{path}: {e}"))?;
-    let project = tpt_yard_core::VesselProject::from_json_value(&v)
-        .map_err(|e| format!("{path}: {e}"))?;
+    let project =
+        tpt_yard_core::VesselProject::from_json_value(&v).map_err(|e| format!("{path}: {e}"))?;
     let acts: Vec<tpt_yard_core::AssemblyActivity> = project
         .build_phases
         .iter()
@@ -379,8 +415,8 @@ fn schedule(path: &str, json_mode: bool) -> Result<(), String> {
 fn report(path: &str, json_mode: bool) -> Result<(), String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
     let v = Value::parse(&text).map_err(|e| format!("{path}: {e}"))?;
-    let project = tpt_yard_core::VesselProject::from_json_value(&v)
-        .map_err(|e| format!("{path}: {e}"))?;
+    let project =
+        tpt_yard_core::VesselProject::from_json_value(&v).map_err(|e| format!("{path}: {e}"))?;
     let twin = tpt_yard::tpt_yard_digital_twin::DigitalTwin::new(project);
     let report = twin.weight_model().weight_report();
     let check = twin.structural_check();
@@ -415,60 +451,73 @@ fn new(rest: &[&str], json_mode: bool) -> Result<(), String> {
     ) {
         return template(kind, rest.get(1).copied(), json_mode);
     }
-    let (phases, vessel, method, name): (Vec<tpt_yard_core::BuildPhase>, tpt_yard_core::VesselType, _, String) =
-        match kind {
-            "sea" => {
-                let mut phase = tpt_yard_core::BuildPhase::new(tpt_yard_core::PhaseId(1), "Erection", 8.0);
-                for i in 1..=4u64 {
-                    let deps: Vec<tpt_yard::tpt_yard_assembly::ActivityId> = if i == 1 {
-                        vec![]
-                    } else {
-                        vec![tpt_yard::tpt_yard_assembly::ActivityId(i - 1)]
-                    };
-                    phase.activities.push(
-                        tpt_yard_core::AssemblyActivity::new(
-                            tpt_yard::tpt_yard_assembly::ActivityId(i),
-                            format!("Erect block {i}"),
-                            tpt_yard_core::ActivityType::JoinBlock,
-                            8.0,
-                        )
-                        .with_dependencies(&deps),
-                    );
-                }
-                phase.weight_state = tpt_yard_core::WeightState {
-                    design_kg: 4_000_000.0,
-                    installed_kg: 0.0,
+    let (phases, vessel, method, name): (
+        Vec<tpt_yard_core::BuildPhase>,
+        tpt_yard_core::VesselType,
+        _,
+        String,
+    ) = match kind {
+        "sea" => {
+            let mut phase =
+                tpt_yard_core::BuildPhase::new(tpt_yard_core::PhaseId(1), "Erection", 8.0);
+            for i in 1..=4u64 {
+                let deps: Vec<tpt_yard::tpt_yard_assembly::ActivityId> = if i == 1 {
+                    vec![]
+                } else {
+                    vec![tpt_yard::tpt_yard_assembly::ActivityId(i - 1)]
                 };
-                (
-                    vec![phase],
-                    tpt_yard_core::VesselType::Sea(tpt_yard_core::SeaVesselType::ContainerShip { teu_capacity: 800 }),
-                    tpt_yard_core::ConstructionMethod::SeaDrydock,
-                    rest.get(1).copied().unwrap_or("New sea vessel").to_string(),
-                )
-            }
-            "space" => {
-                let mut phase = tpt_yard_core::BuildPhase::new(tpt_yard_core::PhaseId(1), "Orbital assembly", 12.0);
-                for i in 1..=3u64 {
-                    phase.activities.push(tpt_yard_core::AssemblyActivity::new(
+                phase.activities.push(
+                    tpt_yard_core::AssemblyActivity::new(
                         tpt_yard::tpt_yard_assembly::ActivityId(i),
-                        format!("Install module {i}"),
+                        format!("Erect block {i}"),
                         tpt_yard_core::ActivityType::JoinBlock,
-                        10.0,
-                    ));
-                }
-                phase.weight_state = tpt_yard_core::WeightState {
-                    design_kg: 150_000.0,
-                    installed_kg: 0.0,
-                };
-                (
-                    vec![phase],
-                    tpt_yard_core::VesselType::Space(tpt_yard_core::SpaceVesselType::SpaceStation { modules: 3 }),
-                    tpt_yard_core::ConstructionMethod::OrbitalAssembly,
-                    rest.get(1).copied().unwrap_or("New space vessel").to_string(),
-                )
+                        8.0,
+                    )
+                    .with_dependencies(&deps),
+                );
             }
-            other => return Err(format!("unknown kind '{other}' (expected sea|space)")),
-        };
+            phase.weight_state = tpt_yard_core::WeightState {
+                design_kg: 4_000_000.0,
+                installed_kg: 0.0,
+            };
+            (
+                vec![phase],
+                tpt_yard_core::VesselType::Sea(tpt_yard_core::SeaVesselType::ContainerShip {
+                    teu_capacity: 800,
+                }),
+                tpt_yard_core::ConstructionMethod::SeaDrydock,
+                rest.get(1).copied().unwrap_or("New sea vessel").to_string(),
+            )
+        }
+        "space" => {
+            let mut phase =
+                tpt_yard_core::BuildPhase::new(tpt_yard_core::PhaseId(1), "Orbital assembly", 12.0);
+            for i in 1..=3u64 {
+                phase.activities.push(tpt_yard_core::AssemblyActivity::new(
+                    tpt_yard::tpt_yard_assembly::ActivityId(i),
+                    format!("Install module {i}"),
+                    tpt_yard_core::ActivityType::JoinBlock,
+                    10.0,
+                ));
+            }
+            phase.weight_state = tpt_yard_core::WeightState {
+                design_kg: 150_000.0,
+                installed_kg: 0.0,
+            };
+            (
+                vec![phase],
+                tpt_yard_core::VesselType::Space(tpt_yard_core::SpaceVesselType::SpaceStation {
+                    modules: 3,
+                }),
+                tpt_yard_core::ConstructionMethod::OrbitalAssembly,
+                rest.get(1)
+                    .copied()
+                    .unwrap_or("New space vessel")
+                    .to_string(),
+            )
+        }
+        other => return Err(format!("unknown kind '{other}' (expected sea|space)")),
+    };
     let project = tpt_yard_core::VesselProject::new(
         tpt_yard_core::ProjectId(1),
         name,
@@ -476,17 +525,18 @@ fn new(rest: &[&str], json_mode: bool) -> Result<(), String> {
         method,
         phases,
     )
-    .ok_or("scaffold failed validation")?;
+    .map_err(|e| format!("scaffold failed: {e}"))?;
     let json = project.to_json().to_string_pretty();
     if json_mode {
         println!("{json}");
     } else {
-        println!("Scaffolded project (save as project.json and run `tpt-yard validate project.json`):");
+        println!(
+            "Scaffolded project (save as project.json and run `tpt-yard validate project.json`):"
+        );
         println!("{json}");
     }
     Ok(())
 }
-
 
 /// Scaffold one of the named reference templates. Each template mirrors the
 /// matching reference case in `test-data/` so the numbers are realistic.
@@ -494,14 +544,25 @@ fn template(kind: &str, name: Option<&str>, json_mode: bool) -> Result<(), Strin
     use tpt_yard::tpt_yard_assembly::ActivityId;
     let mut next_activity = 1u64;
     let mut mk = |idx: u64, phase_name: &str, days: f64, design_kg: f64, acts: &[(&str, f64)]| {
-        let mut phase = tpt_yard_core::BuildPhase::new(tpt_yard_core::PhaseId(idx), phase_name, days);
+        let mut phase =
+            tpt_yard_core::BuildPhase::new(tpt_yard_core::PhaseId(idx), phase_name, days);
         let base = next_activity;
         for (i, (n, h)) in acts.iter().enumerate() {
             let id = ActivityId(base + i as u64);
-            let deps: Vec<ActivityId> = if i == 0 { vec![] } else { vec![ActivityId(base + i as u64 - 1)] };
-            phase
-                .activities
-                .push(tpt_yard_core::AssemblyActivity::new(id, *n, tpt_yard_core::ActivityType::JoinBlock, *h).with_dependencies(&deps));
+            let deps: Vec<ActivityId> = if i == 0 {
+                vec![]
+            } else {
+                vec![ActivityId(base + i as u64 - 1)]
+            };
+            phase.activities.push(
+                tpt_yard_core::AssemblyActivity::new(
+                    id,
+                    *n,
+                    tpt_yard_core::ActivityType::JoinBlock,
+                    *h,
+                )
+                .with_dependencies(&deps),
+            );
         }
         phase.weight_state = tpt_yard_core::WeightState {
             design_kg,
@@ -513,13 +574,39 @@ fn template(kind: &str, name: Option<&str>, json_mode: bool) -> Result<(), Strin
     let (name, vessel, method, phases) = match kind {
         "container-ship" => (
             name.unwrap_or("Container ship 1400 TEU").to_string(),
-            tpt_yard_core::VesselType::Sea(tpt_yard_core::SeaVesselType::ContainerShip { teu_capacity: 1400 }),
+            tpt_yard_core::VesselType::Sea(tpt_yard_core::SeaVesselType::ContainerShip {
+                teu_capacity: 1400,
+            }),
             tpt_yard_core::ConstructionMethod::SeaDrydock,
             vec![
-                mk(1, "Steel prefabrication", 28.0, 4_000_000.0, &[("Cut steel", 8.0), ("Form panels", 8.0)]),
-                mk(2, "Block assembly", 21.0, 2_000_000.0, &[("Assemble blocks", 16.0)]),
-                mk(3, "Dock erection", 30.0, 1_500_000.0, &[("Erect tier 0", 8.0), ("Erect tier 1", 8.0)]),
-                mk(4, "Outfitting & launch", 25.0, 900_000.0, &[("Outfit", 8.0), ("Launch", 4.0)]),
+                mk(
+                    1,
+                    "Steel prefabrication",
+                    28.0,
+                    4_000_000.0,
+                    &[("Cut steel", 8.0), ("Form panels", 8.0)],
+                ),
+                mk(
+                    2,
+                    "Block assembly",
+                    21.0,
+                    2_000_000.0,
+                    &[("Assemble blocks", 16.0)],
+                ),
+                mk(
+                    3,
+                    "Dock erection",
+                    30.0,
+                    1_500_000.0,
+                    &[("Erect tier 0", 8.0), ("Erect tier 1", 8.0)],
+                ),
+                mk(
+                    4,
+                    "Outfitting & launch",
+                    25.0,
+                    900_000.0,
+                    &[("Outfit", 8.0), ("Launch", 4.0)],
+                ),
             ],
         ),
         "submarine" => (
@@ -528,38 +615,82 @@ fn template(kind: &str, name: Option<&str>, json_mode: bool) -> Result<(), Strin
                 hull_type: tpt_yard_core::HullType::DoubleHull,
             }),
             tpt_yard_core::ConstructionMethod::SeaBlockConstruction,
-            vec![mk(1, "Pressure hull sections", 40.0, 2_300_000.0, &[
-                ("Roll and weld sections", 12.0), ("Fit ring stiffeners", 10.0), ("Hydro test", 6.0),
-            ])],
+            vec![mk(
+                1,
+                "Pressure hull sections",
+                40.0,
+                2_300_000.0,
+                &[
+                    ("Roll and weld sections", 12.0),
+                    ("Fit ring stiffeners", 10.0),
+                    ("Hydro test", 6.0),
+                ],
+            )],
         ),
         "orbital-truss" => (
             name.unwrap_or("ISS-class truss").to_string(),
-            tpt_yard_core::VesselType::Space(tpt_yard_core::SpaceVesselType::SpaceStation { modules: 5 }),
+            tpt_yard_core::VesselType::Space(tpt_yard_core::SpaceVesselType::SpaceStation {
+                modules: 5,
+            }),
             tpt_yard_core::ConstructionMethod::OrbitalAssembly,
-            vec![mk(1, "On-orbit truss assembly", 45.0, 7_500.0, &[
-                ("Deploy bay 1", 6.0), ("Deploy bay 2", 6.0), ("Deploy bay 3", 6.0),
-            ])],
+            vec![mk(
+                1,
+                "On-orbit truss assembly",
+                45.0,
+                7_500.0,
+                &[
+                    ("Deploy bay 1", 6.0),
+                    ("Deploy bay 2", 6.0),
+                    ("Deploy bay 3", 6.0),
+                ],
+            )],
         ),
         "habitat" => (
             name.unwrap_or("Stanford torus habitat").to_string(),
-            tpt_yard_core::VesselType::Space(tpt_yard_core::SpaceVesselType::SpaceStation { modules: 8 }),
+            tpt_yard_core::VesselType::Space(tpt_yard_core::SpaceVesselType::SpaceStation {
+                modules: 8,
+            }),
             tpt_yard_core::ConstructionMethod::InSpaceManufacturing,
-            vec![mk(1, "Habitat construction", 120.0, 10_000_000.0, &[
-                ("Print ring sections", 24.0), ("Close the ring", 16.0), ("Spin-up checkout", 8.0),
-            ])],
+            vec![mk(
+                1,
+                "Habitat construction",
+                120.0,
+                10_000_000.0,
+                &[
+                    ("Print ring sections", 24.0),
+                    ("Close the ring", 16.0),
+                    ("Spin-up checkout", 8.0),
+                ],
+            )],
         ),
         "solar-array" => (
             name.unwrap_or("Space solar array").to_string(),
-            tpt_yard_core::VesselType::Space(tpt_yard_core::SpaceVesselType::SpaceStation { modules: 2 }),
+            tpt_yard_core::VesselType::Space(tpt_yard_core::SpaceVesselType::SpaceStation {
+                modules: 2,
+            }),
             tpt_yard_core::ConstructionMethod::InSpaceManufacturing,
-            vec![mk(1, "Array manufacture", 30.0, 12_000.0, &[
-                ("Print substrate", 12.0), ("Lay cells", 10.0), ("Deploy & verify", 6.0),
-            ])],
+            vec![mk(
+                1,
+                "Array manufacture",
+                30.0,
+                12_000.0,
+                &[
+                    ("Print substrate", 12.0),
+                    ("Lay cells", 10.0),
+                    ("Deploy & verify", 6.0),
+                ],
+            )],
         ),
         other => return Err(format!("unknown template '{other}'")),
     };
-    let project = tpt_yard_core::VesselProject::new(tpt_yard_core::ProjectId(1), name, vessel, method, phases)
-        .ok_or("template failed validation")?;
+    let project = tpt_yard_core::VesselProject::new(
+        tpt_yard_core::ProjectId(1),
+        name,
+        vessel,
+        method,
+        phases,
+    )
+    .map_err(|e| format!("template failed: {e}"))?;
     println!("{}", project.to_json().to_string_pretty());
     if !json_mode {
         eprintln!("(save as project.json, then `tpt-yard validate project.json`)");

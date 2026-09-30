@@ -224,9 +224,8 @@ impl HullConstruction {
 
         // Per-metre of length, one tier weighs roughly:
         // factor · areal·(bottom/deck + 2 shell sides of the tier)
-        let kg_per_m_per_tier = INTERNAL_STRUCTURE_FACTOR
-            * g.areal_density_kg_m2
-            * (g.boa_m + 2.0 * band_height);
+        let kg_per_m_per_tier =
+            INTERNAL_STRUCTURE_FACTOR * g.areal_density_kg_m2 * (g.boa_m + 2.0 * band_height);
 
         // Max length per block from the crane (weight limit) and workshop.
         // No upward clamp: a crane that cannot lift even a 1 m block makes
@@ -426,7 +425,11 @@ mod tests {
         // Regression (review 7A/A7): the first block of an upper tier must
         // land on the block directly below it, not hang from `onto: None`.
         let first_tier1_join = &joins[first_tier1];
-        let below = by_id(first_tier1_join.onto.expect("upper tier lands on tier below"));
+        let below = by_id(
+            first_tier1_join
+                .onto
+                .expect("upper tier lands on tier below"),
+        );
         assert_eq!(below.z_band, 0);
         assert_eq!(below.x_band, by_id(first_tier1_join.block).x_band);
         // Every upper-tier block has a support.

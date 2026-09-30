@@ -11,7 +11,7 @@ cargo doc --workspace --no-deps --open
 
 For the WASM crate, the docs target the host by default; the browser-facing
 façades are documented in the book's [WASM chapter](../book/src/wasm.md) and
-in `crates/core/tpt-yard-wasm/README.md`.
+in `crates/web/tpt-yard-wasm/README.md`.
 
 Curated, hand-written documentation lives in the [book](../book/src/) and in
 each crate's `README.md`.

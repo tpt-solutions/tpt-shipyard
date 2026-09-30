@@ -17,7 +17,7 @@ pub fn geometry_to_gltf(geometry: &Geometry3D, name: &str) -> String {
         bin.extend_from_slice(&(v.y as f32).to_le_bytes());
         bin.extend_from_slice(&(v.z as f32).to_le_bytes());
     }
-    while bin.len() % 4 != 0 {
+    while !bin.len().is_multiple_of(4) {
         bin.push(0);
     }
     let indices_offset = bin.len();
@@ -26,14 +26,14 @@ pub fn geometry_to_gltf(geometry: &Geometry3D, name: &str) -> String {
         bin.extend_from_slice(&f[1].to_le_bytes());
         bin.extend_from_slice(&f[2].to_le_bytes());
     }
-    while bin.len() % 4 != 0 {
+    while !bin.len().is_multiple_of(4) {
         bin.push(0);
     }
     let bin_len = bin.len();
 
     // Base64-encode.
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut b64 = String::with_capacity((bin_len + 2) / 3 * 4);
+    let mut b64 = String::with_capacity(bin_len.div_ceil(3) * 4);
     for chunk in bin.chunks(3) {
         let b = [
             chunk[0],

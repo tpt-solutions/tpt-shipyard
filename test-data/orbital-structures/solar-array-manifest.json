@@ -1,0 +1,16 @@
+{
+  "structure": "Space solar array reference (Phase 5 milestone case)",
+  "panels": 8,
+  "panel": {
+    "mass_kg": 85.0,
+    "length_m": 12.0,
+    "width_m": 3.0,
+    "substrate_thickness_m": 0.004,
+    "print_rate_m2_hr": 6.0
+  },
+  "robot": {
+    "links_m": [4.0, 4.0],
+    "gripper_force_n": 400.0
+  },
+  "notes": "Wire-arc additive manufacturing of the aluminium substrates followed by robotic wing assembly. Consumed by the space-solar-array-assembly example; dimensions are the deployed bay envelope, substrate thickness drives the print volume."
+}

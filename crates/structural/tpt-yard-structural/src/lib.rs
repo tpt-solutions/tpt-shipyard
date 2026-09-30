@@ -477,10 +477,14 @@ impl ConstructionStructuralSolver {
         if lift_points.len() < 2 {
             return Err(StructuralError::TooFewLiftPoints);
         }
-        if !(body.mass_properties.mass_kg > 0.0)
-            || !(sling_capacity_kn > 0.0)
-            || !(crane_capacity_kn > 0.0)
-            || !(hook_height_above_lifts_m > 0.0)
+        if body.mass_properties.mass_kg <= 0.0
+            || !body.mass_properties.mass_kg.is_finite()
+            || sling_capacity_kn <= 0.0
+            || !sling_capacity_kn.is_finite()
+            || crane_capacity_kn <= 0.0
+            || !crane_capacity_kn.is_finite()
+            || hook_height_above_lifts_m <= 0.0
+            || !hook_height_above_lifts_m.is_finite()
         {
             return Err(StructuralError::OutOfRange);
         }
@@ -599,7 +603,11 @@ impl ConstructionStructuralSolver {
                 way_length_m,
                 way_width_m,
             } => {
-                if !(way_length_m > 0.0) || !(way_width_m > 0.0) {
+                if way_length_m <= 0.0
+                    || !way_length_m.is_finite()
+                    || way_width_m <= 0.0
+                    || !way_width_m.is_finite()
+                {
                     return Err(StructuralError::OutOfRange);
                 }
                 let weight_kn = weight.mass_kg * 9.81 / 1000.0;
@@ -647,8 +655,12 @@ fn cog_in_convex_hull(cog: Vector3, points: &[Vector3]) -> bool {
     if pts.len() < 3 {
         // Collinear or duplicated lifts: the tip region is the segment's
         // bounding box.
-        let (min_x, max_x) = pts.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.0), b.max(p.0)));
-        let (min_y, max_y) = pts.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.1), b.max(p.1)));
+        let (min_x, max_x) = pts
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.0), b.max(p.0)));
+        let (min_y, max_y) = pts
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.1), b.max(p.1)));
         return cog.x >= min_x && cog.x <= max_x && cog.y >= min_y && cog.y <= max_y;
     }
     let cross = |o: (f64, f64), a: (f64, f64), b: (f64, f64)| {

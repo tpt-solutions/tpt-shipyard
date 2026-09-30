@@ -188,16 +188,16 @@ impl HabitatDesigner {
         // cylinders, spheres and ring stations carry it around the main
         // circumference.
         let carrying_circumference = match &self.habitat_type {
-            HabitatType::StanfordTorus { tube_diameter_m, .. } => {
-                std::f64::consts::PI * tube_diameter_m.max(1e-3)
-            }
+            HabitatType::StanfordTorus {
+                tube_diameter_m, ..
+            } => std::f64::consts::PI * tube_diameter_m.max(1e-3),
             _ => 2.0 * std::f64::consts::PI * radius,
         };
 
         // Round the shell up to the fabrication minimum gauge; the
         // utilization below is then a *real* margin, not a tautological 1.
-        let thickness_m = (ideal_area_m2 / carrying_circumference)
-            .max(self.min_shell_thickness_mm / 1000.0);
+        let thickness_m =
+            (ideal_area_m2 / carrying_circumference).max(self.min_shell_thickness_mm / 1000.0);
         let area_m2 = thickness_m * carrying_circumference;
 
         let stress_mpa = (tension_n / area_m2) / 1e6;
@@ -296,7 +296,10 @@ mod tests {
     #[test]
     fn torus_carries_on_the_tube_and_custom_is_explicit() {
         let torus = designer(100.0); // tube diameter 20 m
-        let ring = HabitatDesigner::new(HabitatType::RingStation { radius_m: 100.0 }, Material::aa5083());
+        let ring = HabitatDesigner::new(
+            HabitatType::RingStation { radius_m: 100.0 },
+            Material::aa5083(),
+        );
         let t_torus = torus.structural_design(5e8, 2.0).shell_thickness_mm;
         let t_ring = ring.structural_design(5e8, 2.0).shell_thickness_mm;
         // Tube circumference (2*pi*10) is far shorter than the major
@@ -309,7 +312,10 @@ mod tests {
 
         let custom_unset = HabitatDesigner::new(HabitatType::Custom, Material::aa5083())
             .structural_design(1e6, 2.0);
-        assert_eq!(custom_unset.shell_thickness_mm, 0.0, "unset custom radius: empty design");
+        assert_eq!(
+            custom_unset.shell_thickness_mm, 0.0,
+            "unset custom radius: empty design"
+        );
         let custom = HabitatDesigner::new(HabitatType::Custom, Material::aa5083())
             .with_custom_radius_m(250.0)
             .structural_design(1e6, 2.0);
