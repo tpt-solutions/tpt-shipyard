@@ -22,7 +22,12 @@
   }
   #stage { flex: 2 1 640px; }
   #side { flex: 1 1 280px; display: flex; flex-direction: column; gap: 12px; }
-  canvas { background: #0a101b; border-radius: 6px; display: block; width: 100%; }
+  #viewport { position: relative; }
+  #cv { background: #0a101b; border-radius: 6px; display: block; width: 100%; height: 440px; }
+  #hint {
+    position: absolute; right: 10px; bottom: 8px; font-size: 11px;
+    color: #51647f; pointer-events: none;
+  }
   button {
     background: #1c3563; color: #cfe2ff; border: 1px solid #2c4a85;
     padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 14px;
@@ -36,16 +41,27 @@
   pre { font-size: 11px; color: #8ba3c7; white-space: pre-wrap; margin: 0; }
   .ok { color: #57d1a4; } .bad { color: #ff7b72; }
 </style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
 </head>
 <body>
 <header>
   <h1>tpt-shipyard</h1>
-  <span>construction digital twin — WebAssembly</span>
+  <span>construction digital twin — WebAssembly + three.js</span>
 </header>
 <main>
   <div class="panel" id="stage">
-    <h3 style="margin:2px 0 10px">Erection state (plan view + elevation)</h3>
-    <canvas id="cv" width="860" height="340"></canvas>
+    <h3 style="margin:2px 0 10px">Erection state (WASM mesh, 3-D)</h3>
+    <div id="viewport">
+      <canvas id="cv"></canvas>
+      <span id="hint">drag to orbit · wheel to zoom · right-drag to pan</span>
+    </div>
     <div id="progress"><div id="bar"></div></div>
     <button id="step">Erect next block</button>
     <button id="auto">Run to completion</button>
@@ -71,8 +87,8 @@
 </main>
 <script type="module">
 // Handle a missing/failed WASM build gracefully (review 7E): pkg/ is a
-// build artifact; a checkout without `wasm-pack build` should show a
-// clear message instead of a bare module error.
+// build artifact; a checkout without `wasm-bindgen` should show a clear
+// message instead of a bare module error.
 async function loadTwin() {
   try {
     const mod = await import("./pkg/tpt_yard_wasm.js");
@@ -82,8 +98,9 @@ async function loadTwin() {
     document.getElementById("stage").insertAdjacentHTML(
       "afterbegin",
       '<p class="bad" id="load-error">WASM module not available: build it with ' +
-      '<code>wasm-pack build crates/web/tpt-yard-wasm --target web --out-dir ../../../www/pkg</code> ' +
-      'and reload. (' + err + ')</p>'
+      '<code>cargo build -p tpt-yard-wasm --target wasm32-unknown-unknown --release</code> and ' +
+      '<code>wasm-bindgen --out-dir www/pkg --target web target/wasm32-unknown-unknown/release/tpt_yard_wasm.wasm</code>, ' +
+      'then reload. (' + err + ')</p>'
     );
     for (const id of ["step", "auto", "reset"]) {
       document.getElementById(id).disabled = true;
@@ -125,14 +142,22 @@ function projectJson(blocks) {
 }
 
 if (mod) {
-  let twin = new mod.WasmDigitalTwin(projectJson(12));
+  // three.js may fail without network (the CDN import map); the controls
+  // stay usable and the failure is reported instead of a dead canvas.
+  let three = null;
+  try {
+    three = {
+      THREE: await import("three"),
+      OrbitControls: (await import("three/addons/controls/OrbitControls.js")).OrbitControls,
+    };
+  } catch (err) {
+    document.getElementById("stage").insertAdjacentHTML(
+      "afterbegin",
+      '<p class="bad">three.js could not be loaded (offline?): ' + err + '</p>'
+    );
+  }
 
-  const cv = document.getElementById("cv");
-  const ctx = cv.getContext("2d");
-  const bar = document.getElementById("bar");
-  const stepBtn = document.getElementById("step");
-  const autoBtn = document.getElementById("auto");
-  const resetBtn = document.getElementById("reset");
+  let twin = new mod.WasmDigitalTwin(projectJson(12));
 
   const BLOCKS = 12;
   let timer = null;
@@ -140,10 +165,142 @@ if (mod) {
 
   function fmtT(kg) { return (kg / 1000).toFixed(0) + " t"; }
 
+  // ------------------------------------------------------------- 3-D view
+  let view = null;
+  if (three) {
+    const { THREE, OrbitControls } = three;
+    const canvas = document.getElementById("cv");
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0a101b);
+
+    const camera = new THREE.PerspectiveCamera(50, 2, 0.1, 2000);
+    const controls = new OrbitControls(camera, canvas);
+    controls.enableDamping = true;
+    // Follow the growing structure until the user takes over the camera.
+    let userInteracted = false;
+    controls.addEventListener("start", () => {
+      userInteracted = true;
+    });
+
+    scene.add(new THREE.HemisphereLight(0x9fc2ff, 0x1a2438, 1.4));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+    sun.position.set(60, 120, 90);
+    scene.add(sun);
+
+    const grid = new THREE.GridHelper(240, 24, 0x24324c, 0x16202f);
+    scene.add(grid);
+
+    // The WASM geometry is z-up; the group maps it to three.js y-up.
+    const group = new THREE.Group();
+    group.rotation.x = -Math.PI / 2;
+    scene.add(group);
+
+    const material = new THREE.MeshStandardMaterial({
+      vertexColors: true, metalness: 0.15, roughness: 0.65,
+    });
+    const mesh = new THREE.Mesh(new THREE.BufferGeometry(), material);
+    group.add(mesh);
+
+    // As-built CoG marker (local = WASM coordinates).
+    const cogMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(1.4, 24, 16),
+      new THREE.MeshBasicMaterial({ color: 0xffb454 })
+    );
+    cogMarker.visible = false;
+    group.add(cogMarker);
+
+    function resize() {
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    }
+    window.addEventListener("resize", resize);
+
+    function frameCamera(box) {
+      const size = box.getSize(new THREE.Vector3());
+      const centre = box.getCenter(new THREE.Vector3());
+      const radius = Math.max(size.length() / 2, 5);
+      controls.target.copy(centre);
+      camera.position.set(
+        centre.x + radius * 0.9,
+        centre.y + radius * 0.8,
+        centre.z + radius * 1.3
+      );
+      controls.update();
+    }
+
+    function updateMesh(report) {
+      const verts = twin.get_geometry();      // 9 floats per triangle
+      const idx = twin.get_geometry_indices(); // 3 vertex indices per face
+      const posAttr = new THREE.Float32BufferAttribute(verts, 3);
+      mesh.geometry.dispose();
+      mesh.geometry = new THREE.BufferGeometry();
+      mesh.geometry.setAttribute("position", posAttr);
+      if (idx.length > 0) mesh.geometry.setIndex(Array.from(idx));
+      mesh.geometry.computeVertexNormals();
+
+      // Colour by along-ship position (a cheap block-id gradient).
+      const count = verts.length / 3;
+      const colors = new Float32Array(verts.length);
+      let xMin = Infinity, xMax = -Infinity;
+      for (let i = 0; i < count; i++) {
+        const x = verts[i * 3];
+        if (x < xMin) xMin = x;
+        if (x > xMax) xMax = x;
+      }
+      const span = Math.max(xMax - xMin, 1e-6);
+      const lo = new THREE.Color(0x2c6bed), hi = new THREE.Color(0x57d1a4);
+      for (let i = 0; i < count; i++) {
+        const t = (verts[i * 3] - xMin) / span;
+        const c = lo.clone().lerp(hi, t);
+        colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
+      }
+      mesh.geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+
+      const done = twin.completed_count();
+      mesh.visible = idx.length > 0;
+      cogMarker.visible = done > 0;
+      if (done > 0) {
+        cogMarker.position.set(report.cog[0], 0, report.cog[2] + 1.5);
+      }
+      if (done === 0) {
+        // Fresh/reset twin: frame the empty build slot so the next block
+        // appears in view.
+        frameCamera(new THREE.Box3(
+          new THREE.Vector3(0, -3, -3),
+          new THREE.Vector3(BLOCKS * 10, 3, 3)
+        ));
+      } else if (!userInteracted) {
+        // Follow the erection until the user orbits by themselves.
+        frameCamera(new THREE.Box3().setFromObject(mesh));
+      }
+    }
+
+    function renderLoop() {
+      requestAnimationFrame(renderLoop);
+      resize();
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    view = { updateMesh, resetUser: () => { userInteracted = false; } };
+    resize();
+    renderLoop();
+  }
+
+  // ------------------------------------------------------- reports / flow
+  const bar = document.getElementById("bar");
+  const stepBtn = document.getElementById("step");
+  const autoBtn = document.getElementById("auto");
+  const resetBtn = document.getElementById("reset");
+
   function refresh() {
     const report = JSON.parse(twin.get_weight_report());
     const check = JSON.parse(twin.structural_check());
-    const verts = twin.get_geometry();
 
     document.getElementById("w-inst").textContent = fmtT(report.installed_kg);
     document.getElementById("w-best").textContent = fmtT(report.best_estimate_kg);
@@ -163,41 +320,8 @@ if (mod) {
 
     const done = twin.completed_count();
     bar.style.width = (done / BLOCKS * 100) + "%";
+    if (view) view.updateMesh(report);
 
-    // ---- draw: top-down blocks + CoG marker ----
-    ctx.clearRect(0, 0, cv.width, cv.height);
-    const n = BLOCKS, pitch = 62, bx = 40, by = 70;
-    for (let i = 0; i < n; i++) {
-      const erected = i < done;
-      ctx.strokeStyle = "#2c4a85";
-      ctx.fillStyle = erected ? "#274b8f" : "#101a2c";
-      ctx.beginPath();
-      ctx.rect(bx + i * pitch, by, pitch - 8, 60);
-      ctx.fill(); ctx.stroke();
-      if (erected) {
-        ctx.fillStyle = "#8fb6ff";
-        ctx.font = "11px sans-serif";
-        ctx.fillText("B" + (200 + i + 1), bx + i * pitch + 11, by + 34);
-      }
-    }
-    // elevation strip
-    for (let i = 0; i < n; i++) {
-      const erected = i < done;
-      ctx.fillStyle = erected ? "#57d1a4" : "#1a2438";
-      ctx.fillRect(bx + i * pitch, by + 90, pitch - 8, 22);
-    }
-    // keel supports + CoG marker
-    ctx.fillStyle = "#6b7f9e";
-    ctx.fillRect(bx - 20, by + 118, 16, 10);
-    ctx.fillRect(bx + n * pitch - 12, by + 118, 16, 10);
-    if (done > 0) {
-      const cx = bx + (report.cog[0] / (n * 10)) * (n * pitch) - 5;
-      ctx.fillStyle = "#ffb454";
-      ctx.beginPath();
-      ctx.moveTo(cx, by + 58); ctx.lineTo(cx + 6, by + 70); ctx.lineTo(cx - 6, by + 70);
-      ctx.closePath(); ctx.fill();
-      ctx.fillText("CoG", cx - 12, by + 84);
-    }
     stepBtn.disabled = running || done >= BLOCKS;
     autoBtn.disabled = running || done >= BLOCKS;
   }
@@ -214,6 +338,7 @@ if (mod) {
   function replaceTwin() {
     twin.free();
     twin = new mod.WasmDigitalTwin(projectJson(BLOCKS));
+    if (view) view.resetUser();
   }
 
   stepBtn.onclick = () => {

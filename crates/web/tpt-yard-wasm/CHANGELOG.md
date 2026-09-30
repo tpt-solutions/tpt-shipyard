@@ -22,6 +22,10 @@ a single release train on a 6-week cadence — see the workspace
 - Moved the crate from `crates/core/` to `crates/web/`: a WASM-bindings crate
   that depends on the space-domain planners does not belong in the core layer
   (review 7E layering). Package name, API and features are unchanged.
+- The `www/` dashboard now renders the `get_geometry`/`get_geometry_indices`
+  buffers as a lit, orbitable three.js mesh (was a 2-D canvas that ignored
+  the mesh), with an as-built CoG marker and a camera that follows the
+  erection until the user takes over. Verified in headless Chrome.
 
 ## [0.1.0] - 2026-09-28
 
@@ -37,6 +41,6 @@ a single release train on a 6-week cadence — see the workspace
 
 - Native tests: JSON round-trip, dependency-gated advance, geometry buffer sizes
 - Orbital façade: full 18-step sequence simulated step by step
-- Reference dashboard page in `www/` (2-D plan view); the interactive 3-D WASM mesh demo is on the roadmap
+- Reference dashboard page in `www/` — since upgraded to draw the WASM mesh in 3-D (three.js); see Unreleased
 
 [0.1.0]: https://github.com/tpt-solutions/tpt-shipyard/releases/tag/v0.1.0

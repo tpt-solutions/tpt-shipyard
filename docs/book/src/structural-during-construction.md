@@ -13,7 +13,7 @@ analysis time the solver assembles the sub-model of members erected at or
 before the requested phase. Missing members are not approximations — a
 phase whose staging is a *mechanism* is refused outright:
 
-```rust
+```rust,ignore
 let r = solver.analyze_at_phase(PhaseId(1), &[ConstructionLoad::Gravity]);
 // Err(SingularSystem): the boom has no diagonal yet
 ```

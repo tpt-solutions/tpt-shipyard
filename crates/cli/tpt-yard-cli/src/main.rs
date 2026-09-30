@@ -238,8 +238,13 @@ fn plan(path: &str, json_mode: bool) -> Result<(), String> {
         num(ws, "depth_m")?,
     );
 
-    // 1. Block division.
+    // 1. Block division (plus the explicit workshop cross-section check:
+    // blocks are the full beam wide, so a narrow workshop is infeasible
+    // even when the lengths divide cleanly).
     let construction = tpt_yard::tpt_yard_hull::HullConstruction::new(hull);
+    if let Err(workshop_violation) = construction.check_workshop(workshop) {
+        return Err(format!("workshop cross-section: {workshop_violation}"));
+    }
     let blocks = construction.block_division(crane_kn, workshop);
     if blocks.is_empty() {
         return Err("block division produced no blocks (depth_bands == 0?)".into());

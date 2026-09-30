@@ -11,7 +11,10 @@ inclining, class acceptance) with an
 [`Acceptance`](tpt_yard_sea_trials::Acceptance) window on a metric:
 
 ```rust
-Acceptance { metric: Metric::SpeedKn, minimum: Some(15.0), maximum: None }
+use tpt_yard_sea_trials::{Acceptance, Metric};
+
+let speed = Acceptance { metric: Metric::SpeedKn, minimum: Some(15.0), maximum: None };
+assert_eq!(speed.minimum, Some(15.0));
 ```
 
 Bounds are inclusive; a one-sided window leaves the other end `None`.

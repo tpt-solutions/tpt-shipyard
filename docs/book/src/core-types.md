@@ -75,7 +75,7 @@ The crate embeds a dependency-free JSON implementation
 ([`tpt_yard_core::json`]) so projects round-trip without pulling in external
 crates — part of the pure-Rust, MIT-only-chain design:
 
-```rust
+```rust,ignore
 let json = project.to_json().to_string_pretty();
 let same = VesselProject::from_json_str(&json).unwrap();
 assert_eq!(same, project);

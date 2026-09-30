@@ -29,7 +29,7 @@ Everything flows through `advance_phase(&ActivityId)`:
    (`WeightItem::installed_by`) become `Installed`, mass properties update,
    the phase pointer advances when the phase completes.
 
-```rust
+```rust,ignore
 twin.advance_phase(&ActivityId(3))?; // Err(UnsoundStructure) if it would tip
 ```
 

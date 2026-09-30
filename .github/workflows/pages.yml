@@ -1,0 +1,64 @@
+# Deploys the documentation site to GitHub Pages:
+#   /        — the 3-D WASM construction dashboard (www/, drawing the
+#              tpt-yard-wasm mesh with three.js)
+#   /book/   — the mdBook (docs/book)
+#
+# Runs on every push to master and on demand. The wasm-bindgen-cli pin
+# matches the workspace's `wasm-bindgen = "=0.2.128"`.
+name: Pages
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Build & deploy site
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the book
+        run: |
+          mkdir -p bin
+          curl -sSL \
+            https://github.com/rust-lang/mdBook/releases/download/v0.4.40/mdbook-v0.4.40-x86_64-unknown-linux-gnu.tar.gz \
+            | tar -xz -C bin
+          bin/mdbook build docs/book
+
+      - name: Build the WASM dashboard
+        run: |
+          cargo install wasm-bindgen-cli@0.2.128 --locked
+          cargo build -p tpt-yard-wasm --target wasm32-unknown-unknown --release --locked
+          wasm-bindgen --out-dir www/pkg --target web \
+            target/wasm32-unknown-unknown/release/tpt_yard_wasm.wasm
+
+      - name: Assemble the site
+        run: |
+          mkdir -p site
+          cp -r www/. site/
+          cp -r docs/book/book site/book
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

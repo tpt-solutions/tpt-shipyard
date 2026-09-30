@@ -27,10 +27,13 @@ python -m http.server 8123 --directory www
 ## The reference dashboard
 
 `www/index.html` is the working construction dashboard: erect 12 hull blocks
-one at a time or run to completion, watch the plan view and elevation fill
-in, the CoG marker march midship, keel reactions update, and the structural
-check stay green — all computed in WebAssembly, rendered on a plain canvas
-with zero runtime dependencies.
+one at a time or run to completion, watch the WASM mesh grow in 3-D (three.js:
+orbit, zoom and pan; the camera follows the erection until you take over),
+the as-built CoG marker march midship, keel reactions update, and the
+structural check stay green — all computed in WebAssembly. The geometry and
+index buffers from `get_geometry`/`get_geometry_indices` upload straight into
+a three.js `BufferGeometry`; three.js loads from a CDN import map, and if it
+cannot load the page says so instead of failing silently.
 
 ## Verification
 

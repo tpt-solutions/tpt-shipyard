@@ -324,6 +324,44 @@ impl HullConstruction {
     pub fn total_steel_kg(&self) -> f64 {
         self.blocks.iter().map(|b| b.weight_kg).sum()
     }
+
+    /// Checks that a block of this hull physically fits the workshop
+    /// cross-section: every band block is the full beam wide and one band
+    /// high, so the workshop breadth must admit `boa_m` and its depth the
+    /// band height. (Length is a *division* constraint handled inside
+    /// [`block_division`](Self::block_division); a cross-section that
+    /// cannot fit is a yard infeasibility and must be surfaced, not
+    /// silently divided around.)
+    ///
+    /// # Errors
+    ///
+    /// A message naming each violated workshop dimension.
+    pub fn check_workshop(&self, workshop_dimensions: Dimensions) -> Result<(), String> {
+        let g = self.hull_form;
+        let band_height = if g.depth_bands > 0 {
+            g.depth_m / g.depth_bands as f64
+        } else {
+            0.0
+        };
+        let mut violations = Vec::new();
+        if workshop_dimensions.breadth + 1e-9 < g.boa_m {
+            violations.push(format!(
+                "workshop breadth {:.1} m < block width (beam) {:.1} m",
+                workshop_dimensions.breadth, g.boa_m
+            ));
+        }
+        if g.depth_bands > 0 && workshop_dimensions.depth + 1e-9 < band_height {
+            violations.push(format!(
+                "workshop depth {:.1} m < band height {:.1} m ({} bands over {:.1} m)",
+                workshop_dimensions.depth, band_height, g.depth_bands, g.depth_m
+            ));
+        }
+        if violations.is_empty() {
+            Ok(())
+        } else {
+            Err(violations.join("; "))
+        }
+    }
 }
 
 /// Longitudinal distance of a block centre from midship, m (the hull runs
@@ -345,6 +383,38 @@ mod tests {
             areal_density_kg_m2: 180.0,
             depth_bands: 2,
         })
+    }
+
+    /// Review 7B leftover: an explicit workshop *cross-section* check —
+    /// a band block is the full beam wide and one band high, so a narrow
+    /// or shallow workshop cannot build the blocks even when their
+    /// length divides cleanly.
+    #[test]
+    fn workshop_cross_section_check() {
+        let hull = container_ship();
+        // The reference workshop (30 x 14 m) admits the 22 m beam.
+        assert!(hull
+            .check_workshop(Dimensions::new(24.0, 30.0, 14.0))
+            .is_ok());
+
+        // Too narrow for the beam.
+        let err = hull
+            .check_workshop(Dimensions::new(24.0, 18.0, 14.0))
+            .unwrap_err();
+        assert!(err.contains("breadth"), "{err}");
+        assert!(err.contains("22.0"), "{err}");
+
+        // Too shallow for the 6 m band height.
+        let err = hull
+            .check_workshop(Dimensions::new(24.0, 30.0, 4.0))
+            .unwrap_err();
+        assert!(err.contains("depth"), "{err}");
+
+        // Both violated at once.
+        let err = hull
+            .check_workshop(Dimensions::new(24.0, 10.0, 2.0))
+            .unwrap_err();
+        assert!(err.contains("breadth") && err.contains("depth"), "{err}");
     }
 
     /// Verification: block division respects crane and workshop constraints.

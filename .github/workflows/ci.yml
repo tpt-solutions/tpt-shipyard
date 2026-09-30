@@ -57,6 +57,11 @@ jobs:
             echo "== $ex =="
             cargo run -p "$ex" --locked
           done
+      # Review 7F leftover: book and README Rust snippets cannot rot —
+      # every non-`ignore` fenced block is compiled against the built
+      # workspace rlibs.
+      - name: Compile-test book and README snippets
+        run: python scripts/test-snippets.py
 
   wasm:
     name: WASM build + browser tests

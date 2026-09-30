@@ -1,0 +1,15 @@
+# release-plz: keeps versions and per-crate CHANGELOGs moving on a
+# release PR (review 7G leftover). Publishing to crates.io stays with the
+# tag-verified `release.yml` (dry-run first, --locked), so release-plz
+# only prepares versions, changelogs, tags and GitHub releases.
+#
+# Changelog format is release-plz's Keep-a-Changelog default; the existing
+# per-crate CHANGELOG.md files are picked up where present.
+
+[workspace]
+publish = false
+changelog_update = true
+dependencies_update = true
+pr_labels = ["release"]
+# The workspace versions as one release train; bump all members together.
+version_group = "tpt-shipyard"
