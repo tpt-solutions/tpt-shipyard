@@ -8,7 +8,10 @@
 //! project takes under an objective
 //! ([`optimize_sequence`](ShipyardScheduler::optimize_sequence)), and how
 //! to flatten resource peaks
-//! ([`resource_leveling`](ShipyardScheduler::resource_leveling)).
+//! ([`resource_leveling`](ShipyardScheduler::resource_leveling)) — either
+//! one-activity-at-a-time per resource kind, or against stated yard-wide
+//! capacities
+//! ([`resource_leveling_with_limits`](ShipyardScheduler::resource_leveling_with_limits)).
 //!
 //! # Example
 //!
@@ -58,6 +61,9 @@ pub struct ScheduleResult {
     pub makespan_hours: f64,
     /// Execution order (topological, priority-sorted).
     pub order: Vec<ActivityId>,
+    /// Scheduled start of each activity, hours from project start
+    /// (parallel to `order`).
+    pub start_hours: Vec<(ActivityId, f64)>,
     /// Peak concurrent resource demand per kind, under this schedule.
     pub peak_resource_use: Vec<(ResourceKind, f64)>,
     /// Findings.
@@ -73,6 +79,16 @@ pub enum ScheduleError {
     EmptySchedule,
     /// A release gate names an activity that is not in the schedule.
     UnknownGateActivity(ActivityId),
+    /// A capacity-aware levelling limit is not finite and positive.
+    InvalidResourceLimit(ResourceKind),
+    /// An activity draws more of a resource kind than the yard-wide
+    /// capacity limit allows, so no feasible schedule exists.
+    ResourceDemandExceedsCapacity {
+        /// The offending activity.
+        activity: ActivityId,
+        /// The kind whose yard limit cannot fit the demand.
+        kind: ResourceKind,
+    },
 }
 
 impl std::fmt::Display for ScheduleError {
@@ -83,6 +99,18 @@ impl std::fmt::Display for ScheduleError {
                 write!(f, "release gate names unknown activity {a}")
             }
             ScheduleError::EmptySchedule => f.write_str("no activities to schedule"),
+            ScheduleError::InvalidResourceLimit(k) => {
+                write!(
+                    f,
+                    "capacity limit for {} must be finite and positive",
+                    resource_kind_name(*k)
+                )
+            }
+            ScheduleError::ResourceDemandExceedsCapacity { activity, kind } => write!(
+                f,
+                "activity {activity} draws more {} capacity than the yard limit allows",
+                resource_kind_name(*kind)
+            ),
         }
     }
 }
@@ -359,8 +387,57 @@ impl ShipyardScheduler {
         &self,
         objective: ScheduleObjective,
     ) -> Result<ScheduleResult, ScheduleError> {
+        self.optimize_sequence_impl(objective, None)
+    }
+
+    /// Schedules under an objective against yard-wide capacity limits
+    /// (review 7B leftover: capacity-aware levelling). In levelling mode,
+    /// activities sharing a listed resource kind may run in parallel while
+    /// the *sum* of their demands stays at or under the limit — the same
+    /// units as `Resource::capacity` (tonnes for cranes, persons for
+    /// crews, 1.0 per exclusive-use facility). Kinds absent from the map
+    /// are unconstrained.
+    ///
+    /// # Errors
+    ///
+    /// [`ScheduleError::InvalidResourceLimit`] on a limit that is not
+    /// finite and positive, [`ScheduleError::ResourceDemandExceedsCapacity`]
+    /// when an activity alone draws beyond a limit (no feasible schedule),
+    /// [`ScheduleError`] on malformed networks.
+    pub fn optimize_sequence_with_limits(
+        &self,
+        objective: ScheduleObjective,
+        limits: &BTreeMap<ResourceKind, f64>,
+    ) -> Result<ScheduleResult, ScheduleError> {
+        self.optimize_sequence_impl(objective, Some(limits))
+    }
+
+    fn optimize_sequence_impl(
+        &self,
+        objective: ScheduleObjective,
+        limits: Option<&BTreeMap<ResourceKind, f64>>,
+    ) -> Result<ScheduleResult, ScheduleError> {
         if self.activities.is_empty() {
             return Err(ScheduleError::EmptySchedule);
+        }
+        if let Some(limits) = limits {
+            for (&kind, &limit) in limits {
+                if !limit.is_finite() || limit <= 0.0 {
+                    return Err(ScheduleError::InvalidResourceLimit(kind));
+                }
+            }
+            for a in &self.activities {
+                for (kind, demand) in self.demands_of(a.id) {
+                    if let Some(&limit) = limits.get(&kind) {
+                        if demand > limit {
+                            return Err(ScheduleError::ResourceDemandExceedsCapacity {
+                                activity: a.id,
+                                kind,
+                            });
+                        }
+                    }
+                }
+            }
         }
         let g = self.graph()?;
         let cpm = self.cpm()?;
@@ -446,8 +523,9 @@ impl ShipyardScheduler {
                 candidates.dedup();
                 candidates
                     .into_iter()
-                    .find(|&t| {
-                        !placed.iter().any(|(pid, ps, pe)| {
+                    .find(|&t| match limits {
+                        // Legacy mode: any overlap on a shared kind clashes.
+                        None => !placed.iter().any(|(pid, ps, pe)| {
                             let other = self
                                 .activities
                                 .iter()
@@ -460,9 +538,42 @@ impl ShipyardScheduler {
                                     .iter()
                                     .filter(|r| r.capacity > 0.0)
                                     .any(|r| resources.contains(&r.kind))
-                        })
+                        }),
+                        // Capacity-aware mode: the summed demand of every
+                        // activity overlapping the window must stay at or
+                        // under the limit for each listed kind, at every
+                        // breakpoint inside the window (the demand profile is
+                        // piecewise constant, so the max sits on one).
+                        Some(limits) => {
+                            let own = self.demands_of(next);
+                            let mut probes: Vec<f64> = vec![t];
+                            for &(_, ps, pe) in &placed {
+                                for p in [ps, pe] {
+                                    if p > t && p < t + dur {
+                                        probes.push(p);
+                                    }
+                                }
+                            }
+                            probes.sort_by(f64::total_cmp);
+                            probes.dedup();
+                            probes.iter().all(|&tau| {
+                                own.iter().all(|(&k, &d)| {
+                                    let Some(&limit) = limits.get(&k) else {
+                                        return true;
+                                    };
+                                    let used: f64 = placed
+                                        .iter()
+                                        .filter(|&&(_, ps, pe)| ps <= tau && tau < pe)
+                                        .map(|&(pid, _, _)| {
+                                            self.demands_of(pid).get(&k).copied().unwrap_or(0.0)
+                                        })
+                                        .sum();
+                                    used + d <= limit + 1e-9
+                                })
+                            })
+                        }
                     })
-                    .unwrap_or(earliest) // unreachable: the last breakpoint is always free
+                    .unwrap_or(earliest) // unreachable: past the last finish the yard is empty
             } else {
                 earliest
             };
@@ -499,10 +610,12 @@ impl ShipyardScheduler {
         peak_resource_use.sort_by(|a, b| resource_kind_name(a.0).cmp(resource_kind_name(b.0)));
 
         let notes = vec![format!("objective {objective:?}: makespan {makespan:.1} h")];
+        let start_hours = order.iter().map(|&id| (id, start[&id])).collect();
         Ok(ScheduleResult {
             objective,
             makespan_hours: makespan,
             order,
+            start_hours,
             peak_resource_use,
             notes,
         })
@@ -522,6 +635,58 @@ impl ShipyardScheduler {
             early.makespan_hours, levelled.makespan_hours
         ));
         Ok(levelled)
+    }
+
+    /// Capacity-aware resource levelling (review 7B leftover): the
+    /// levelling schedule against yard-wide capacity limits — see
+    /// [`Self::optimize_sequence_with_limits`] for the sharing rule — with
+    /// the earliest-start makespan and the applied limits reported in the
+    /// notes. A Drydock limit of 1.0 with dock activities drawing 1.0
+    /// reproduces the legacy one-at-a-time behaviour for that kind.
+    ///
+    /// # Errors
+    ///
+    /// [`ScheduleError`] on malformed networks, invalid limits, or a
+    /// demand that cannot fit the yard at all.
+    pub fn resource_leveling_with_limits(
+        &self,
+        limits: &BTreeMap<ResourceKind, f64>,
+    ) -> Result<ScheduleResult, ScheduleError> {
+        let mut levelled =
+            self.optimize_sequence_with_limits(ScheduleObjective::MinimizeCraneUsage, limits)?;
+        let early = self.optimize_sequence(ScheduleObjective::MinimizeDuration)?;
+        levelled.notes.push(format!(
+            "earliest-start makespan {:.1} h vs capacity-levelled {:.1} h",
+            early.makespan_hours, levelled.makespan_hours
+        ));
+        let limits_txt = limits
+            .iter()
+            .map(|(k, v)| format!("{} {v}", resource_kind_name(*k)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        levelled
+            .notes
+            .push(format!("capacity limits: {limits_txt}"));
+        Ok(levelled)
+    }
+
+    /// Sums an activity's drawn capacity per resource kind (zero- and
+    /// negative-capacity entries carry no demand, matching the conflict
+    /// scan).
+    fn demands_of(&self, id: ActivityId) -> BTreeMap<ResourceKind, f64> {
+        let mut out: BTreeMap<ResourceKind, f64> = BTreeMap::new();
+        for r in self
+            .activities
+            .iter()
+            .find(|a| a.id == id)
+            .map(|a| &a.resources)
+            .expect("activity exists")
+        {
+            if r.capacity > 0.0 {
+                *out.entry(r.kind).or_insert(0.0) += r.capacity;
+            }
+        }
+        out
     }
 }
 
@@ -1140,5 +1305,224 @@ mod tests {
             }
             assert!(seen.insert(*id), "{objective:?}: duplicate placement");
         }
+    }
+
+    /// Two welding crews of 2 welders each, one 40-tonne crane each; the
+    /// yard fields 4 welders and 80 t of crane. Review 7B leftover:
+    /// capacity-aware levelling must run them in parallel (the legacy
+    /// one-kind-at-a-time rule would serialise them) while a tighter
+    /// welder limit defers the second crew to the first one's finish.
+    #[test]
+    fn capacity_aware_levelling_shares_resources_up_to_the_limit() {
+        let acts = vec![
+            AssemblyActivity::new(ActivityId(1), "W1", ActivityType::WeldBlock, 16.0),
+            AssemblyActivity::new(ActivityId(2), "W2", ActivityType::WeldBlock, 8.0),
+        ];
+        let acts: Vec<_> = acts
+            .into_iter()
+            .map(|a| {
+                a.with_resources(vec![
+                    Resource {
+                        name: "welders".into(),
+                        kind: ResourceKind::Crew,
+                        capacity: 2.0,
+                    },
+                    Resource {
+                        name: "crane".into(),
+                        kind: ResourceKind::Crane,
+                        capacity: 40.0,
+                    },
+                ])
+            })
+            .collect();
+        let s = ShipyardScheduler::new(acts);
+        let peak_of = |r: &ScheduleResult, k: ResourceKind| {
+            r.peak_resource_use
+                .iter()
+                .find(|(kind, _)| *kind == k)
+                .map(|(_, v)| *v)
+                .unwrap_or(0.0)
+        };
+
+        // Legacy levelling: mutual exclusion serialises the crews.
+        let legacy = s.resource_leveling().unwrap();
+        assert_eq!(peak_of(&legacy, ResourceKind::Crew), 2.0);
+        assert_eq!(legacy.makespan_hours, 24.0);
+
+        // 4 welders / 80 t: both crews run together, peak equals the limit.
+        let mut generous = BTreeMap::new();
+        generous.insert(ResourceKind::Crew, 4.0);
+        generous.insert(ResourceKind::Crane, 80.0);
+        let shared = s.resource_leveling_with_limits(&generous).unwrap();
+        assert_eq!(shared.makespan_hours, 16.0);
+        assert_eq!(peak_of(&shared, ResourceKind::Crew), 4.0);
+        assert_eq!(peak_of(&shared, ResourceKind::Crane), 80.0);
+        assert_topological(
+            &s.activities,
+            &shared.order,
+            ScheduleObjective::MinimizeCraneUsage,
+        );
+
+        // 3 welders (cranes unconstrained): W2 defers to W1's 16 h finish —
+        // the exact breakpoint, not a grid approximation.
+        let mut tight = BTreeMap::new();
+        tight.insert(ResourceKind::Crew, 3.0);
+        let deferred = s.resource_leveling_with_limits(&tight).unwrap();
+        let cpm = deferred.makespan_hours;
+        assert!((cpm - 24.0).abs() < 1e-9);
+        assert_eq!(peak_of(&deferred, ResourceKind::Crew), 2.0);
+
+        // A limit of exactly one crew reproduces the legacy serialisation.
+        let mut solo = BTreeMap::new();
+        solo.insert(ResourceKind::Crew, 2.0);
+        let serial = s.resource_leveling_with_limits(&solo).unwrap();
+        assert_eq!(serial.makespan_hours, 24.0);
+        assert_eq!(legacy.makespan_hours, serial.makespan_hours);
+    }
+
+    /// Regression for the window check: the fitted activity must respect
+    /// demand *rises* inside its own duration, not just at its start.
+    /// M(14 h, 1 welder) and C(2 h, 1 welder) -> R(4 h, 2 welders) run
+    /// against S(6 h, 2 welders) with a 4-welder limit. At t = 0 the demand
+    /// is M + C + S = 4 — feasible at the start instant — but when R starts
+    /// at 2 h the total would hit 5 > 4, so S must defer to R's 6 h finish
+    /// and the run peak stays at 4 (a start-only check produces 5).
+    #[test]
+    fn capacity_levelling_checks_the_whole_window() {
+        let crew = |n: f64| {
+            vec![Resource {
+                name: "welders".into(),
+                kind: ResourceKind::Crew,
+                capacity: n,
+            }]
+        };
+        let s = ShipyardScheduler::new(vec![
+            AssemblyActivity::new(ActivityId(1), "C", ActivityType::WeldBlock, 2.0)
+                .with_resources(crew(1.0)),
+            AssemblyActivity::new(ActivityId(2), "R", ActivityType::WeldBlock, 4.0)
+                .with_dependencies(&[ActivityId(1)])
+                .with_resources(crew(2.0)),
+            AssemblyActivity::new(ActivityId(3), "M", ActivityType::WeldBlock, 14.0)
+                .with_resources(crew(1.0)),
+            AssemblyActivity::new(ActivityId(4), "S", ActivityType::WeldBlock, 6.0)
+                .with_resources(crew(2.0)),
+        ]);
+        let mut limits = BTreeMap::new();
+        limits.insert(ResourceKind::Crew, 4.0);
+        let r = s.resource_leveling_with_limits(&limits).unwrap();
+        // Correct schedule: M 0-14, C 0-2, R 2-6, S 6-12 — S cannot sit in
+        // [0,2): it is feasible at t=0 (M+C+S = 4) but R's 2 h start would
+        // push the total to 5, so S defers to R's finish and the peak is
+        // only 3 (a start-only check would keep S at 0 h and peak 5).
+        assert!(
+            (r.makespan_hours - 14.0).abs() < 1e-9,
+            "S fits beside M after R: {}",
+            r.makespan_hours
+        );
+        assert_eq!(
+            r.peak_resource_use
+                .iter()
+                .find(|(k, _)| *k == ResourceKind::Crew)
+                .map(|(_, v)| *v)
+                .unwrap(),
+            3.0,
+            "the run must never exceed the 4-welder limit"
+        );
+        // The limit is honoured at every instant, and the placement matches
+        // the hand schedule exactly: R at 2 h, S deferred to R's 6 h finish.
+        let st = |id: u64| {
+            r.start_hours
+                .iter()
+                .find(|(a, _)| a.0 == id)
+                .map(|(_, s)| *s)
+                .expect("activity scheduled")
+        };
+        assert_eq!(st(1), 0.0);
+        assert_eq!(st(2), 2.0);
+        assert_eq!(st(3), 0.0);
+        assert_eq!(st(4), 6.0);
+    }
+
+    /// Validation: non-finite/non-positive limits are refused; an activity
+    /// that alone exceeds the yard's capacity is a typed error, not an
+    /// infinite deferral.
+    #[test]
+    fn capacity_limits_are_validated() {
+        let s = ShipyardScheduler::new(vec![AssemblyActivity::new(
+            ActivityId(1),
+            "lift",
+            ActivityType::JoinBlock,
+            4.0,
+        )
+        .with_resources(vec![Resource {
+            name: "crane".into(),
+            kind: ResourceKind::Crane,
+            capacity: 120.0,
+        }])]);
+
+        let mut zero = BTreeMap::new();
+        zero.insert(ResourceKind::Crane, 0.0);
+        assert_eq!(
+            s.resource_leveling_with_limits(&zero),
+            Err(ScheduleError::InvalidResourceLimit(ResourceKind::Crane))
+        );
+
+        let mut negative = BTreeMap::new();
+        negative.insert(ResourceKind::Crane, -5.0);
+        assert_eq!(
+            s.resource_leveling_with_limits(&negative),
+            Err(ScheduleError::InvalidResourceLimit(ResourceKind::Crane))
+        );
+
+        let mut nan = BTreeMap::new();
+        nan.insert(ResourceKind::Crane, f64::NAN);
+        assert_eq!(
+            s.resource_leveling_with_limits(&nan),
+            Err(ScheduleError::InvalidResourceLimit(ResourceKind::Crane))
+        );
+
+        let mut too_small = BTreeMap::new();
+        too_small.insert(ResourceKind::Crane, 100.0);
+        assert_eq!(
+            s.resource_leveling_with_limits(&too_small),
+            Err(ScheduleError::ResourceDemandExceedsCapacity {
+                activity: ActivityId(1),
+                kind: ResourceKind::Crane
+            })
+        );
+
+        // Exactly at the limit is fine.
+        let mut exact = BTreeMap::new();
+        exact.insert(ResourceKind::Crane, 120.0);
+        let r = s.resource_leveling_with_limits(&exact).unwrap();
+        assert_eq!(r.makespan_hours, 4.0);
+        assert!(r
+            .notes
+            .iter()
+            .any(|n| n.contains("capacity limits") && n.contains("crane 120")));
+    }
+
+    /// Kinds absent from the limits map are unconstrained: two
+    /// welding-station jobs with no WeldingStation limit run in parallel
+    /// even in the capacity-aware path.
+    #[test]
+    fn unlisted_kinds_are_unconstrained_in_capacity_levelling() {
+        let station = || {
+            vec![Resource {
+                name: "station".into(),
+                kind: ResourceKind::WeldingStation,
+                capacity: 1.0,
+            }]
+        };
+        let s = ShipyardScheduler::new(vec![
+            AssemblyActivity::new(ActivityId(1), "J1", ActivityType::WeldBlock, 10.0)
+                .with_resources(station()),
+            AssemblyActivity::new(ActivityId(2), "J2", ActivityType::WeldBlock, 10.0)
+                .with_resources(station()),
+        ]);
+        let mut limits = BTreeMap::new();
+        limits.insert(ResourceKind::Crane, 50.0); // irrelevant to both
+        let r = s.resource_leveling_with_limits(&limits).unwrap();
+        assert_eq!(r.makespan_hours, 10.0, "no welding-station limit: parallel");
     }
 }

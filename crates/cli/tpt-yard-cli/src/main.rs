@@ -7,14 +7,18 @@
 //! - `plan MANIFEST.json` — the end-to-end construction plan for a hull
 //!   manifest: block division → erection order → lift checks → schedule →
 //!   critical path, one report.
-//! - `schedule FILE.json` — CPM critical path and resource-levelling for a
-//!   vessel project's activities.
+//! - `schedule FILE.json [--limit kind=value]...` — CPM critical path and
+//!   resource levelling for a vessel project's activities; `--limit`
+//!   states yard-wide capacities per resource kind (crane tonnes, crew
+//!   persons, …) for capacity-aware levelling that shares resources up to
+//!   the limit.
 //! - `report FILE.json` — weight/CoG/structural summary for a project.
 //! - `new <sea|space> [NAME]` — print a scaffolded project JSON built from
 //!   the workspace templates.
 //!
 //! Every command takes `--json` to emit machine-readable output.
 
+use std::collections::BTreeMap;
 use std::process::ExitCode;
 
 use tpt_yard_core::{json::Value, MassProperties, Vector3};
@@ -55,7 +59,7 @@ fn run(args: &[&str], json_mode: bool) -> Result<(), String> {
             rest.first().ok_or("plan needs a hull manifest path")?,
             json_mode,
         ),
-        "schedule" => schedule(rest.first().ok_or("schedule needs a file path")?, json_mode),
+        "schedule" => schedule(rest, json_mode),
         "risk" => risk(rest, json_mode),
         "report" => report(rest.first().ok_or("report needs a file path")?, json_mode),
         "new" => new(rest, json_mode),
@@ -771,7 +775,43 @@ fn plan(path: &str, json_mode: bool) -> Result<(), String> {
 
 // ---------------------------------------------------------------- schedule
 
-fn schedule(path: &str, json_mode: bool) -> Result<(), String> {
+/// `schedule project.json [--limit kind=value]...`
+///
+/// Critical path plus capacity-aware resource levelling. Each `--limit`
+/// states the yard-wide concurrent availability of one resource kind, in
+/// the same units as the activities' resource capacities (e.g.
+/// `--limit crane=200` for 200 t of crane, `--limit crew=40` for 40
+/// welders); kinds without a limit are unconstrained.
+fn schedule(rest: &[&str], json_mode: bool) -> Result<(), String> {
+    let path: &str = rest
+        .first()
+        .copied()
+        .filter(|a| !a.starts_with("--"))
+        .ok_or("schedule needs a project file path")?;
+    let rest: Vec<&str> = rest
+        .iter()
+        .skip(1)
+        .copied()
+        .filter(|a| *a != path)
+        .collect();
+    let mut limits: BTreeMap<String, f64> = BTreeMap::new();
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            "--limit" => {
+                i += 1;
+                let spec = rest.get(i).ok_or("--limit needs kind=value")?;
+                let (kind, val) = spec
+                    .split_once('=')
+                    .ok_or_else(|| format!("--limit {spec}: expected kind=value"))?;
+                let v: f64 = val.parse().map_err(|e| format!("--limit {kind}: {e}"))?;
+                limits.insert(kind.to_ascii_lowercase(), v);
+            }
+            other => return Err(format!("unknown schedule flag '{other}'")),
+        }
+        i += 1;
+    }
+
     let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
     let v = Value::parse(&text).map_err(|e| format!("{path}: {e}"))?;
     let project =
@@ -784,17 +824,54 @@ fn schedule(path: &str, json_mode: bool) -> Result<(), String> {
     if acts.is_empty() {
         return Err("project has no activities to schedule".into());
     }
+    let kind_of = |name: &str| match name {
+        "crane" => Some(tpt_yard_core::ResourceKind::Crane),
+        "workshop" => Some(tpt_yard_core::ResourceKind::Workshop),
+        "drydock" => Some(tpt_yard_core::ResourceKind::Drydock),
+        "welding" => Some(tpt_yard_core::ResourceKind::WeldingStation),
+        "robot" => Some(tpt_yard_core::ResourceKind::Robot),
+        "crew" => Some(tpt_yard_core::ResourceKind::Crew),
+        "transport" => Some(tpt_yard_core::ResourceKind::Transport),
+        _ => None,
+    };
+    let mut limit_kinds: BTreeMap<tpt_yard_core::ResourceKind, f64> = BTreeMap::new();
+    for (name, v) in &limits {
+        let kind = kind_of(name).ok_or_else(|| {
+            format!(
+                "--limit {name}: unknown resource kind (use crane|workshop|drydock|welding|robot|crew|transport)"
+            )
+        })?;
+        limit_kinds.insert(kind, *v);
+    }
     let scheduler = tpt_yard::tpt_yard_scheduling::ShipyardScheduler::new(acts);
     let cp = scheduler.critical_path().map_err(|e| format!("{e}"))?;
-    let levelled = scheduler.resource_leveling().map_err(|e| format!("{e}"))?;
+    let levelled = if limit_kinds.is_empty() {
+        scheduler.resource_leveling()
+    } else {
+        scheduler.resource_leveling_with_limits(&limit_kinds)
+    }
+    .map_err(|e| format!("levelling: {e}"))?;
+    let kind_name =
+        |k: tpt_yard_core::ResourceKind| tpt_yard::tpt_yard_scheduling::resource_kind_name(k);
     if json_mode {
+        let starts: Vec<String> = levelled
+            .start_hours
+            .iter()
+            .map(|(a, s)| format!("[{},{}]", a.0, s))
+            .collect();
+        let lims: Vec<String> = limit_kinds
+            .iter()
+            .map(|(k, v)| format!("\"{}\":{}", kind_name(*k), v))
+            .collect();
         println!(
-            "{{\"critical_path\":[{}],\"makespan_h\":{:.1}}}",
+            "{{\"critical_path\":[{}],\"makespan_h\":{:.1},\"starts\":[{}],\"limits\":{{{}}}}}",
             cp.iter()
                 .map(|a| a.0.to_string())
                 .collect::<Vec<_>>()
                 .join(","),
-            levelled.makespan_hours
+            levelled.makespan_hours,
+            starts.join(","),
+            lims.join(",")
         );
         return Ok(());
     }
@@ -807,6 +884,22 @@ fn schedule(path: &str, json_mode: bool) -> Result<(), String> {
         cp.len(),
         levelled.makespan_hours
     );
+    if !limit_kinds.is_empty() {
+        println!(
+            "Capacity limits: {}",
+            limit_kinds
+                .iter()
+                .map(|(k, v)| format!("{} {}", kind_name(*k), v))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    for note in &levelled.notes {
+        println!("  - {note}");
+    }
+    for (a, s) in &levelled.start_hours {
+        println!("  A{} starts at {:.1} h", a.0, s);
+    }
     Ok(())
 }
 

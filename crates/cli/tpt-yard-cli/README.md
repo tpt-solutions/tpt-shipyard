@@ -5,7 +5,10 @@ Command-line front end for [tpt-shipyard](https://github.com/tpt-solutions/tpt-s
 ```text
 tpt-yard validate <project-or-manifest.json>   # consistency check
 tpt-yard plan <hull-manifest.json> [--json]    # end-to-end: blocks -> erection -> lift -> schedule
-tpt-yard schedule <project.json> [--json]      # critical path + levelling
+tpt-yard schedule <project.json> [--limit crane=200 --limit crew=40] [--json]
+                                               # critical path + levelling; --limit states
+                                               # yard-wide capacities per resource kind for
+                                               # capacity-aware levelling
 tpt-yard report <project.json> [--json]        # weight / CoG / structural summary
 tpt-yard new <sea|space> [NAME] [--json]       # scaffold a project
 ```
