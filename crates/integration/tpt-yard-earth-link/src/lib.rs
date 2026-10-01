@@ -80,6 +80,9 @@ pub enum LaunchWindowError {
     NoSafeWindow,
     /// The forecast is empty.
     EmptyForecast,
+    /// Forecast entry {0} is not a number or is outside the Douglas
+    /// range 0-9.
+    MalformedEntry(usize),
 }
 
 impl fmt::Display for LaunchWindowError {
@@ -89,11 +92,43 @@ impl fmt::Display for LaunchWindowError {
                 f.write_str("no hours below the sea-state limit in the forecast")
             }
             LaunchWindowError::EmptyForecast => f.write_str("empty forecast"),
+            LaunchWindowError::MalformedEntry(i) => {
+                write!(
+                    f,
+                    "forecast entry {i} is not a number in the Douglas range 0-9"
+                )
+            }
         }
     }
 }
 
 impl std::error::Error for LaunchWindowError {}
+
+/// A sea-state forecast loader (review 7C loader standards): strict
+/// parsing of the wire format
+/// `{"hourly_sea_state": [0.5, 1.0, ...]}` — missing fields are
+/// `EmptyForecast`, non-numeric or negative entries are typed errors
+/// (Douglas states are 0-9; values above 9 are instrument error).
+impl SeaStateForecast {
+    /// Deserializes from a JSON value produced by the wire format above.
+    pub fn from_json_value(v: &tpt_yard_core::json::Value) -> Result<Self, LaunchWindowError> {
+        let arr = v
+            .get("hourly_sea_state")
+            .and_then(|x| x.as_array())
+            .ok_or(LaunchWindowError::EmptyForecast)?;
+        let mut hourly = Vec::with_capacity(arr.len());
+        for (i, entry) in arr.iter().enumerate() {
+            let state = entry.as_f64().ok_or(LaunchWindowError::MalformedEntry(i))?;
+            if !state.is_finite() || state < 0.0 || state > 9.0 {
+                return Err(LaunchWindowError::MalformedEntry(i));
+            }
+            hourly.push(state);
+        }
+        Ok(Self {
+            hourly_sea_state: hourly,
+        })
+    }
+}
 
 /// The sea-state limit by launch method (yard practice screening):
 /// slipway end launch <= 2, side launch <= 1, dock flooding <= 3, shiplift <= 2.
@@ -262,5 +297,81 @@ mod tests {
             plan_launch_window(&slipway(), &SeaStateForecast::default()),
             Err(LaunchWindowError::EmptyForecast)
         );
+    }
+}
+
+#[cfg(test)]
+mod forecast_loader_tests {
+    use super::*;
+
+    #[test]
+    fn forecast_json_loads_and_strictly_validates() {
+        // Valid forecast round the method limit.
+        let v = tpt_yard_core::json::Value::parse(
+            r#"{"hourly_sea_state": [3.5, 2.0, 1.0, 1.0, 1.5, 3.0]}"#,
+        )
+        .unwrap();
+        let f = SeaStateForecast::from_json_value(&v).expect("loads");
+        assert_eq!(f.hourly_sea_state.len(), 6);
+        assert_eq!(f.hourly_sea_state[2], 1.0);
+
+        // Empty array: loadable but plan_launch_window refuses it.
+        let v = tpt_yard_core::json::Value::parse(r#"{"hourly_sea_state": []}"#).unwrap();
+        assert!(SeaStateForecast::from_json_value(&v).is_ok());
+
+        // Missing field / wrong type / out-of-range entries are errors,
+        // never silently defaulted (review 7C standards).
+        for (text, what) in [
+            (r#"{}"#, "missing field"),
+            (r#"{"hourly_sea_state": "calm"}"#, "wrong type"),
+            (r#"{"hourly_sea_state": [1.0, "x"]}"#, "non-numeric entry"),
+            (r#"{"hourly_sea_state": [1.0, -0.5]}"#, "negative entry"),
+            (r#"{"hourly_sea_state": [1.0, 12.0]}"#, "above Douglas 9"),
+        ] {
+            let v = tpt_yard_core::json::Value::parse(text).expect("parses");
+            assert!(
+                matches!(
+                    SeaStateForecast::from_json_value(&v),
+                    Err(LaunchWindowError::MalformedEntry(_))
+                        | Err(LaunchWindowError::EmptyForecast)
+                ),
+                "{what} must be rejected"
+            );
+        }
+    }
+
+    /// End-to-end: a forecast JSON gates the launch — the loaded forecast
+    /// feeds plan_launch_window and the safe window converts into a
+    /// schedule release hour (the CLI risk --weather path).
+    #[test]
+    fn forecast_feeds_launch_window() {
+        let v = tpt_yard_core::json::Value::parse(
+            r#"{"hourly_sea_state": [4.0, 4.0, 2.0, 1.0, 1.0, 1.0, 5.0]}"#,
+        )
+        .unwrap();
+        let forecast = SeaStateForecast::from_json_value(&v).unwrap();
+        let analysis = LaunchAnalysis {
+            launch_method: LaunchMethod::Slipway {
+                slope_deg: 3.0,
+                ways: 2,
+            },
+            vessel_weight: tpt_yard_core::MassProperties {
+                mass_kg: 4_000_000.0,
+                cog: tpt_yard_core::Vector3::new(70.0, 0.0, 6.0),
+            },
+            way_length_m: 120.0,
+            way_width_m: 2.0,
+            friction_coefficient: 0.02,
+            poppet_to_cog_m: 70.0,
+            end_bearing_m: 20.0,
+            immersion_length_m: 90.0,
+            block_coefficient: 0.8,
+            breadth_m: 20.0,
+            site: SiteConditions { max_sea_state: 3 },
+        };
+        let window = plan_launch_window(&analysis, &forecast).expect("window exists");
+        // Slipway limit 2.0: calm from hour 2 through 5 (4 hours).
+        assert_eq!(window.earliest_hour, 2);
+        assert_eq!(window.calm_hours, 4);
     }
 }

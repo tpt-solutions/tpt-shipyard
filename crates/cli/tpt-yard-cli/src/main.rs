@@ -569,6 +569,10 @@ fn risk(rest: &[&str], json_mode: bool) -> Result<(), String> {
     let mut samples = 2_000_u32;
     let mut uncertainty = 0.25_f64;
     let mut gates: Vec<(u64, f64, f64)> = Vec::new();
+    let mut weather: Option<&str> = None;
+    let mut launch_method = "drydock";
+    let mut max_sea_state = 3_u32;
+    let weather_gate_activity: Option<u64> = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i] {
@@ -585,6 +589,28 @@ fn risk(rest: &[&str], json_mode: bool) -> Result<(), String> {
                     .get(i)
                     .and_then(|v| v.parse().ok())
                     .ok_or("--uncertainty needs a fraction")?;
+            }
+            "--weather" => {
+                i += 1;
+                weather = Some(
+                    rest.get(i)
+                        .copied()
+                        .ok_or("--weather needs a forecast path")?,
+                );
+            }
+            "--launch-method" => {
+                i += 1;
+                launch_method = rest
+                    .get(i)
+                    .copied()
+                    .ok_or("--launch-method needs slipway|drydock|side|shiplift")?;
+            }
+            "--max-sea-state" => {
+                i += 1;
+                max_sea_state = rest
+                    .get(i)
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--max-sea-state needs a Douglas number (0-9)")?;
             }
             "--gate" => {
                 i += 1;
@@ -623,8 +649,8 @@ fn risk(rest: &[&str], json_mode: bool) -> Result<(), String> {
     if acts.is_empty() {
         return Err("project has no activities to analyse".into());
     }
-    let scheduler = tpt_yard::tpt_yard_scheduling::ShipyardScheduler::new(acts);
-    let gate_objs: Vec<tpt_yard::tpt_yard_scheduling::DeliveryGate> = gates
+    let scheduler = tpt_yard::tpt_yard_scheduling::ShipyardScheduler::new(acts.clone());
+    let mut gate_objs: Vec<tpt_yard::tpt_yard_scheduling::DeliveryGate> = gates
         .iter()
         .map(
             |(id, h, slip)| tpt_yard::tpt_yard_scheduling::DeliveryGate {
@@ -634,6 +660,61 @@ fn risk(rest: &[&str], json_mode: bool) -> Result<(), String> {
             },
         )
         .collect();
+    // Weather window (review 7H Monte Carlo leftover): a sea-state
+    // forecast gates the launch activity — it cannot start before the
+    // first calm run of hours at or below the sea-state limit.
+    let mut weather_note = String::new();
+    if let Some(fpath) = weather {
+        // The gated activity: an explicit --gate id if present, else the
+        // last activity of the plan (typically the launch).
+        let activity = weather_gate_activity
+            .or_else(|| gates.last().map(|(id, _, _)| *id))
+            .unwrap_or_else(|| acts.last().map(|a| a.id.0).unwrap_or(0));
+        let ftext = std::fs::read_to_string(fpath).map_err(|e| format!("reading {fpath}: {e}"))?;
+        let fv = tpt_yard_core::json::Value::parse(&ftext).map_err(|e| format!("{fpath}: {e}"))?;
+        let forecast = tpt_yard::tpt_yard_earth_link::SeaStateForecast::from_json_value(&fv)
+            .map_err(|e| format!("{fpath}: {e}"))?;
+        let analysis = tpt_yard::tpt_yard_launch::LaunchAnalysis {
+            launch_method: match launch_method {
+                "slipway" => tpt_yard::tpt_yard_launch::LaunchMethod::Slipway {
+                    slope_deg: 3.0,
+                    ways: 2,
+                },
+                "side" => tpt_yard::tpt_yard_launch::LaunchMethod::SideLaunch,
+                "shiplift" => tpt_yard::tpt_yard_launch::LaunchMethod::Shiplift {
+                    capacity_kn: 40_000.0,
+                },
+                _ => tpt_yard::tpt_yard_launch::LaunchMethod::DrydockFlooding,
+            },
+            vessel_weight: tpt_yard_core::MassProperties {
+                mass_kg: 4_000_000.0,
+                cog: tpt_yard_core::Vector3::new(0.0, 0.0, 6.0),
+            },
+            way_length_m: 120.0,
+            way_width_m: 2.0,
+            friction_coefficient: 0.02,
+            poppet_to_cog_m: 70.0,
+            end_bearing_m: 20.0,
+            immersion_length_m: 90.0,
+            block_coefficient: 0.8,
+            breadth_m: 20.0,
+            site: tpt_yard::tpt_yard_launch::SiteConditions { max_sea_state },
+        };
+        let window = tpt_yard::tpt_yard_earth_link::plan_launch_window(&analysis, &forecast)
+            .map_err(|e| format!("weather: {e}"))?;
+        weather_note = format!(
+            " (weather gate: safe from hour {} for {} h at sea state <= {})",
+            window.earliest_hour, window.calm_hours, window.sea_state_limit
+        );
+        gate_objs.insert(
+            0,
+            tpt_yard::tpt_yard_scheduling::DeliveryGate {
+                activity: tpt_yard::tpt_yard_assembly::ActivityId(activity),
+                expected_available_h: window.earliest_hour as f64,
+                slippage_frac: 0.0,
+            },
+        );
+    }
     let risk = scheduler
         .monte_carlo_risk_with_gates(&gate_objs, uncertainty, samples, 42)
         .map_err(|e| format!("{e}"))?;
@@ -647,6 +728,9 @@ fn risk(rest: &[&str], json_mode: bool) -> Result<(), String> {
             risk.mean_makespan_h,
             gates.len()
         );
+        if !weather_note.is_empty() {
+            eprintln!("weather{weather_note}");
+        }
         return Ok(());
     }
     println!(
@@ -658,6 +742,9 @@ fn risk(rest: &[&str], json_mode: bool) -> Result<(), String> {
         "  makespan P50 {:.1} h | P90 {:.1} h | mean {:.1} h",
         risk.p50_makespan_h, risk.p90_makespan_h, risk.mean_makespan_h
     );
+    if !weather_note.is_empty() {
+        println!("  weather{weather_note}");
+    }
     if !gates.is_empty() {
         println!(
             "  delivery gates: {}",
