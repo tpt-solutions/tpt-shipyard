@@ -53,7 +53,7 @@ jobs:
           cargo build -p tpt-yard-wasm --target wasm32-unknown-unknown --release --locked
           wasm-bindgen --out-dir pkg --target web target/wasm32-unknown-unknown/release/tpt_yard_wasm.wasm
       - name: Upload WASM package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tpt-yard-wasm-web
           path: pkg/
