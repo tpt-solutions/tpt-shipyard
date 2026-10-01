@@ -19,7 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     if: github.repository_owner == 'tpt-solutions'
     concurrency:
-      group: release-plz-${{ github.ref }}
+      # Distinct groups: two jobs of the SAME run sharing one group cancel
+      # each other (the first Release-plz run after the config fix showed
+      # exactly that).
+      group: release-plz-release-${{ github.ref }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
@@ -34,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.repository_owner == 'tpt-solutions'
     concurrency:
-      group: release-plz-${{ github.ref }}
+      group: release-plz-pr-${{ github.ref }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
