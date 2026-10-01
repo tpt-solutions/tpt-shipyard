@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- `damage_screen` + `DamageCase`/`DamageSummary` (review 7H): multi-case
+  damage screening — runs the added-weight method over a named case set
+  and reports per-case GM/list/trim, the governing (lowest-GM) case and
+  the all-pass verdict against the 0.05 m floor.
+
 - `Bonjean` / `SectionOffsets` (review 7H): displacement and LCB from real
   hull offsets at any draft and trim, plus `cross_curve_ordinate` (KN) by
   strip integration under the inclined waterline (rotation about the

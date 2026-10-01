@@ -486,6 +486,94 @@ impl HullForm {
     }
 }
 
+/// One named damage case for the multi-case screen.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DamageCase {
+    /// Case designation (e.g. "DB tank 3 alone", "WBT 4 P+S").
+    pub name: String,
+    /// The compartments flooded in this case.
+    pub compartments: Vec<DamageCompartment>,
+}
+
+/// Per-case outcome of the multi-case screen.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DamageCaseResult {
+    /// The case name.
+    pub name: String,
+    /// Damaged GM, m.
+    pub gm_m: f64,
+    /// List angle, degrees.
+    pub list_angle_deg: f64,
+    /// Damage trim (fore - aft), m.
+    pub trim_m: f64,
+    /// True when the case reaches the 0.05 m floor.
+    pub passes_one_compartment: bool,
+}
+
+/// Summary of the multi-case damage screen: per-case outcomes plus the
+/// governing (lowest-GM) case and the fleet verdict.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DamageSummary {
+    /// Per-case results in input order.
+    pub cases: Vec<DamageCaseResult>,
+    /// Index into `cases` of the governing (lowest-GM) case.
+    pub governing_index: usize,
+    /// True when every case passes the 0.05 m one-compartment floor.
+    pub all_pass: bool,
+}
+
+impl HullForm {
+    /// Multi-case damage screen (review 7H leftover: the deterministic
+    /// precursor to probabilistic damage stability): runs
+    /// [`Self::damage_stability`] for every case and reports the
+    /// per-case outcomes, the governing (lowest-GM) case, and whether
+    /// all cases pass. The full probabilistic method (p/s factors,
+    /// subdivision index) remains a class-society calculation.
+    ///
+    /// # Errors
+    ///
+    /// `None` if any individual case cannot be solved (the summary
+    /// requires every case to converge; solve cases one at a time with
+    /// [`Self::damage_stability`] to isolate a failing one).
+    pub fn damage_screen(
+        &self,
+        displacement_t: f64,
+        lcg_from_midship_m: f64,
+        kg_m: f64,
+        free_surface_moment_tm: f64,
+        cases: &[DamageCase],
+    ) -> Option<DamageSummary> {
+        let mut results = Vec::with_capacity(cases.len());
+        for case in cases {
+            let r = self.damage_stability(
+                displacement_t,
+                lcg_from_midship_m,
+                kg_m,
+                free_surface_moment_tm,
+                &case.compartments,
+            )?;
+            results.push(DamageCaseResult {
+                name: case.name.clone(),
+                gm_m: r.gm_m,
+                list_angle_deg: r.list_angle_deg,
+                trim_m: r.trim_m,
+                passes_one_compartment: r.passes_one_compartment,
+            });
+        }
+        let governing_index = results
+            .iter()
+            .enumerate()
+            .min_by(|(_ia, a), (_ib, b)| a.gm_m.total_cmp(&b.gm_m))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        Some(DamageSummary {
+            all_pass: results.iter().all(|r| r.passes_one_compartment),
+            governing_index,
+            cases: results,
+        })
+    }
+}
+
 /// Equilibrium trim/list solution for a displacement and LCG (review 7H
 /// leftover: "trim" in the prismatic model).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1323,6 +1411,79 @@ mod tests {
         let expected_list = (tcg / r2.gm_m).atan().to_degrees();
         assert!((r2.list_angle_deg - expected_list).abs() < 1e-9);
         assert!(r2.list_angle_deg > 0.0, "starboard flood lists starboard");
+    }
+
+    /// Review 7H leftover: multi-case damage screen. A wing-tank flood
+    /// (off-centre + free surface) must govern over a centreline double-
+    /// bottom flood (whose low floodwater can even raise GM), and the
+    /// summary must flip `all_pass` when a case fails.
+    #[test]
+    fn damage_screen_governs_on_lowest_gm() {
+        let hull = feeder(); // 140 x 22 x Cb 0.72
+        let w = 20_000.0;
+        let kg = 9.0;
+
+        let cases = vec![
+            DamageCase {
+                name: "DB 4 P+S".into(),
+                compartments: vec![DamageCompartment {
+                    name: "DB 4".into(),
+                    volume_m3: 800.0,
+                    centroid: (0.0, 0.0, 1.0),
+                    free_surface_moment_tm: 400.0,
+                }],
+            },
+            DamageCase {
+                name: "WBT 3 S".into(),
+                compartments: vec![DamageCompartment {
+                    name: "WBT 3 S".into(),
+                    volume_m3: 800.0,
+                    centroid: (10.0, 5.0, 6.0),
+                    free_surface_moment_tm: 900.0,
+                }],
+            },
+        ];
+        let summary = hull
+            .damage_screen(w, 0.0, kg, 0.0, &cases)
+            .expect("all cases solve");
+        assert_eq!(summary.cases.len(), 2);
+        // The off-centre wing flood (high floodwater + big free surface)
+        // must govern.
+        assert_eq!(summary.governing_index, 1);
+        assert!(
+            summary.cases[1].gm_m < summary.cases[0].gm_m,
+            "wing {:?} vs DB {:?}",
+            summary.cases[1].gm_m,
+            summary.cases[0].gm_m
+        );
+        // Cross-check the governing GM against the single-case function.
+        let single = hull
+            .damage_stability(w, 0.0, kg, 0.0, &cases[1].compartments)
+            .unwrap();
+        assert!((summary.cases[1].gm_m - single.gm_m).abs() < 1e-12);
+
+        // Add a catastrophic case (huge free surface) and the summary
+        // flips all_pass and re-governs.
+        let mut failing = cases.clone();
+        failing.push(DamageCase {
+            name: "machinery flood".into(),
+            compartments: vec![DamageCompartment {
+                name: "M/R".into(),
+                volume_m3: 3_000.0,
+                centroid: (20.0, 0.0, 8.0),
+                free_surface_moment_tm: 30_000.0,
+            }],
+        });
+        let summary2 = hull
+            .damage_screen(w, 0.0, kg, 0.0, &failing)
+            .expect("all cases solve");
+        assert!(!summary2.all_pass);
+        assert_eq!(summary2.governing_index, 2);
+        assert!(!summary2.cases[2].passes_one_compartment);
+        // Empty case list: trivially all-pass, no governing case content.
+        let empty = hull.damage_screen(w, 0.0, kg, 0.0, &[]).unwrap();
+        assert!(empty.all_pass);
+        assert!(empty.cases.is_empty());
     }
 
     /// Review 7H leftover: IACS CSR wave-induced bending moments — the
