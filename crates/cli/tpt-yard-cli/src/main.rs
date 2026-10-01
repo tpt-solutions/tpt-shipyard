@@ -60,19 +60,19 @@ fn run(args: &[&str], json_mode: bool) -> Result<(), String> {
         "report" => report(rest.first().ok_or("report needs a file path")?, json_mode),
         "new" => new(rest, json_mode),
         "html-report" => {
-            let (out, rest): (String, &[&str]) = if rest.first() == Some(&"--out") {
-                (
-                    rest.get(1)
-                        .copied()
-                        .ok_or("--out needs a path")?
-                        .to_string(),
-                    rest.get(2..).unwrap_or_default(),
-                )
-            } else {
-                ("report.html".to_string(), rest)
-            };
+            // --out is accepted anywhere among the arguments.
+            let mut out = "report.html".to_string();
+            let mut args: Vec<&str> = Vec::new();
+            let mut it = rest.iter();
+            while let Some(a) = it.next() {
+                if *a == "--out" {
+                    out = it.next().copied().ok_or("--out needs a path")?.to_string();
+                } else {
+                    args.push(a);
+                }
+            }
             html_report(
-                rest.first().ok_or("html-report needs a project path")?,
+                args.first().ok_or("html-report needs a project path")?,
                 &out,
             )
         }
@@ -90,6 +90,64 @@ fn html_report(path: &str, out_path: &str) -> Result<(), String> {
     let twin = tpt_yard::tpt_yard_digital_twin::DigitalTwin::new(project);
     let report = twin.weight_model().weight_report();
     let check = twin.structural_check();
+
+    // Schedule and risk sections (review 7H report package): critical
+    // path + levelled makespan, then a Monte Carlo risk run with default
+    // screening settings (2000 samples, +/-25 % duration uncertainty).
+    let acts: Vec<tpt_yard_core::AssemblyActivity> = twin
+        .vessel
+        .build_phases
+        .iter()
+        .flat_map(|p| p.activities.iter().cloned())
+        .collect();
+    let (sched_section, risk_section) = if acts.is_empty() {
+        (
+            "<p>No activities to schedule.</p>".to_string(),
+            String::new(),
+        )
+    } else {
+        let scheduler = tpt_yard::tpt_yard_scheduling::ShipyardScheduler::new(acts.clone());
+        let sched_section = match scheduler.critical_path() {
+            Ok(cp) => {
+                let levelled = scheduler
+                    .resource_leveling()
+                    .map(|l| l.makespan_hours)
+                    .unwrap_or(0.0);
+                format!(
+                    "<p>Critical path: {} ({cp} activities, levelled makespan {lm:.0} h)</p>",
+                    cp.iter()
+                        .map(|a| format!("A{}", a.0))
+                        .collect::<Vec<_>>()
+                        .join(" &rarr; "),
+                    cp = cp.len(),
+                    lm = levelled
+                )
+            }
+            Err(e) => format!("<p>Schedule: {e}</p>"),
+        };
+        let risk_section = match scheduler.monte_carlo_risk(0.25, 2_000, 42) {
+            Ok(risk) => format!(
+                "<table>
+<tr><th>Samples</th><th>P50 makespan (h)</th><th>P90 (h)</th><th>Mean (h)</th></tr>
+<tr><td>{}</td><td>{:.1}</td><td>{:.1}</td><td>{:.1}</td></tr>
+</table>
+<p>Most critical activities: {}</p>",
+                risk.samples,
+                risk.p50_makespan_h,
+                risk.p90_makespan_h,
+                risk.mean_makespan_h,
+                risk.criticality_frequency
+                    .iter()
+                    .filter(|(_a, fr)| *fr > 0.0)
+                    .take(5)
+                    .map(|(a, fr)| format!("A{} ({:.0}%)", a.0, fr * 100.0))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Err(e) => format!("<p>Risk: {e}</p>"),
+        };
+        (sched_section, risk_section)
+    };
 
     let mut rows = String::new();
     for (group, kg) in &report.by_group {
@@ -135,6 +193,10 @@ fn html_report(path: &str, out_path: &str) -> Result<(), String> {
 <h2>Phases</h2>
 <table><tr><th>#</th><th>Name</th><th>Design kg</th><th>Activities</th></tr>
 {phase_rows}</table>
+<h2>Schedule</h2>
+{sched_section}
+<h2>Schedule risk (Monte Carlo, 2000 samples, &plusmn;25 % durations)</h2>
+{risk_section}
 <h2>Structural check (start state)</h2>
 <p class="{cls}">{verdict}</p>
 <p>Support reactions and full per-phase FEM: run the structural crate per phase
@@ -156,6 +218,8 @@ fn html_report(path: &str, out_path: &str) -> Result<(), String> {
         phase_rows = phase_rows,
         cls = if check.passed { "pass" } else { "fail" },
         verdict = if check.passed { "PASSED" } else { "FAILED" },
+        sched_section = sched_section,
+        risk_section = risk_section,
     );
     std::fs::write(out_path, html).map_err(|e| format!("writing {out_path}: {e}"))?;
     println!("HTML report written to {out_path}");

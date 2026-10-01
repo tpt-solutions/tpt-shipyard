@@ -53,6 +53,54 @@ check of the CoG projection against the lift points, and utilization against
 sling and crane capacity. A pick that would tip is `safe: false` with the
 reason in `notes`.
 
+## Plane frames
+
+`tpt_yard_structural::frame` adds 2-node Euler-Bernoulli beam members
+alongside the truss elements: three DOF per node (axial, transverse,
+rotation), full local-to-global transformation, consistent uniform-load
+vectors, and member end-force recovery — solved by the same penalized
+sparse CG solver. Because the Hermite-cubic shape functions are the exact
+solution for end loads, one element reproduces the classical closed forms
+exactly at the nodes:
+
+```rust
+use tpt_yard_structural::frame::{
+    FrameElement, FrameLoad, FrameModel, FrameNode, FrameSupport,
+};
+
+// A 4 m cantilever (210 GPa, 50 cm2, 8e4 cm4) with a 50 kN tip load.
+let model = FrameModel {
+    nodes: vec![
+        FrameNode { position: (0.0, 0.0) },
+        FrameNode { position: (4.0, 0.0) },
+    ],
+    elements: vec![FrameElement {
+        nodes: [0, 1],
+        area_m2: 0.05,
+        inertia_m4: 8.0e-5,
+        youngs_modulus_gpa: 210.0,
+        density_kg_m3: 0.0,
+    }],
+    supports: vec![FrameSupport::fixed(0)],
+    loads: vec![FrameLoad { node: 1, fx: 0.0, fz: -50_000.0, moment_nm: 0.0 }],
+    member_loads: vec![],
+};
+let sol = model.solve().unwrap();
+
+// Exact against P L^3 / 3 EI = 15.87 mm.
+let p = 50_000.0;
+let ei = 2.1e11 * 8.0e-5;
+let expected = p * 4.0_f64.powi(3) / (3.0 * ei);
+assert!((sol.displacements[1].1 + expected).abs() < 1e-6 * expected);
+// Root moment P L, recovered from the element end forces.
+let (_n, _v, m1, _m2) = sol.member_forces[0];
+assert!((m1 - p * 4.0).abs() < 1e-6 * (p * 4.0));
+```
+
+Member end forces come back as `(axial, shear, M1, M2)` with tension
+positive and moments positive sagging; uniform member loads carry their
+fixed-end offsets so simple supports recover zero end moments.
+
 ## Launch screening
 
 [`launch_analysis`](tpt_yard_structural::ConstructionStructuralSolver::launch_analysis)
