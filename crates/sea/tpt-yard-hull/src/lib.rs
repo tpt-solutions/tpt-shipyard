@@ -179,7 +179,7 @@ pub struct HullConstruction {
     pub block_join_sequence: Vec<BlockJoin>,
 }
 
-/// One candidate block plan from [`Self::optimize_division`], scored.
+/// One candidate block plan from [`HullConstruction::optimize_division`], scored.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CandidatePlan {
     /// Depth bands of the plan.
@@ -198,7 +198,7 @@ pub struct CandidatePlan {
     pub score_hours: f64,
 }
 
-/// Screening objective for [`Self::optimize_division`]. Defaults are
+/// Screening objective for [`HullConstruction::optimize_division`]. Defaults are
 /// documented pre-design values; override for a specific yard.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlanObjective {

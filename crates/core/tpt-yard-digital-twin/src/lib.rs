@@ -1,6 +1,6 @@
 //! Construction state tracking and simulation: the shipyard digital twin.
 //!
-//! [`DigitalTwin`] owns a [`VesselProject`](tpt_yard_core::VesselProject) and
+//! [`DigitalTwin`] owns a [`VesselProject`] and
 //! mirrors its real-world progress: which activities are complete, what mass
 //! is physically installed, where the centre of gravity currently sits, and
 //! whether the *partially built* structure can stand on its supports at every

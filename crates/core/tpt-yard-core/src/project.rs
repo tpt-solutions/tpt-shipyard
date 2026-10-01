@@ -295,7 +295,7 @@ impl VesselProject {
     }
 
     /// True when `current_phase` is the last phase of the plan. Activity-level
-    /// completion is tracked by the digital twin's [`AssemblyState`]
+    /// completion is tracked by the digital twin's `AssemblyState`
     /// (`tpt-yard-digital-twin`), not by the project itself.
     pub fn is_in_final_phase(&self) -> bool {
         self.current_phase == self.build_phases.last().map(|p| p.id).unwrap_or_default()

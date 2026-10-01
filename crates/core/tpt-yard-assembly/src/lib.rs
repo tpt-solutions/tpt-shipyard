@@ -2,8 +2,8 @@
 //! tracking.
 //!
 //! This crate is the bottom of the `tpt-yard-*` dependency stack. It defines
-//! the activity network used by [`tpt_yard_core::BuildPhase`] and
-//! [`tpt_yard_digital_twin::DigitalTwin`]: activities with dependencies, their
+//! the activity network used by `tpt_yard_core::BuildPhase` and
+//! `tpt_yard_digital_twin::DigitalTwin`: activities with dependencies, their
 //! statuses, and graph algorithms (topological ordering, cycle detection,
 //! readiness checks, and a critical-path-method forward pass).
 //!
