@@ -26,7 +26,9 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
-            eprintln!("usage: tpt-yard <validate|plan|schedule|report|new> [--json] ...");
+            eprintln!(
+                "usage: tpt-yard <validate|plan|schedule|risk|report|new|html-report> [--json] ..."
+            );
             ExitCode::FAILURE
         }
     }
@@ -54,6 +56,7 @@ fn run(args: &[&str], json_mode: bool) -> Result<(), String> {
             json_mode,
         ),
         "schedule" => schedule(rest.first().ok_or("schedule needs a file path")?, json_mode),
+        "risk" => risk(rest, json_mode),
         "report" => report(rest.first().ok_or("report needs a file path")?, json_mode),
         "new" => new(rest, json_mode),
         "html-report" => {
@@ -412,6 +415,146 @@ fn schedule(path: &str, json_mode: bool) -> Result<(), String> {
         cp.len(),
         levelled.makespan_hours
     );
+    Ok(())
+}
+
+// ------------------------------------------------------------------- risk
+
+/// `risk project.json [--samples N] [--uncertainty F] [--gate id=h[:slip]]...`
+///
+/// Monte Carlo schedule risk (review 7H): duration uncertainty per
+/// activity plus optional delivery gates (an activity cannot start before
+/// its material arrives; the gate itself slips triangularly).
+fn risk(rest: &[&str], json_mode: bool) -> Result<(), String> {
+    let path: &str = rest
+        .first()
+        .copied()
+        .filter(|a| !a.starts_with("--"))
+        .ok_or("risk needs a project file path")?;
+    let rest: Vec<&str> = rest
+        .iter()
+        .skip(1)
+        .copied()
+        .filter(|a| *a != path)
+        .collect();
+    let mut samples = 2_000_u32;
+    let mut uncertainty = 0.25_f64;
+    let mut gates: Vec<(u64, f64, f64)> = Vec::new();
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            "--samples" => {
+                i += 1;
+                samples = rest
+                    .get(i)
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--samples needs a number")?;
+            }
+            "--uncertainty" => {
+                i += 1;
+                uncertainty = rest
+                    .get(i)
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--uncertainty needs a fraction")?;
+            }
+            "--gate" => {
+                i += 1;
+                let spec = rest.get(i).ok_or("--gate needs id=hours[:slippage]")?;
+                let (id_part, rest_part) = spec
+                    .split_once('=')
+                    .ok_or_else(|| format!("--gate {spec}: expected id=hours[:slippage]"))?;
+                let id: u64 = id_part.parse().map_err(|e| format!("--gate id: {e}"))?;
+                let (hours_str, slip_str) = match rest_part.split_once(':') {
+                    Some((h, sl)) => (h, Some(sl)),
+                    None => (rest_part, None),
+                };
+                let hours: f64 = hours_str
+                    .parse()
+                    .map_err(|e| format!("--gate hours: {e}"))?;
+                let slip: f64 = match slip_str {
+                    Some(sl) => sl.parse().map_err(|e| format!("--gate slip: {e}"))?,
+                    None => 0.0,
+                };
+                gates.push((id, hours, slip));
+            }
+            other => return Err(format!("unknown risk flag '{other}'")),
+        }
+        i += 1;
+    }
+
+    let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
+    let v = Value::parse(&text).map_err(|e| format!("{path}: {e}"))?;
+    let project =
+        tpt_yard_core::VesselProject::from_json_value(&v).map_err(|e| format!("{path}: {e}"))?;
+    let acts: Vec<tpt_yard_core::AssemblyActivity> = project
+        .build_phases
+        .iter()
+        .flat_map(|p| p.activities.iter().cloned())
+        .collect();
+    if acts.is_empty() {
+        return Err("project has no activities to analyse".into());
+    }
+    let scheduler = tpt_yard::tpt_yard_scheduling::ShipyardScheduler::new(acts);
+    let gate_objs: Vec<tpt_yard::tpt_yard_scheduling::DeliveryGate> = gates
+        .iter()
+        .map(
+            |(id, h, slip)| tpt_yard::tpt_yard_scheduling::DeliveryGate {
+                activity: tpt_yard::tpt_yard_assembly::ActivityId(*id),
+                expected_available_h: *h,
+                slippage_frac: *slip,
+            },
+        )
+        .collect();
+    let risk = scheduler
+        .monte_carlo_risk_with_gates(&gate_objs, uncertainty, samples, 42)
+        .map_err(|e| format!("{e}"))?;
+
+    if json_mode {
+        println!(
+            "{{\"samples\":{},\"p50_makespan_h\":{:.1},\"p90_makespan_h\":{:.1},\"mean_makespan_h\":{:.1},\"gates\":{}}}",
+            risk.samples,
+            risk.p50_makespan_h,
+            risk.p90_makespan_h,
+            risk.mean_makespan_h,
+            gates.len()
+        );
+        return Ok(());
+    }
+    println!(
+        "Schedule risk ({} samples, duration uncertainty {:.0}%):",
+        risk.samples,
+        uncertainty * 100.0
+    );
+    println!(
+        "  makespan P50 {:.1} h | P90 {:.1} h | mean {:.1} h",
+        risk.p50_makespan_h, risk.p90_makespan_h, risk.mean_makespan_h
+    );
+    if !gates.is_empty() {
+        println!(
+            "  delivery gates: {}",
+            gates
+                .iter()
+                .map(|(id, h, slip)| format!("A{id} @ {h:.0} h (+/-{:.0}%)", slip * 100.0))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    let top: Vec<(u64, f64)> = risk
+        .criticality_frequency
+        .iter()
+        .filter(|(_a, f)| *f > 0.0)
+        .take(5)
+        .map(|(a, f)| (a.0, *f))
+        .collect();
+    if !top.is_empty() {
+        println!(
+            "  most critical: {}",
+            top.iter()
+                .map(|(id, f)| format!("A{id} ({:.0}%)", f * 100.0))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     Ok(())
 }
 

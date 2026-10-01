@@ -71,12 +71,17 @@ pub enum ScheduleError {
     Graph(GraphError),
     /// Empty schedules are meaningless.
     EmptySchedule,
+    /// A release gate names an activity that is not in the schedule.
+    UnknownGateActivity(ActivityId),
 }
 
 impl std::fmt::Display for ScheduleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ScheduleError::Graph(e) => write!(f, "graph: {e}"),
+            ScheduleError::UnknownGateActivity(a) => {
+                write!(f, "release gate names unknown activity {a}")
+            }
             ScheduleError::EmptySchedule => f.write_str("no activities to schedule"),
         }
     }
@@ -181,6 +186,115 @@ impl ShipyardScheduler {
             );
         }
         Ok(out)
+    }
+
+    /// CPM with release gates (review 7H Monte Carlo leftover: the
+    /// delivery-slippage coupling). `releases` map an activity id to the
+    /// earliest hour its material (or weather window, or anything
+    /// upstream) allows it to start; the forward pass takes
+    /// `ES_i = max(release_i, latest predecessor finish)`.
+    ///
+    /// # Errors
+    ///
+    /// [`ScheduleError::UnknownGateActivity`] when a gate names an
+    /// activity outside the schedule, [`ScheduleError::Graph`] on a
+    /// malformed network.
+    pub fn cpm_with_releases(
+        &self,
+        releases: &BTreeMap<ActivityId, f64>,
+    ) -> Result<BTreeMap<ActivityId, ScheduledActivity>, ScheduleError> {
+        if self.activities.is_empty() {
+            return Err(ScheduleError::EmptySchedule);
+        }
+        for &id in releases.keys() {
+            if !self.activities.iter().any(|a| a.id == id) {
+                return Err(ScheduleError::UnknownGateActivity(id));
+            }
+        }
+        let g = self.graph()?;
+        let order = g.topological_order()?;
+
+        // Forward pass with gates.
+        let mut es: BTreeMap<ActivityId, f64> = BTreeMap::new();
+        let mut ef: BTreeMap<ActivityId, f64> = BTreeMap::new();
+        let mut makespan = 0.0_f64;
+        for &id in &order {
+            let node = g.activity(id).expect("exists");
+            let mut start = releases.get(&id).copied().unwrap_or(0.0).max(0.0);
+            for dep in g.dependencies_of(id)? {
+                start = start.max(ef[&dep]);
+            }
+            let finish = start + node.duration_hours;
+            makespan = makespan.max(finish);
+            es.insert(id, start);
+            ef.insert(id, finish);
+        }
+
+        // Backward pass from the gated makespan.
+        let mut latest: BTreeMap<ActivityId, f64> = BTreeMap::new();
+        for &id in order.iter().rev() {
+            let node = g.activity(id).expect("exists");
+            let dependents = g.dependents_of(id);
+            let ls = if dependents.is_empty() {
+                makespan - node.duration_hours
+            } else {
+                dependents
+                    .iter()
+                    .filter_map(|d| latest.get(d).copied())
+                    .fold(f64::INFINITY, f64::min)
+                    - node.duration_hours
+            };
+            latest.insert(id, ls);
+        }
+
+        let mut out = BTreeMap::new();
+        for id in order {
+            let _node = g.activity(id).expect("exists");
+            let earliest_start = es[&id];
+            let latest_start = latest[&id];
+            let resources = self
+                .activities
+                .iter()
+                .find(|a| a.id == id)
+                .map(|a| a.resources.iter().map(|r| (r.kind, r.capacity)).collect())
+                .unwrap_or_default();
+            out.insert(
+                id,
+                ScheduledActivity {
+                    id,
+                    earliest_start_h: earliest_start,
+                    latest_start_h: latest_start,
+                    float_h: (latest_start - earliest_start).max(0.0),
+                    resources,
+                },
+            );
+        }
+        Ok(out)
+    }
+
+    /// Project makespan under release gates: the largest gated
+    /// earliest-finish across all activities.
+    ///
+    /// # Errors
+    ///
+    /// [`ScheduleError`] on malformed networks or unknown gate activities.
+    pub fn makespan_with_releases(
+        &self,
+        releases: &BTreeMap<ActivityId, f64>,
+    ) -> Result<f64, ScheduleError> {
+        let cpm = self.cpm_with_releases(releases)?;
+        Ok(cpm
+            .values()
+            .map(|s| {
+                let dur = self
+                    .activities
+                    .iter()
+                    .find(|a| a.id == s.id)
+                    .map(|a| a.duration_hours)
+                    .unwrap_or(0.0);
+                s.earliest_start_h + dur
+            })
+            .fold(0.0_f64, f64::max))
     }
 
     /// The critical path: one zero-float chain from a network start to a
@@ -532,6 +646,118 @@ impl ShipyardScheduler {
     }
 }
 
+/// A delivery gate for the risk simulation: the material (or anything
+/// upstream) for `activity` is expected at `expected_available_h` from
+/// project start, with lead-time slippage sampled triangularly at
+/// `+/- slippage_frac` around the expectation (review 7H Monte Carlo
+/// leftover: the delivery-slippage coupling).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DeliveryGate {
+    /// The gated activity: it cannot start before the material arrives.
+    pub activity: ActivityId,
+    /// Expected availability of the delivery, hours from project start.
+    pub expected_available_h: f64,
+    /// Lead-time slippage fraction (0.25 = +/- 25 % triangular).
+    pub slippage_frac: f64,
+}
+
+impl ShipyardScheduler {
+    /// Monte Carlo schedule risk with delivery gates: as
+    /// [`Self::monte_carlo_risk`], plus each gate's availability is
+    /// sampled per run (triangular around the expectation, scaled by
+    /// `slippage_frac`) and fed into the release-gated CPM. Seed
+    /// deterministic.
+    ///
+    /// # Errors
+    ///
+    /// [`ScheduleError`] on malformed networks, empty schedules, unknown
+    /// gate activities, or non-finite gate inputs.
+    pub fn monte_carlo_risk_with_gates(
+        &self,
+        gates: &[DeliveryGate],
+        uncertainty_frac: f64,
+        n_samples: u32,
+        seed: u64,
+    ) -> Result<ScheduleRisk, ScheduleError> {
+        if self.activities.is_empty() {
+            return Err(ScheduleError::EmptySchedule);
+        }
+        for g in gates {
+            if !self.activities.iter().any(|a| a.id == g.activity) {
+                return Err(ScheduleError::UnknownGateActivity(g.activity));
+            }
+            if !(g.expected_available_h.is_finite() && g.expected_available_h >= 0.0)
+                || !(g.slippage_frac.is_finite() && g.slippage_frac >= 0.0)
+            {
+                return Err(ScheduleError::UnknownGateActivity(g.activity));
+            }
+        }
+        let u = uncertainty_frac.clamp(0.0, 10.0);
+        let n = n_samples.max(1);
+        let mut rng = XorShift(if seed == 0 { 0x853c49e6748fea9b } else { seed });
+
+        let mut makespans = Vec::with_capacity(n as usize);
+        let mut critical_counts: BTreeMap<ActivityId, u32> =
+            self.activities.iter().map(|a| (a.id, 0)).collect();
+
+        for _ in 0..n {
+            let sampled: Vec<AssemblyActivity> = self
+                .activities
+                .iter()
+                .map(|a| {
+                    let mut copy = a.clone();
+                    copy.duration_hours = rng.triangular(
+                        a.duration_hours * (1.0 - u),
+                        a.duration_hours,
+                        a.duration_hours * (1.0 + u),
+                    );
+                    copy
+                })
+                .collect();
+            let sample_net = ShipyardScheduler::new(sampled);
+            let mut releases: BTreeMap<ActivityId, f64> = BTreeMap::new();
+            for g in gates {
+                let avail = rng.triangular(
+                    g.expected_available_h * (1.0 - g.slippage_frac),
+                    g.expected_available_h,
+                    g.expected_available_h * (1.0 + g.slippage_frac),
+                );
+                releases.insert(g.activity, avail);
+            }
+            let cpm = sample_net.cpm_with_releases(&releases)?;
+            let sample_makespan = sample_net.makespan_with_releases(&releases)?;
+            makespans.push(sample_makespan);
+            for s in cpm.values() {
+                if s.float_h < 1e-9 {
+                    if let Some(c) = critical_counts.get_mut(&s.id) {
+                        *c += 1;
+                    }
+                }
+            }
+        }
+
+        makespans.sort_by(f64::total_cmp);
+        let p = |q: f64| -> f64 {
+            let idx = ((q * (makespans.len() as f64 - 1.0)).round()) as usize;
+            makespans[idx.min(makespans.len() - 1)]
+        };
+        let mean = makespans.iter().sum::<f64>() / makespans.len() as f64;
+        let mut criticality: Vec<(ActivityId, f64)> = critical_counts
+            .into_iter()
+            .map(|(id, c)| (id, c as f64 / n as f64))
+            .collect();
+        criticality.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+
+        Ok(ScheduleRisk {
+            samples: n,
+            p50_makespan_h: p(0.50),
+            p90_makespan_h: p(0.90),
+            mean_makespan_h: mean,
+            criticality_frequency: criticality,
+        })
+    }
+}
+
 /// Stable name of a resource kind for reports.
 pub fn resource_kind_name(kind: ResourceKind) -> &'static str {
     match kind {
@@ -633,6 +859,136 @@ mod tests {
         );
         // ...at the cost of a longer makespan.
         assert!(levelled.makespan_hours > early.makespan_hours);
+    }
+
+    /// Verification (review 7H): zero uncertainty reproduces the
+    /// deterministic makespan exactly; uncertainty spreads the percentiles
+    /// in the right order; the run is seed-deterministic; criticality
+    /// frequencies are sane.
+    /// Review 7H Monte Carlo leftover: delivery gates. A gate later than
+    /// the dependency finish delays the activity and makes it critical;
+    /// a gate earlier than the network allows changes nothing.
+    #[test]
+    fn release_gates_delay_and_gate_criticality() {
+        let net = ShipyardScheduler::new(vec![AssemblyActivity::new(
+            ActivityId(1),
+            "A",
+            ActivityType::CutSteel,
+            8.0,
+        )]);
+        // No gate: start at 0, makespan 8.
+        assert_eq!(net.makespan_with_releases(&BTreeMap::new()).unwrap(), 8.0);
+
+        // Gate at 100 h: the activity cannot start before 100.
+        let mut gates = BTreeMap::new();
+        gates.insert(ActivityId(1), 100.0);
+        let cpm = net.cpm_with_releases(&gates).unwrap();
+        assert_eq!(cpm[&ActivityId(1)].earliest_start_h, 100.0);
+        assert_eq!(
+            cpm[&ActivityId(1)].float_h,
+            0.0,
+            "gated-in activity is critical"
+        );
+        assert_eq!(net.makespan_with_releases(&gates).unwrap(), 108.0);
+
+        // A 5 h gate is a hard availability constraint: the activity
+        // starts at 5 h (not 0) and the makespan grows to 13 h — the
+        // gated activity becomes critical.
+        let mut early = BTreeMap::new();
+        early.insert(ActivityId(1), 5.0);
+        assert_eq!(net.makespan_with_releases(&early).unwrap(), 13.0);
+        let cpm = net.cpm_with_releases(&early).unwrap();
+        assert_eq!(cpm[&ActivityId(1)].earliest_start_h, 5.0);
+        assert_eq!(cpm[&ActivityId(1)].float_h, 0.0);
+
+        // A zero-hour gate is the no-op.
+        let mut zero = BTreeMap::new();
+        zero.insert(ActivityId(1), 0.0);
+        assert_eq!(net.makespan_with_releases(&zero).unwrap(), 8.0);
+
+        // A negative gate clamps to 0.
+        let mut neg = BTreeMap::new();
+        neg.insert(ActivityId(1), -50.0);
+        assert_eq!(net.makespan_with_releases(&neg).unwrap(), 8.0);
+
+        // Two-activity chain: the gate propagates through the dependency.
+        let chain = ShipyardScheduler::new(vec![
+            AssemblyActivity::new(ActivityId(1), "steel", ActivityType::CutSteel, 10.0),
+            AssemblyActivity::new(ActivityId(2), "erect", ActivityType::JoinBlock, 5.0)
+                .with_dependencies(&[ActivityId(1)]),
+        ]);
+        let mut gate2 = BTreeMap::new();
+        gate2.insert(ActivityId(2), 40.0);
+        assert_eq!(chain.makespan_with_releases(&gate2).unwrap(), 45.0);
+        // The gated activity is critical, the predecessor gains float.
+        let cpm = chain.cpm_with_releases(&gate2).unwrap();
+        assert_eq!(cpm[&ActivityId(2)].float_h, 0.0);
+        assert!(cpm[&ActivityId(1)].float_h > 0.0);
+
+        // Unknown gate activity is an error.
+        let mut bad = BTreeMap::new();
+        bad.insert(ActivityId(99), 1.0);
+        assert_eq!(
+            net.cpm_with_releases(&bad),
+            Err(ScheduleError::UnknownGateActivity(ActivityId(99)))
+        );
+    }
+
+    /// Review 7H Monte Carlo leftover: sampled delivery slippage. Zero
+    /// slippage reduces to the deterministic gated CPM; with slippage the
+    /// P90 sits at or above the P50 and the deterministic value sits at or
+    /// below the P50 (the triangular mode).
+    #[test]
+    fn gated_monte_carlo_couples_delivery_slippage() {
+        let net = ShipyardScheduler::new(vec![AssemblyActivity::new(
+            ActivityId(1),
+            "erect",
+            ActivityType::JoinBlock,
+            20.0,
+        )]);
+        let gates = vec![DeliveryGate {
+            activity: ActivityId(1),
+            expected_available_h: 100.0,
+            slippage_frac: 0.25,
+        }];
+
+        // Zero duration uncertainty keeps the durations exact; the
+        // delivery still slips +/- 25 %: the deterministic 120 h is the
+        // triangular MODE of the sample distribution.
+        let risk = net
+            .monte_carlo_risk_with_gates(&gates, 0.0, 4_000, 11)
+            .unwrap();
+        assert!(risk.p50_makespan_h <= 120.0 + 1e-9);
+        assert!(risk.p90_makespan_h >= 120.0 - 1e-9);
+        assert!(risk.p90_makespan_h >= risk.p50_makespan_h);
+        // With real slippage the samples span the 95-125 h gate window
+        // plus the 20 h duration: P90 well above the mode.
+        assert!(risk.p90_makespan_h >= 125.0, "p90 {}", risk.p90_makespan_h);
+        assert!(
+            risk.p50_makespan_h >= 115.0,
+            "the mode region must dominate the median: {}",
+            risk.p50_makespan_h
+        );
+
+        // Seed determinism.
+        let a = net
+            .monte_carlo_risk_with_gates(&gates, 0.1, 200, 5)
+            .unwrap();
+        let b = net
+            .monte_carlo_risk_with_gates(&gates, 0.1, 200, 5)
+            .unwrap();
+        assert_eq!(a, b);
+
+        // Unknown gate activity is refused.
+        let bad = vec![DeliveryGate {
+            activity: ActivityId(77),
+            expected_available_h: 1.0,
+            slippage_frac: 0.0,
+        }];
+        assert_eq!(
+            net.monte_carlo_risk_with_gates(&bad, 0.1, 10, 1),
+            Err(ScheduleError::UnknownGateActivity(ActivityId(77)))
+        );
     }
 
     /// Verification (review 7H): zero uncertainty reproduces the

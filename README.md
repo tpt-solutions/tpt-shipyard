@@ -68,7 +68,7 @@ deepen). **Stand-in** = a thin, honest bridge awaiting the companion
 | `tpt-yard-transport-link` | Vehicle design ⇄ construction bridge | Stand-in (awaits the `tpt-transport` substrate) |
 | `tpt-yard-process-link` | Process engineering bridge | Stand-in (awaits the `tpt-process` substrate) |
 | `tpt-yard-earth-link` | Weather/sea-state bridge | Stand-in (awaits the `tpt-earth` substrate) |
-| `tpt-yard-cli` | CLI: `validate` / `plan` / `schedule` / `report` / `new` / `html-report` | Done |
+| `tpt-yard-cli` | CLI: `validate` / `plan` / `schedule` / `risk` / `report` / `new` / `html-report` | Done |
 | `tpt-yard` | Facade: one dependency, curated prelude, feature flags | Done |
 | `tpt-yard-wasm` | WebAssembly bindings for dashboards | Simplified model (browser tests in CI; 3-D three.js dashboard shipped) |
 

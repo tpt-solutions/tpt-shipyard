@@ -1,4 +1,12 @@
-# Changelog for tpt-yard-scheduling
+# Changelog for
+- Release gates (review 7H Monte Carlo leftover): `cpm_with_releases`
+  (earliest-start gates; gated activities compete on criticality),
+  `makespan_with_releases`, `DeliveryGate` +
+  `monte_carlo_risk_with_gates` (per-run triangular delivery slippage,
+  seed deterministic). The CLI `risk` subcommand exposes the gated
+  schedule risk with `--samples`, `--uncertainty` and `--gate
+  id=hours[:slippage]` flags.
+ tpt-yard-scheduling
 
 All notable changes to this crate are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning
