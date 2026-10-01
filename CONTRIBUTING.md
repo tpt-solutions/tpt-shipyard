@@ -1,24 +1,27 @@
 # Contributing to tpt-shipyard
 
-Thank you for contributing to `tpt-shipyard`! This project is 100% open source and
-accepts contributions **CLA-free** under the Developer Certificate of Origin (DCO).
+Thank you for your interest in `tpt-shipyard`! This project is 100% open source
+(MIT OR Apache-2.0), but it **does not accept pull requests**. Contributions are
+welcome as **issues only**.
 
-## Developer Certificate of Origin (DCO)
+## How to Contribute
 
-All contributions must be signed off. By signing off you certify that you wrote or
-have the right to submit the contribution under the project's licenses
-(MIT OR Apache-2.0), per the [DCO 1.1](https://developercertificate.org/).
+Open an issue at <https://github.com/tpt-solutions/tpt-shipyard/issues> for:
 
-Sign every commit with a `Signed-off-by` trailer:
+- **Bug reports** — include the crate and version, a minimal reproduction, the
+  expected result and the actual result. For numerical problems, include the inputs
+  and any reference values (analytical solution, class-society rule, published data).
+- **Feature requests** — describe the use case and, for physical models, the
+  governing equations or standards the feature should follow.
+- **Questions and design discussion** — including proposed API or model changes.
+- **Documentation problems** — unclear, missing or wrong docs.
 
-```text
-Signed-off-by: Your Name <you@example.com>
-```
+Pull requests opened without prior agreement will be closed. Maintainers
+implement accepted issues themselves.
 
-The easiest way is `git commit --signoff` (or `-s`). CI rejects commits without a
-matching sign-off.
+## Building Locally
 
-## Getting Started
+You are welcome to build and run the project to reproduce an issue:
 
 ```bash
 git clone https://github.com/tpt-solutions/tpt-shipyard
@@ -27,53 +30,19 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-Requirements:
-
-- Stable Rust (the MSRV is documented in [RELEASES.md](RELEASES.md))
-- `rustfmt` and `clippy` (via `rustup component add rustfmt clippy`)
-- `cargo-deny` for the license gate (`cargo install cargo-deny --locked`)
-
-## Before You Open a PR
-
-```bash
-cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo deny check
-```
-
-### PR Checklist
-
-- [ ] Commits are DCO-signed
-- [ ] `cargo fmt --check` passes
-- [ ] `cargo clippy -- -D warnings` is clean
-- [ ] New/changed behaviour has tests
-- [ ] Public API items have rustdoc comments (`missing_docs` is enforced)
-- [ ] New public API is reflected in `docs/book` where relevant
-- [ ] Numerical code has a verification path (analytical test or golden data)
-
-## Code Layout
-
-- Crates live under `crates/{core,structural,sea,space,planning,integration}`.
-- Dependency direction: `assembly`/`core` at the bottom; domain crates above;
-  `integration/*` and `wasm` at the top. Never introduce a cycle.
-- Golden verification data lives in `test-data/golden/`; sample inputs in
-  `test-data/*`.
-- End-to-end demonstrations live in `examples/` and benchmarks in `benches/`.
+Requires stable Rust (the MSRV is documented in [RELEASES.md](RELEASES.md)).
 
 ## Design Changes
 
-Anything that changes public API shape, adds a dependency, or changes a physical
-model goes through the RFC process first — see [GOVERNANCE.md](GOVERNANCE.md) and
-`rfcs/0000-template.md`.
+Changes to public API shape, dependencies or physical models are decided by the
+maintainers through the RFC process — see [GOVERNANCE.md](GOVERNANCE.md). Raise the
+idea as an issue first.
 
 ## Licensing
 
-By contributing you agree your contributions are licensed as
-**MIT OR Apache-2.0**. The `cargo-deny` gate keeps the dependency chain free of
-copyleft licenses — do not add dependencies that fail `cargo deny check licenses`.
+The project is licensed as **MIT OR Apache-2.0**.
 
 ## Conduct
 
-Be excellent to each other. Maintainance may remove comments that are hostile or
+Be excellent to each other. Maintainers may remove comments that are hostile or
 off-topic.
