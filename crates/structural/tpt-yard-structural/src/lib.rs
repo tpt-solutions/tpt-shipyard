@@ -65,8 +65,13 @@ use std::fmt;
 use tpt_yard_core::{MassProperties, PhaseId, Vector3, VesselProject};
 
 pub mod fem;
+pub mod frame;
 
 pub use fem::{Element, FemError, NodalLoad, Node, Support, TrussModel, TrussSolution};
+pub use frame::{
+    FrameElement, FrameError, FrameLoad, FrameModel, FrameNode, FrameSolution, FrameSupport,
+    MemberLoad,
+};
 
 /// One structural member with the phase at which it enters the structure.
 #[derive(Debug, Clone, Copy, PartialEq)]

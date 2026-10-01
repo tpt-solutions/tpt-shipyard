@@ -1,4 +1,12 @@
-# Changelog for tpt-yard-structural
+# Changelog for
+- `frame` module (review 7H roadmap): plane frame elements — 2-node
+  Euler-Bernoulli members with axial + bending stiffness, full local-to-
+  global transformation, consistent uniform-load vectors, and member end
+  force recovery (axial, shear, sagging-positive end moments) over the
+  shared penalized sparse CG solver. Verified against the classical
+  closed forms (cantilever, simply supported, uniform load, axial,
+  slender inclined triangle).
+ tpt-yard-structural
 
 All notable changes to this crate are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning

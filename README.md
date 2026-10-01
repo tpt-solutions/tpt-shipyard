@@ -44,7 +44,7 @@ deepen). **Stand-in** = a thin, honest bridge awaiting the companion
 | `tpt-yard-assembly` | Shared assembly-activity primitives: dependency graphs | Done |
 | `tpt-yard-weight` | Weight and CoG management | Done |
 | `tpt-yard-digital-twin` | Construction state tracking and simulation | Done |
-| `tpt-yard-structural` | Structural analysis during build | Simplified model (3-D truss FEM, penalty BCs) |
+| `tpt-yard-structural` | Structural analysis during build | Simplified model (3-D truss + 2-D frame FEM, penalty BCs, sparse CG) |
 | `tpt-yard-welding` | Welding simulation | Done (analytical Rosenthal, experimentally verified) |
 | `tpt-yard-distortion` | Block distortion management | Simplified model (threshold-based correction planning) |
 | `tpt-yard-joints` | Shared joint-geometry primitives | Done (closed-form groove/fillet geometry) |

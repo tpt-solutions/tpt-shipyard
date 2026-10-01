@@ -398,7 +398,7 @@ impl Csr {
 /// Jacobi-preconditioned conjugate gradient for the SPD penalized
 /// stiffness system. Returns `FemError::SingularSystem` when the iteration
 /// cannot converge (a mechanism) or breaks down on a zero curvature step.
-fn pcg_solve(
+pub(crate) fn pcg_solve(
     n: usize,
     a: &[f64],
     b: &[f64],
