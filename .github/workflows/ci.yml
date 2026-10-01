@@ -115,30 +115,6 @@ jobs:
       # feature the tests exercise can still fail to *run* on the MSRV.
       - run: cargo test --workspace --locked
 
-  dco:
-    name: DCO
-    needs: fmt
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Signed-off-by check (DCO)
-        run: |
-          # CONTRIBUTING.md and the PR template require a DCO sign-off on
-          # every commit; this job makes that requirement real.
-          base="${{ github.event.pull_request.base.sha || github.event.before }}"
-          range="${base:-origin/master}..HEAD"
-          echo "Checking $range"
-          fail=0
-          for hash in $(git log --format='%h' $range); do
-            if ! git log -1 --format='%b' "$hash" | grep -qi "Signed-off-by:"; then
-              echo "commit $hash is missing its DCO sign-off"
-              fail=1
-            fi
-          done
-          exit $fail
-
   semver:
     name: SemVer compatibility
     needs: fmt

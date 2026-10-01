@@ -16,3 +16,7 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    ignore:
+      # The MSRV job pins dtolnay/rust-toolchain@<MSRV>; the tag is the Rust
+      # version, so Dependabot "bumps" it to toolchains that don't exist.
+      - dependency-name: "dtolnay/rust-toolchain"
