@@ -418,6 +418,7 @@ pub(crate) fn pcg_solve(
         })
         .collect();
     if inv_diag.contains(&0.0) {
+        eprintln!("pcg debug: zero diagonal");
         return Err(FemError::SingularSystem);
     }
 
@@ -447,8 +448,11 @@ pub(crate) fn pcg_solve(
     // is zero (penalty rows react at their own rows). The relative
     // convergence test below is unsatisfiable against a zero norm.
     if b_free <= 1e-12 {
+        eprintln!("pcg debug: zero free load, n {n}");
         return Ok(x);
     }
+    eprintln!("pcg debug: n {n} b_free {b_free:.4e}");
+    let mut dbg_last = 0.0;
     for it in 0..max_iter {
         let fr = free_norm(&r);
         if fr <= 1e-9 * b_free || (it >= 4 && fr <= 1e-6 * b_free) {
@@ -456,6 +460,7 @@ pub(crate) fn pcg_solve(
             // iterations (penalty systems stall near kappa x eps).
             return Ok(x);
         }
+        dbg_last = fr;
         let ap = matvec(&p);
         let pap: f64 = p.iter().zip(&ap).map(|(a2, b2)| a2 * b2).sum();
         // Scale-invariant breakdown test: a true null-space direction has
@@ -466,6 +471,7 @@ pub(crate) fn pcg_solve(
         if !pap.is_finite() || pap <= 1e-20 * p_norm_sq * k_scale {
             // Zero curvature along the search direction: the system is
             // singular in this subspace.
+            eprintln!("pcg debug: breakdown it {it} pap {pap:.4e} |p|^2 {p_norm_sq:.4e} fr {dbg_last:.4e}");
             return Err(FemError::SingularSystem);
         }
         let alpha = rz / pap;
@@ -486,7 +492,63 @@ pub(crate) fn pcg_solve(
         rz = rz_new;
     }
     // Not converged within the iteration budget: a mechanism.
+    eprintln!("pcg debug: exhausted, final |r_free| {dbg_last:.4e} vs {b_free:.4e}");
     Err(FemError::SingularSystem)
+}
+
+/// Dense Cholesky solve (`A = L L^T`, SPD) for the smaller dense
+/// systems — plate bending matrices mix deflection/slope/twist DOF
+/// scales whose condition number makes unpreconditioned CG iterate far
+/// beyond any budget. The matrix arrives as a dense row-major vector
+/// from assembly; factorization is in place. Singularity (a
+/// non-positive pivot relative to the matrix scale) maps to
+/// [`FemError::SingularSystem`].
+pub(crate) fn dense_cholesky_solve(
+    n: usize,
+    a: &mut [f64],
+    b: &[f64],
+    k_scale: f64,
+) -> Result<Vec<f64>, FemError> {
+    let eps = k_scale * 1e-14;
+    for j in 0..n {
+        // Diagonal.
+        let mut d = a[j * n + j];
+        for kk in 0..j {
+            d -= a[j * n + kk] * a[j * n + kk];
+        }
+        if !d.is_finite() || d <= eps {
+            eprintln!("cholesky debug: pivot {j} = {d:.4e} (eps {eps:.4e})");
+            return Err(FemError::SingularSystem);
+        }
+        d = d.sqrt();
+        a[j * n + j] = d;
+        for i in (j + 1)..n {
+            let mut s = a[i * n + j];
+            for kk in 0..j {
+                s -= a[i * n + kk] * a[j * n + kk];
+            }
+            a[i * n + j] = s / d;
+        }
+    }
+    // Forward solve L y = b.
+    let mut y = vec![0.0_f64; n];
+    for i in 0..n {
+        let mut s = b[i];
+        for kk in 0..i {
+            s -= a[i * n + kk] * y[kk];
+        }
+        y[i] = s / a[i * n + i];
+    }
+    // Backward solve L^T x = y.
+    let mut x = vec![0.0_f64; n];
+    for i in (0..n).rev() {
+        let mut s = y[i];
+        for kk in (i + 1)..n {
+            s -= a[kk * n + i] * x[kk];
+        }
+        x[i] = s / a[i * n + i];
+    }
+    Ok(x)
 }
 
 /// Member-level buckling and slenderness checks (review 7H roadmap item).

@@ -1,4 +1,14 @@
 # Changelog for
+- `plates` module (review 7H roadmap): Bogner-Fox-Schmit 16-DOF
+  rectangular plate bending elements — C1 conforming via Hermite tensor
+  products, consistent pressure vectors, penalty BCs over a dense
+  Cholesky solve (mixed w/slope/twist scales exceed CG's iteration
+  budget). Verified against the Timoshenko closed forms (SS 0.00406,
+  clamped 0.00126 q a^4/D) and an SPD probe. The SPD probe caught a real
+  element bug before any plate solved: the twist-derivative (N_xy) terms
+  of the wx/wy/wxy DOFs initially used the value-function first
+  derivatives instead of the slope-function ones.
+
 - Strict JSON loading for staged structures: `from_json_with_loads` parses
   nodes/elements/supports plus a `loads` block (gravity flag defaulting
   true, wind and crane specs) with the review-7C loader standards — no

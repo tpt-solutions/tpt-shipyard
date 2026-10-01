@@ -66,12 +66,14 @@ use tpt_yard_core::{MassProperties, PhaseId, Vector3, VesselProject};
 
 pub mod fem;
 pub mod frame;
+pub mod plates;
 
 pub use fem::{Element, FemError, NodalLoad, Node, Support, TrussModel, TrussSolution};
 pub use frame::{
     FrameElement, FrameError, FrameLoad, FrameModel, FrameNode, FrameSolution, FrameSupport,
     MemberLoad,
 };
+pub use plates::{PlateElement, PlateError, PlateModel, PlateNode, PlateSolution, PlateSupport};
 
 /// One structural member with the phase at which it enters the structure.
 #[derive(Debug, Clone, Copy, PartialEq)]
