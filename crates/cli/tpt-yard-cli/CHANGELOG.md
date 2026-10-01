@@ -1,6 +1,11 @@
 # Changelog
 
 ##
+- `pdf-report project.json [--out file.pdf]`: the full calculation
+  package (weights, by-group, phases, schedule, risk, structural check)
+  as a dependency-free PDF 1.4 document — uncompressed text streams,
+  Helvetica/Courier, A4 pagination with margin-aware page breaks.
+
 - `html-report --structure partial.json`: per-phase FEM table (members,
   max deflection, max stress, utilization, verdict per erection phase)
   alongside the schedule and risk sections.
