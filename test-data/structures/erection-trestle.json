@@ -1,0 +1,69 @@
+{
+  "nodes": [
+    [
+      0,
+      0,
+      0
+    ],
+    [
+      4,
+      0,
+      -3
+    ],
+    [
+      8,
+      0,
+      0
+    ]
+  ],
+  "elements": [
+    {
+      "nodes": [
+        0,
+        1
+      ],
+      "area_m2": 0.02,
+      "youngs_modulus_gpa": 210,
+      "density_kg_m3": 300,
+      "erected_at_phase": 1
+    },
+    {
+      "nodes": [
+        1,
+        2
+      ],
+      "area_m2": 0.02,
+      "youngs_modulus_gpa": 210,
+      "density_kg_m3": 300,
+      "erected_at_phase": 2
+    }
+  ],
+  "supports": [
+    {
+      "node": 0,
+      "fix_x": true,
+      "fix_y": true,
+      "fix_z": true
+    },
+    {
+      "node": 1,
+      "fix_x": true,
+      "fix_y": true,
+      "fix_z": false
+    },
+    {
+      "node": 2,
+      "fix_x": true,
+      "fix_y": true,
+      "fix_z": true
+    }
+  ],
+  "loads": {
+    "gravity": true,
+    "crane": {
+      "capacity_kn": 500,
+      "dynamic_factor": 1.15,
+      "node": 1
+    }
+  }
+}

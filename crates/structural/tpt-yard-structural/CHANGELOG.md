@@ -1,4 +1,9 @@
 # Changelog for
+- Strict JSON loading for staged structures: `from_json_with_loads` parses
+  nodes/elements/supports plus a `loads` block (gravity flag defaulting
+  true, wind and crane specs) with the review-7C loader standards — no
+  silent defaults, dangling node indices rejected, wrong types reported.
+
 - `frame` module (review 7H roadmap): plane frame elements — 2-node
   Euler-Bernoulli members with axial + bending stiffness, full local-to-
   global transformation, consistent uniform-load vectors, and member end

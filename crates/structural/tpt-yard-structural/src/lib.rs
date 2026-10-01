@@ -707,6 +707,260 @@ fn cog_in_convex_hull(cog: Vector3, points: &[Vector3]) -> bool {
     inside
 }
 
+/// Strict JSON loading for `PartialStructure` (review 7C loader standards:
+/// missing fields are `MissingField`, wrong types are `TypeError`, nothing
+/// silently defaults; unknown *keys* are tolerated for forward
+/// compatibility, but every value that enters the model is validated).
+///
+/// Wire format:
+///
+/// ```json
+/// {
+///   "nodes": [[0,0,0], [4,0,0]],
+///   "elements": [{"nodes":[0,1], "area_m2":0.01, "youngs_modulus_gpa":210,
+///                 "density_kg_m3":7850, "erected_at_phase":1}],
+///   "supports": [{"node":0, "fix_x":true, "fix_y":true, "fix_z":true}],
+///   "loads": {"gravity": true,
+///             "wind": {"speed_ms":20, "direction_deg":90,
+///                      "exposed_area_m2":15, "node":1},
+///             "crane": {"capacity_kn":800, "dynamic_factor":1.15, "node":1}}
+/// }
+/// ```
+///
+/// `loads` is optional; `gravity` defaults to **true** there (a
+/// construction-stage analysis without self weight is unusual enough to
+/// warrant the explicit flag, not a silent one).
+/// A partial structure plus its construction loads, as loaded from JSON.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructureWithLoads {
+    /// The staged structure.
+    pub structure: crate::PartialStructure,
+    /// The construction loads for the analyses.
+    pub loads: Vec<crate::ConstructionLoad>,
+}
+
+impl crate::PartialStructure {
+    /// Deserializes from a JSON value produced by the wire format above.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError`] on malformed payloads; node/element index
+    /// consistency is re-checked by [`crate::ConstructionStructuralSolver`].
+    pub fn from_json_with_loads(
+        v: &tpt_yard_core::json::Value,
+    ) -> Result<StructureWithLoads, tpt_yard_core::CoreError> {
+        use tpt_yard_core::CoreError;
+        let err = |msg: String| CoreError::type_error(msg);
+
+        let field = |k: &str| {
+            v.get(k)
+                .ok_or_else(|| CoreError::missing_field(format!("structure.{k}")))
+        };
+
+        let mut nodes = Vec::new();
+        let nodes_v = field("nodes")?;
+        let nodes_arr = nodes_v
+            .as_array()
+            .ok_or_else(|| err("structure.nodes must be an array".into()))?;
+        for (i, nv) in nodes_arr.iter().enumerate() {
+            let a = nv
+                .as_array()
+                .ok_or_else(|| err(format!("structure.nodes[{i}] must be [x,y,z]")))?;
+            if a.len() != 3 {
+                return Err(err(format!("structure.nodes[{i}] must have 3 components")));
+            }
+            let mut p = [0.0_f64; 3];
+            for (axis, comp) in a.iter().enumerate() {
+                p[axis] = comp
+                    .as_f64()
+                    .ok_or_else(|| err(format!("structure.nodes[{i}][{axis}] must be a number")))?;
+            }
+            nodes.push(tpt_yard_core::Vector3::new(p[0], p[1], p[2]));
+        }
+
+        let mut elements = Vec::new();
+        let elems_v = field("elements")?;
+        let elems_arr = elems_v
+            .as_array()
+            .ok_or_else(|| err("structure.elements must be an array".into()))?;
+        for (i, ev) in elems_arr.iter().enumerate() {
+            let bad = |msg: String| err(format!("structure.elements[{i}]: {msg}"));
+            let pair = ev
+                .get("nodes")
+                .ok_or_else(|| bad("missing 'nodes'".into()))?
+                .as_array()
+                .ok_or_else(|| bad("'nodes' must be an array".into()))?;
+            if pair.len() != 2 {
+                return Err(bad("'nodes' must have 2 entries".into()));
+            }
+            let n0 = pair[0]
+                .as_u64()
+                .ok_or_else(|| bad("'nodes[0]' must be a non-negative integer".into()))?;
+            let n1 = pair[1]
+                .as_u64()
+                .ok_or_else(|| bad("'nodes[1]' must be a non-negative integer".into()))?;
+            if n0 >= nodes.len() as u64 || n1 >= nodes.len() as u64 {
+                return Err(bad(format!(
+                    "node index ({n0},{n1}) outside the {} loaded nodes",
+                    nodes.len()
+                )));
+            }
+            let num = |k: &str| -> Result<f64, CoreError> {
+                ev.get(k)
+                    .ok_or_else(|| {
+                        CoreError::missing_field(format!("structure.elements[{i}].{k}"))
+                    })?
+                    .as_f64()
+                    .ok_or_else(|| bad(format!("'{k}' must be a number")))
+            };
+            let area = num("area_m2")?;
+            let e_gpa = num("youngs_modulus_gpa")?;
+            let density = num("density_kg_m3")?;
+            if !area.is_finite() || area <= 0.0 {
+                return Err(bad("'area_m2' must be finite and positive".into()));
+            }
+            if !e_gpa.is_finite() || e_gpa <= 0.0 {
+                return Err(bad(
+                    "'youngs_modulus_gpa' must be finite and positive".into()
+                ));
+            }
+            if !density.is_finite() || density < 0.0 {
+                return Err(bad("'density_kg_m3' must be finite and non-negative".into()));
+            }
+            let phase_v = ev.get("erected_at_phase").ok_or_else(|| {
+                CoreError::missing_field(format!("structure.elements[{i}].erected_at_phase"))
+            })?;
+            let phase = phase_v
+                .as_u64()
+                .ok_or_else(|| bad("'erected_at_phase' must be a non-negative integer".into()))?;
+            elements.push(crate::PartialElement {
+                nodes: [n0 as usize, n1 as usize],
+                area_m2: area,
+                youngs_modulus_gpa: e_gpa,
+                density_kg_m3: density,
+                erected_at: tpt_yard_core::PhaseId(phase),
+            });
+        }
+
+        let mut supports = Vec::new();
+        if let Some(sup_v) = v.get("supports") {
+            let sup_arr = sup_v
+                .as_array()
+                .ok_or_else(|| err("structure.supports must be an array".into()))?;
+            for (i, sv) in sup_arr.iter().enumerate() {
+                let bad = |msg: String| err(format!("structure.supports[{i}]: {msg}"));
+                let node = sv
+                    .get("node")
+                    .ok_or_else(|| bad("missing 'node'".into()))?
+                    .as_u64()
+                    .ok_or_else(|| bad("'node' must be a non-negative integer".into()))?;
+                if node >= nodes.len() as u64 {
+                    return Err(bad(format!(
+                        "node {node} outside the {} loaded nodes",
+                        nodes.len()
+                    )));
+                }
+                let flag = |k: &str| -> Result<bool, CoreError> {
+                    sv.get(k)
+                        .ok_or_else(|| {
+                            CoreError::missing_field(format!("structure.supports[{i}].{k}"))
+                        })?
+                        .as_bool()
+                        .ok_or_else(|| bad(format!("'{k}' must be a boolean")))
+                };
+                supports.push(crate::Support {
+                    node: node as usize,
+                    fix_x: flag("fix_x")?,
+                    fix_y: flag("fix_y")?,
+                    fix_z: flag("fix_z")?,
+                });
+            }
+        }
+
+        // Optional load specification.
+        let mut loads: Vec<crate::ConstructionLoad> = Vec::new();
+        if let Some(loads_v) = v.get("loads") {
+            let gravity = loads_v
+                .get("gravity")
+                .map(|g| {
+                    g.as_bool()
+                        .ok_or_else(|| err("structure.loads.gravity must be a boolean".into()))
+                })
+                .transpose()?;
+            if gravity.unwrap_or(true) {
+                loads.push(crate::ConstructionLoad::Gravity);
+            }
+            if let Some(wind) = loads_v.get("wind") {
+                let num = |k: &str| -> Result<f64, CoreError> {
+                    wind.get(k)
+                        .ok_or_else(|| {
+                            CoreError::missing_field(format!("structure.loads.wind.{k}"))
+                        })?
+                        .as_f64()
+                        .ok_or_else(|| err(format!("structure.loads.wind.{k} must be a number")))
+                };
+                let node = wind
+                    .get("node")
+                    .ok_or_else(|| CoreError::missing_field("structure.loads.wind.node"))?
+                    .as_u64()
+                    .ok_or_else(|| {
+                        err("structure.loads.wind.node must be a non-negative integer".into())
+                    })?;
+                if node >= nodes.len() as u64 {
+                    return Err(err(format!(
+                        "structure.loads.wind.node {node} outside the loaded nodes"
+                    )));
+                }
+                loads.push(crate::ConstructionLoad::Wind {
+                    speed_ms: num("speed_ms")?,
+                    direction_deg: num("direction_deg")?,
+                    exposed_area_m2: num("exposed_area_m2")?,
+                    application_node: node as usize,
+                });
+            }
+            if let Some(crane) = loads_v.get("crane") {
+                let num = |k: &str| -> Result<f64, CoreError> {
+                    crane
+                        .get(k)
+                        .ok_or_else(|| {
+                            CoreError::missing_field(format!("structure.loads.crane.{k}"))
+                        })?
+                        .as_f64()
+                        .ok_or_else(|| err(format!("structure.loads.crane.{k} must be a number")))
+                };
+                let node = crane
+                    .get("node")
+                    .ok_or_else(|| CoreError::missing_field("structure.loads.crane.node"))?
+                    .as_u64()
+                    .ok_or_else(|| {
+                        err("structure.loads.crane.node must be a non-negative integer".into())
+                    })?;
+                if node >= nodes.len() as u64 {
+                    return Err(err(format!(
+                        "structure.loads.crane.node {node} outside the loaded nodes"
+                    )));
+                }
+                loads.push(crate::ConstructionLoad::CraneLoad {
+                    capacity_kn: num("capacity_kn")?,
+                    dynamic_factor: num("dynamic_factor")?,
+                    node: node as usize,
+                });
+            }
+        } else {
+            loads.push(crate::ConstructionLoad::Gravity);
+        }
+
+        Ok(StructureWithLoads {
+            structure: crate::PartialStructure {
+                nodes,
+                elements,
+                supports,
+            },
+            loads,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1044,5 +1298,107 @@ mod tests {
             solver.analyze_at_phase(PhaseId(0), &[ConstructionLoad::Gravity]),
             Err(StructuralError::Fem(FemError::NoActiveElements))
         ));
+    }
+}
+
+#[cfg(test)]
+mod structure_loader_tests {
+    use super::*;
+
+    const DOC: &str = r#"{
+        "nodes": [[0,0,0], [4,0,0], [8,0,0]],
+        "elements": [
+            {"nodes":[0,1], "area_m2":0.01, "youngs_modulus_gpa":210,
+             "density_kg_m3":7850, "erected_at_phase":1},
+            {"nodes":[1,2], "area_m2":0.01, "youngs_modulus_gpa":210,
+             "density_kg_m3":0, "erected_at_phase":2}
+        ],
+        "supports": [{"node":0, "fix_x":true, "fix_y":true, "fix_z":true},
+                     {"node":1, "fix_x":false, "fix_y":true, "fix_z":true}],
+        "loads": {"crane": {"capacity_kn":800, "dynamic_factor":1.15, "node":1}}
+    }"#;
+
+    #[test]
+    fn structure_json_loads_all_pieces() {
+        let v = tpt_yard_core::json::Value::parse(DOC).expect("parses");
+        let loaded = PartialStructure::from_json_with_loads(&v).expect("loads");
+        assert_eq!(loaded.structure.nodes.len(), 3);
+        assert_eq!(loaded.structure.elements.len(), 2);
+        assert_eq!(loaded.structure.elements[0].erected_at, PhaseId(1));
+        assert_eq!(loaded.structure.elements[1].erected_at, PhaseId(2));
+        // Pin + the transverse guide at node 1.
+        assert_eq!(loaded.structure.supports.len(), 2);
+        // Gravity is implicit (default true) + the crane load.
+        assert_eq!(loaded.loads.len(), 2);
+        assert!(matches!(loaded.loads[0], ConstructionLoad::Gravity));
+        assert!(matches!(
+            loaded.loads[1],
+            ConstructionLoad::CraneLoad { capacity_kn, dynamic_factor, node }
+                if capacity_kn == 800.0 && dynamic_factor == 1.15 && node == 1
+        ));
+
+        // The loaded structure actually solves end to end at phase 1
+        // (one segment, gravity + crane at node 1).
+        let solver = ConstructionStructuralSolver::new(loaded.structure.clone(), 355.0);
+        let result = solver
+            .analyze_at_phase(PhaseId(1), &loaded.loads)
+            .expect("phase 1 solves");
+        assert!(result.active_members == 1);
+        assert!(result.passed || result.max_utilization > 0.0);
+    }
+
+    #[test]
+    fn structure_json_defaults_and_strictness() {
+        // No "loads" key at all: gravity only.
+        let minimal = r#"{
+            "nodes": [[0,0,0],[1,0,0]],
+            "elements": [{"nodes":[0,1],"area_m2":0.01,
+                          "youngs_modulus_gpa":210,"density_kg_m3":0,
+                          "erected_at_phase":1}],
+            "supports": [{"node":0,"fix_x":true,"fix_y":true,"fix_z":true}]
+        }"#;
+        let v = tpt_yard_core::json::Value::parse(minimal).unwrap();
+        let loaded = PartialStructure::from_json_with_loads(&v).unwrap();
+        assert_eq!(loaded.loads.len(), 1);
+        assert!(matches!(loaded.loads[0], ConstructionLoad::Gravity));
+
+        // gravity: false removes it.
+        let with_false =
+            minimal.replace("\"supports\"", "\"loads\":{\"gravity\":false},\"supports\"");
+        let v = tpt_yard_core::json::Value::parse(&with_false).unwrap();
+        let loaded = PartialStructure::from_json_with_loads(&v).unwrap();
+        assert!(loaded.loads.is_empty());
+
+        // Strictness (review 7C standards): missing field, wrong type,
+        // dangling node index.
+        let cases = [
+            (
+                minimal.replace("\"area_m2\":0.01", "\"stiffness\":0.01"),
+                "missing area",
+            ),
+            (
+                minimal.replace("\"area_m2\":0.01", "\"area_m2\":\"big\""),
+                "wrong type",
+            ),
+            (
+                minimal.replace("\"nodes\":[0,1]", "\"nodes\":[0,9]"),
+                "dangling node",
+            ),
+            (
+                minimal.replace("\"erected_at_phase\":1", "\"erected_at_phase\":true"),
+                "wrong phase type",
+            ),
+            (
+                minimal.replace("\"fix_x\":true", "\"fix_x\":\"yes\""),
+                "wrong flag type",
+            ),
+        ];
+        for (text, what) in cases {
+            let v = tpt_yard_core::json::Value::parse(&text).expect("still parses");
+            assert!(
+                PartialStructure::from_json_with_loads(&v).is_err(),
+                "{what} must be rejected"
+            );
+        }
     }
 }

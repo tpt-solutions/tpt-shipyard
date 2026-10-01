@@ -443,8 +443,17 @@ pub(crate) fn pcg_solve(
     };
     let b_free = free_norm(b);
     let max_iter = 2 * n + 200;
-    for _ in 0..max_iter {
-        if free_norm(&r) <= 1e-9 * b_free {
+    // No free-row loads: the free DOFs carry nothing and their solution
+    // is zero (penalty rows react at their own rows). The relative
+    // convergence test below is unsatisfiable against a zero norm.
+    if b_free <= 1e-12 {
+        return Ok(x);
+    }
+    for it in 0..max_iter {
+        let fr = free_norm(&r);
+        if fr <= 1e-9 * b_free || (it >= 4 && fr <= 1e-6 * b_free) {
+            // Tight tolerance, or engineering tolerance after a few
+            // iterations (penalty systems stall near kappa x eps).
             return Ok(x);
         }
         let ap = matvec(&p);

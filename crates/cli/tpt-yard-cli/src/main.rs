@@ -60,20 +60,28 @@ fn run(args: &[&str], json_mode: bool) -> Result<(), String> {
         "report" => report(rest.first().ok_or("report needs a file path")?, json_mode),
         "new" => new(rest, json_mode),
         "html-report" => {
-            // --out is accepted anywhere among the arguments.
+            // --out and --structure are accepted anywhere among the
+            // arguments.
             let mut out = "report.html".to_string();
+            let mut structure_path: Option<&str> = None;
             let mut args: Vec<&str> = Vec::new();
             let mut it = rest.iter();
             while let Some(a) = it.next() {
-                if *a == "--out" {
-                    out = it.next().copied().ok_or("--out needs a path")?.to_string();
-                } else {
-                    args.push(a);
+                match *a {
+                    "--out" => {
+                        out = it.next().copied().ok_or("--out needs a path")?.to_string();
+                    }
+                    "--structure" => {
+                        structure_path =
+                            Some(it.next().copied().ok_or("--structure needs a path")?);
+                    }
+                    _ => args.push(a),
                 }
             }
             html_report(
                 args.first().ok_or("html-report needs a project path")?,
                 &out,
+                structure_path,
             )
         }
         other => Err(format!("unknown subcommand '{other}'")),
@@ -82,7 +90,7 @@ fn run(args: &[&str], json_mode: bool) -> Result<(), String> {
 
 /// The HTML calculation-package report (review 7H roadmap item: "report
 /// generator — HTML/PDF calculation package per phase").
-fn html_report(path: &str, out_path: &str) -> Result<(), String> {
+fn html_report(path: &str, out_path: &str, structure_path: Option<&str>) -> Result<(), String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
     let v = tpt_yard_core::json::Value::parse(&text).map_err(|e| format!("{path}: {e}"))?;
     let project =
@@ -100,6 +108,60 @@ fn html_report(path: &str, out_path: &str) -> Result<(), String> {
         .iter()
         .flat_map(|p| p.activities.iter().cloned())
         .collect();
+    // Per-phase FEM (review 7H report item): given an optional staged
+    // structure, analyse every erection phase with its loads.
+    let fem_section = match structure_path {
+        Some(spath) => {
+            let text =
+                std::fs::read_to_string(spath).map_err(|e| format!("reading {spath}: {e}"))?;
+            let sv =
+                tpt_yard_core::json::Value::parse(&text).map_err(|e| format!("{spath}: {e}"))?;
+            let loaded = tpt_yard::tpt_yard_structural::PartialStructure::from_json_with_loads(&sv)
+                .map_err(|e| format!("{spath}: {e}"))?;
+            let max_phase = loaded
+                .structure
+                .elements
+                .iter()
+                .map(|e| e.erected_at.0)
+                .max()
+                .unwrap_or(0);
+            let solver = tpt_yard::tpt_yard_structural::ConstructionStructuralSolver::new(
+                loaded.structure.clone(),
+                355.0,
+            );
+            let mut fem_rows = String::new();
+            for phase in 1..=max_phase {
+                let result = solver.analyze_at_phase(tpt_yard_core::PhaseId(phase), &loaded.loads);
+                match result {
+                    Ok(r) => fem_rows.push_str(&format!(
+                        "<tr><td>{phase}</td><td>{}</td><td>{:.1}</td><td>{:.2}</td><td>{:.1}</td><td class=\"{}\">{}</td></tr>
+",
+                        r.active_members,
+                        r.max_displacement_mm,
+                        r.max_axial_stress_mpa,
+                        r.max_utilization * 100.0,
+                        if r.passed { "pass" } else { "fail" },
+                        if r.passed { "OK" } else { "OVERSTRESSED" },
+                    )),
+                    Err(e) => fem_rows.push_str(&format!(
+                        "<tr><td>{phase}</td><td colspan=\"5\">{e}</td></tr>
+"
+                    )),
+                }
+            }
+            format!(
+                "<table>
+<tr><th>Phase</th><th>Members</th><th>Max deflection (mm)</th><th>Max stress (MPa)</th><th>Utilization</th><th>Verdict</th></tr>
+{fem_rows}</table>
+<p>Loads per the structure file; allowable 355 MPa.</p>"
+            )
+        }
+        None => {
+            "<p>No staged structure supplied (pass --structure partial.json for per-phase FEM).</p>"
+                .to_string()
+        }
+    };
+
     let (sched_section, risk_section) = if acts.is_empty() {
         (
             "<p>No activities to schedule.</p>".to_string(),
@@ -197,6 +259,8 @@ fn html_report(path: &str, out_path: &str) -> Result<(), String> {
 {sched_section}
 <h2>Schedule risk (Monte Carlo, 2000 samples, &plusmn;25 % durations)</h2>
 {risk_section}
+<h2>Per-phase FEM</h2>
+{fem_section}
 <h2>Structural check (start state)</h2>
 <p class="{cls}">{verdict}</p>
 <p>Support reactions and full per-phase FEM: run the structural crate per phase
@@ -220,6 +284,7 @@ fn html_report(path: &str, out_path: &str) -> Result<(), String> {
         verdict = if check.passed { "PASSED" } else { "FAILED" },
         sched_section = sched_section,
         risk_section = risk_section,
+        fem_section = fem_section,
     );
     std::fs::write(out_path, html).map_err(|e| format!("writing {out_path}: {e}"))?;
     println!("HTML report written to {out_path}");
