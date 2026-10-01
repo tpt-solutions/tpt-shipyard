@@ -52,7 +52,16 @@ jobs:
             exit 0
           fi
           cargo bench -p tpt-shipyard-benches -- --save-baseline pr
-          critcmp master pr --threshold 20 || {
-            echo "::error::benchmark regression beyond 20 % against the master baseline"
+          # critcmp exits non-zero with "no benchmark comparisons to show"
+          # when nothing exceeds the threshold, which is the passing case.
+          status=0
+          out=$(critcmp master pr --threshold 20 2>&1) || status=$?
+          echo "$out"
+          if [ "$status" -ne 0 ] && ! echo "$out" | grep -q "no benchmark comparisons to show"; then
+            echo "::error::critcmp failed"
             exit 1
-          }
+          fi
+          if [ "$status" -eq 0 ]; then
+            echo "::error::benchmark change beyond 20 % against the master baseline"
+            exit 1
+          fi
