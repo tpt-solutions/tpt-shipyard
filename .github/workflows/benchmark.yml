@@ -47,6 +47,10 @@ jobs:
       - name: Compare against the baseline (20 % threshold)
         run: |
           cargo install critcmp --locked
+          if ! find target/criterion -type d -name master | grep -q .; then
+            echo "::warning::no master baseline artifact yet; skipping regression comparison"
+            exit 0
+          fi
           cargo bench -p tpt-shipyard-benches -- --save-baseline pr
           critcmp master pr --threshold 20 || {
             echo "::error::benchmark regression beyond 20 % against the master baseline"
