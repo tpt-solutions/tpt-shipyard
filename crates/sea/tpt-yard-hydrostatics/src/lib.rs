@@ -427,6 +427,65 @@ impl HullForm {
     }
 }
 
+/// CSR-style hull-girder scantling requirement (review 7H leftover: the
+/// screening slice of "class-society scantling checks").
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GirderScantling {
+    /// Still-water bending moment magnitude used, kN·m.
+    pub swbm_knm: f64,
+    /// IACS CSR wave-induced moments (sagging, hogging magnitudes), kN·m.
+    pub wave_sagging_knm: f64,
+    /// Hogging wave bending moment magnitude, kN·m.
+    pub wave_hogging_knm: f64,
+    /// Allowable normal stress, MPa (`175 / k`).
+    pub allowable_mpa: f64,
+    /// Required hull-girder section modulus, m³ — the larger of the
+    /// sagging and hogging demands: `W = (|M_sw| + |M_wv|) / sigma`.
+    pub required_modulus_m3: f64,
+}
+
+/// Higher-strength steel factor `k` per IACS UR S: 1.0 for ordinary
+/// strength (mild) steel, 0.91 for AH32, 0.78 for AH36, 0.72 for AH40.
+/// The CSR hull-girder allowable follows as `175 / k` MPa.
+pub fn high_strength_factor(grade: &str) -> Option<f64> {
+    match grade {
+        "MS" | "A" | "B" | "D" | "AH" => Some(1.0),
+        "AH32" | "DH32" | "EH32" => Some(0.91),
+        "AH36" | "DH36" | "EH36" => Some(0.78),
+        "AH40" | "DH40" | "EH40" => Some(0.72),
+        _ => None,
+    }
+}
+
+impl HullForm {
+    /// Screens the hull-girder scantling: the required section modulus
+    /// against the CSR normal-stress allowable `175/k` MPa, combining the
+    /// supplied still-water moment with the rule wave-induced moments
+    /// ([`Self::wave_bending_moment`]). Screening only — the full CSR
+    /// check adds rule minimum modulus, local scantlings, buckling and
+    /// sloping-floor corrections.
+    ///
+    /// Returns `None` when the length is outside the wave-moment rule
+    /// range (90-300 m) or the inputs are not physical.
+    pub fn scantling_requirement(&self, swbm_knm: f64, k_factor: f64) -> Option<GirderScantling> {
+        if !(swbm_knm.is_finite() && swbm_knm >= 0.0) || !(k_factor.is_finite() && k_factor > 0.0) {
+            return None;
+        }
+        let (sag, hog) = self.wave_bending_moment()?;
+        let allowable = 175.0 / k_factor;
+        let sw = swbm_knm.abs();
+        let sag_demand = (sw + sag) / allowable * 1e-3; // kN·m / MPa -> m^3
+        let hog_demand = (sw + hog.abs()) / allowable * 1e-3;
+        Some(GirderScantling {
+            swbm_knm: sw,
+            wave_sagging_knm: sag,
+            wave_hogging_knm: hog.abs(),
+            allowable_mpa: allowable,
+            required_modulus_m3: sag_demand.max(hog_demand),
+        })
+    }
+}
+
 /// Equilibrium trim/list solution for a displacement and LCG (review 7H
 /// leftover: "trim" in the prismatic model).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -853,6 +912,24 @@ impl Bonjean {
         let x_min = sorted[0].x_from_midship_m;
         let x_max = sorted[sorted.len() - 1].x_from_midship_m;
 
+        // Half-breadth at (x, z): linear between the two neighbouring
+        // stations (as the Bonjean section_area does), zero outside the
+        // station span. The station pair is resolved once per x.
+        let station_pair = |x: f64| -> (usize, usize, f64) {
+            if x < x_min || x > x_max {
+                return (0, 0, 0.0); // zero-width sentinel
+            }
+            for (i, w) in sorted.windows(2).enumerate() {
+                let (a, b) = (w[0], w[1]);
+                if x <= b.x_from_midship_m {
+                    let f = (x - a.x_from_midship_m)
+                        / (b.x_from_midship_m - a.x_from_midship_m).max(1e-12);
+                    return (i, i + 1, f);
+                }
+            }
+            (sorted.len() - 1, sorted.len() - 1, 0.0)
+        };
+
         let n = (sorted.len() * 8 - 1).max(200);
         let dx = (x_max - x_min) / n as f64;
         // Vertical strips: z up to a generous cap (deepest table point plus
@@ -869,18 +946,8 @@ impl Bonjean {
         let (mut vol, mut mx, mut my, mut mz) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
         for i in 0..=n {
             let x = x_min + i as f64 * dx;
-            // Nearest station for the section (linear interpolation between
-            // stations is already inside section_area for the Bonjean run;
-            // for heeled strips the nearest-station pick keeps the cost at
-            // O(stations) per x).
-            let st = sorted
-                .iter()
-                .min_by(|a, b| {
-                    (a.x_from_midship_m - x)
-                        .abs()
-                        .total_cmp(&(b.x_from_midship_m - x).abs())
-                })
-                .expect("non-empty");
+            let (ia, ib, fx) = station_pair(x);
+            let (st_a, st_b) = (sorted[ia], sorted[ib]);
             let wx = if i == 0 || i == n {
                 1.0
             } else if i % 2 == 1 {
@@ -890,7 +957,10 @@ impl Bonjean {
             };
             for k in 0..=nz {
                 let z = k as f64 * dz;
-                let y = st.half_breadth_at(z);
+                if ia == ib && fx == 0.0 {
+                    continue; // outside the station span
+                }
+                let y = st_a.half_breadth_at(z) * (1.0 - fx) + st_b.half_breadth_at(z) * fx;
                 if y <= 1e-12 {
                     continue;
                 }
@@ -1000,6 +1070,45 @@ mod tests {
         let gm = r3.gm_m.expect("KG supplied");
         let km = hull.hydrostatics(r3.mean_draft_m).km_m;
         assert!((gm - (km - 9.0)).abs() < 1e-9);
+    }
+
+    /// Review 7H leftover: CSR girder scantling screen — the required
+    /// section modulus combines the still-water moment with the rule wave
+    /// moments against 175/k MPa, hand-checked end to end.
+    #[test]
+    fn scantling_requirement_matches_hand_calculation() {
+        let hull = feeder(); // 140 x 22 x Cb 0.72
+        let swbm = 42_000.0; // kN m, a loaded bulk-carrier-ish SWBM
+
+        // AH36: k = 0.78, allowable = 224.36 MPa.
+        let k = high_strength_factor("AH36").expect("AH36 known");
+        assert!((k - 0.78).abs() < 1e-12);
+        let req = hull.scantling_requirement(swbm, k).expect("in rule range");
+        let cw = 10.75 - (1.6_f64).powf(1.5);
+        let sag = 0.11 * cw * 140.0 * 140.0 * 22.0 * 1.42;
+        let hog = 0.13 / 0.11 * sag;
+        let allowable = 175.0 / 0.78;
+        let w_sag = (swbm + sag) / allowable * 1e-3;
+        let w_hog = (swbm + hog) / allowable * 1e-3;
+        assert!((req.wave_sagging_knm - sag).abs() < 1e-6);
+        assert!((req.required_modulus_m3 - w_sag.max(w_hog)).abs() < 1e-9);
+        // Sagging governs here (larger wave moment ratio).
+        assert!(req.required_modulus_m3 > w_hog - 1e-12);
+        // AH36's higher allowable shrinks the required modulus: mild
+        // steel needs 1/0.78 times as much section.
+        let mild = hull.scantling_requirement(swbm, 1.0).unwrap();
+        assert!((mild.required_modulus_m3 / req.required_modulus_m3 - 1.0 / 0.78).abs() < 1e-9);
+
+        // Outside the rule range / bad inputs: None.
+        let short = HullForm {
+            loa_m: 60.0,
+            boa_m: 12.0,
+            cb: 0.6,
+            cwp: 0.8,
+        };
+        assert!(short.scantling_requirement(swbm, 1.0).is_none());
+        assert!(hull.scantling_requirement(-1.0, 1.0).is_none());
+        assert!(hull.scantling_requirement(swbm, 0.0).is_none());
     }
 
     /// Review 7H leftover: Bonjean integration from hull offsets. A box

@@ -299,51 +299,22 @@ impl TrussModel {
             }
         }
 
-        // Gaussian elimination with partial pivoting. Singularity is judged
-        // *relative* to the matrix scale (an absolute threshold means
-        // completely different things at k ~ 1 N/m and k ~ 1e9 N/m).
-        let scale = k.iter().fold(0.0f64, |m, v| m.max(v.abs()));
-        let mut a = k;
-        let mut x = f;
-        for col in 0..dof {
-            // Pivot.
-            let mut piv = col;
-            let mut best = a[col * dof + col].abs();
-            for r in col + 1..dof {
-                let v = a[r * dof + col].abs();
-                if v > best {
-                    best = v;
-                    piv = r;
+        // Sparse conjugate gradient (review 7H roadmap: "the sparse
+        // solver"). The penalized stiffness system is symmetric positive
+        // definite, so Jacobi-preconditioned CG applies; a mechanism
+        // (singular system) simply never converges and is reported as
+        // [`FemError::SingularSystem`], the same verdict the dense
+        // elimination gave. Singularity/CG quality is judged *relative*
+        // to the matrix scale.
+        let mut penalty_mask = vec![false; dof];
+        for s in &condensed.supports {
+            for (fixed, axis) in [(s.fix_x, 0), (s.fix_y, 1), (s.fix_z, 2)] {
+                if fixed {
+                    penalty_mask[3 * s.node + axis] = true;
                 }
-            }
-            if best <= scale * 1e-12 {
-                return Err(FemError::SingularSystem);
-            }
-            if piv != col {
-                for c in 0..dof {
-                    a.swap(col * dof + c, piv * dof + c);
-                }
-                x.swap(col, piv);
-            }
-            let inv = 1.0 / a[col * dof + col];
-            for r in col + 1..dof {
-                let factor = a[r * dof + col] * inv;
-                if factor == 0.0 {
-                    continue;
-                }
-                for c in col..dof {
-                    a[r * dof + c] -= factor * a[col * dof + c];
-                }
-                x[r] -= factor * x[col];
             }
         }
-        for r in (0..dof).rev() {
-            let mut sum = x[r];
-            for c in r + 1..dof {
-                sum -= a[r * dof + c] * x[c];
-            }
-            x[r] = sum / a[r * dof + r];
-        }
+        let x = pcg_solve(dof, &k, &f, k_scale, &penalty_mask)?;
 
         // Map displacements back to the model's node indexing (orphan nodes
         // carry nothing and stay at zero).
@@ -373,6 +344,140 @@ impl TrussModel {
             max_displacement_m,
         })
     }
+}
+
+/// CSR matrix: `row_ptr[n+1]`, column indices and values per row, full
+/// symmetric storage.
+struct Csr {
+    n: usize,
+    row_ptr: Vec<usize>,
+    col: Vec<usize>,
+    val: Vec<f64>,
+}
+
+impl Csr {
+    /// Builds a CSR matrix from dense row-major input, dropping explicit
+    /// zeros (the stiffness matrix is sparse; the dense vector was only
+    /// the assembly vehicle).
+    fn from_dense(a: &[f64], n: usize) -> Self {
+        let mut row_ptr = Vec::with_capacity(n + 1);
+        let mut col = Vec::new();
+        let mut val = Vec::new();
+        for i in 0..n {
+            row_ptr.push(col.len());
+            for j in 0..n {
+                let v = a[i * n + j];
+                if v != 0.0 {
+                    col.push(j);
+                    val.push(v);
+                }
+            }
+        }
+        row_ptr.push(col.len());
+        Self {
+            n,
+            row_ptr,
+            col,
+            val,
+        }
+    }
+
+    fn matvec(&self, x: &[f64]) -> Vec<f64> {
+        let mut y = Vec::with_capacity(self.n);
+        for row in 0..self.n {
+            let mut sum = 0.0;
+            for t in self.row_ptr[row]..self.row_ptr[row + 1] {
+                sum += self.val[t] * x[self.col[t]];
+            }
+            y.push(sum);
+        }
+        y
+    }
+}
+
+/// Jacobi-preconditioned conjugate gradient for the SPD penalized
+/// stiffness system. Returns `FemError::SingularSystem` when the iteration
+/// cannot converge (a mechanism) or breaks down on a zero curvature step.
+fn pcg_solve(
+    n: usize,
+    a: &[f64],
+    b: &[f64],
+    k_scale: f64,
+    penalty_mask: &[bool],
+) -> Result<Vec<f64>, FemError> {
+    let csr = Csr::from_dense(a, n);
+    // Jacobi preconditioner (the diagonal is strictly positive on an SPD
+    // penalized system).
+    let inv_diag: Vec<f64> = (0..n)
+        .map(|i| {
+            let d = a[i * n + i];
+            if d.abs() <= k_scale * 1e-12 {
+                return 0.0; // signals singular below
+            }
+            1.0 / d
+        })
+        .collect();
+    if inv_diag.contains(&0.0) {
+        return Err(FemError::SingularSystem);
+    }
+
+    let matvec = |x: &[f64]| csr.matvec(x);
+    let mut x = vec![0.0_f64; n];
+    let mut r = b.to_vec();
+    let apply_precond =
+        |r: &[f64]| -> Vec<f64> { r.iter().zip(&inv_diag).map(|(ri, di)| ri * di).collect() };
+    let mut z = apply_precond(&r);
+    let mut p = z.clone();
+    let mut rz: f64 = r.iter().zip(&z).map(|(a2, b2)| a2 * b2).sum();
+    // Convergence on the FREE-row residual relative to the free-row load:
+    // the penalty rows carry the support reactions (O(load) by
+    // construction) and can never vanish, so they are excluded from the
+    // test. |r_free| <= 1e-9 |b_free| is ample for screening accuracy.
+    let free_norm = |v: &[f64]| -> f64 {
+        v.iter()
+            .zip(penalty_mask)
+            .filter(|(_, pen)| !**pen)
+            .map(|(x, _)| x * x)
+            .sum::<f64>()
+            .sqrt()
+    };
+    let b_free = free_norm(b);
+    let max_iter = 2 * n + 200;
+    for _ in 0..max_iter {
+        if free_norm(&r) <= 1e-9 * b_free {
+            return Ok(x);
+        }
+        let ap = matvec(&p);
+        let pap: f64 = p.iter().zip(&ap).map(|(a2, b2)| a2 * b2).sum();
+        // Scale-invariant breakdown test: a true null-space direction has
+        // curvature at machine-epsilon relative to |p|^2 x k_scale, while
+        // a merely tiny (reaction-dominated) direction keeps pap far
+        // above that.
+        let p_norm_sq: f64 = p.iter().map(|v| v * v).sum();
+        if !pap.is_finite() || pap <= 1e-20 * p_norm_sq * k_scale {
+            // Zero curvature along the search direction: the system is
+            // singular in this subspace.
+            return Err(FemError::SingularSystem);
+        }
+        let alpha = rz / pap;
+        for (xi, pi) in x.iter_mut().zip(&p) {
+            *xi += alpha * pi;
+        }
+        for (ri, api) in r.iter_mut().zip(&ap) {
+            *ri -= alpha * api;
+        }
+        // z = M^-1 r must be refreshed every iteration; the search
+        // direction builds on the NEW preconditioned residual.
+        z = apply_precond(&r);
+        let rz_new: f64 = r.iter().zip(&z).map(|(a2, b2)| a2 * b2).sum();
+        let beta = rz_new / rz;
+        for (pi, zi) in p.iter_mut().zip(&z) {
+            *pi = zi + beta * *pi;
+        }
+        rz = rz_new;
+    }
+    // Not converged within the iteration budget: a mechanism.
+    Err(FemError::SingularSystem)
 }
 
 /// Member-level buckling and slenderness checks (review 7H roadmap item).
@@ -552,6 +657,85 @@ mod tests {
         assert_eq!(
             model.elements[0].self_weight_n(&model.nodes[0], &model.nodes[1]),
             0.0
+        );
+    }
+
+    /// Review 7H roadmap: the sparse CG solver at scale — a 100-segment
+    /// hanging chain (~300 DOF). Every element force is hand-known: the
+    /// tension in segment k carries the weight hanging below it.
+    #[test]
+    fn hanging_chain_solves_at_scale() {
+        const N: usize = 100;
+        let l = 1.0; // m per segment
+        let area = 0.01;
+        let e_gpa = 210.0;
+        let rho = 7850.0;
+        let mut nodes = Vec::new();
+        for i in 0..=N {
+            nodes.push(Node {
+                position: Vector3::new(0.0, 0.0, -(i as f64) * l),
+            });
+        }
+        let mut elements = Vec::new();
+        for i in 0..N {
+            elements.push(Element {
+                nodes: [i, i + 1],
+                area_m2: area,
+                youngs_modulus_gpa: e_gpa,
+                density_kg_m3: rho,
+            });
+        }
+        // Transverse guides at every node: a perfectly vertical chain has
+        // no out-of-plane stiffness (truss members carry axial only), so
+        // x/y are restrained like a chain hanging in a vertical slot.
+        let mut supports = vec![Support::pinned(0)];
+        for i in 1..=N {
+            supports.push(Support {
+                node: i,
+                fix_x: true,
+                fix_y: true,
+                fix_z: false,
+            });
+        }
+        let model = TrussModel {
+            nodes,
+            elements,
+            supports,
+            loads: vec![],
+        };
+        let sol = model.solve().expect("hanging chain must solve");
+        let w_seg = rho * area * l * 9.81;
+        // Lumped self weight (half to each end node) gives element k the
+        // tension of everything below its lower node: (N - k - 1/2) w.
+        // The bottom element feels only half of its own weight — the same
+        // convention the single-bar self-weight test asserts.
+        let tension = |k: usize| ((N - k) as f64 - 0.5) * w_seg;
+        assert!(
+            (sol.axial_forces[0] - tension(0)).abs() < 0.01 * tension(0),
+            "top force {}",
+            sol.axial_forces[0]
+        );
+        assert!(
+            (sol.axial_forces[N - 1] - tension(N - 1)).abs() < 0.01 * tension(N - 1),
+            "bottom force {} vs {}",
+            sol.axial_forces[N - 1],
+            tension(N - 1)
+        );
+        // Mid-chain interpolation.
+        let mid = N / 2;
+        assert!(
+            (sol.axial_forces[mid] - tension(mid)).abs() < 0.01 * tension(mid),
+            "mid force {}",
+            sol.axial_forces[mid]
+        );
+        // The top displacement is the sum of the per-segment stretches:
+        // delta = sum_k tension(k) L / EA — quadratic in N.
+        let expected_top: f64 = (0..N).map(|k| tension(k) * l / (e_gpa * 1e9 * area)).sum();
+        // Gravity pulls in -z, so the tip displacement is negative.
+        assert!(
+            (sol.displacements[N].z + expected_top).abs() < 0.01 * expected_top,
+            "top displacement {} vs -{expected_top}",
+            sol.displacements[N].z
         );
     }
 
