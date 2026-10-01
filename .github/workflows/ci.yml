@@ -143,6 +143,9 @@ jobs:
     name: SemVer compatibility
     needs: fmt
     runs-on: ubuntu-latest
+    # cargo-semver-checks needs a published baseline on crates.io. Set the
+    # repository variable CRATE_PUBLISHED=true after the first release of tpt-yard.
+    if: vars.CRATE_PUBLISHED == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
