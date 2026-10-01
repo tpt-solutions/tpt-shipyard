@@ -4,12 +4,137 @@
 # only prepares versions, changelogs, tags and GitHub releases.
 #
 # Changelog format is release-plz's Keep-a-Changelog default; the existing
-# per-crate CHANGELOG.md files are picked up where present.
+# per-crate CHANGELOG.md files are picked up where present. All members
+# ride one release train: every package is in the same version_group
+# (a per-package key — it is NOT valid under [workspace], which is what
+# broke the first Release-plz run).
 
 [workspace]
 publish = false
 changelog_update = true
 dependencies_update = true
 pr_labels = ["release"]
-# The workspace versions as one release train; bump all members together.
+
+[[package]]
+name = "tpt-yard"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-assembly"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-blocks"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-cli"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-core"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-digital-twin"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-distortion"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-drydock"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-earth-link"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-facility"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-habitat"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-hull"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-hydrostatics"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-joints"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-launch"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-logistics"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-orbital-assembly"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-outfitting"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-process-link"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-propellant"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-quality"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-robotic-assembly"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-scheduling"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-sea-trials"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-space-manufacturing"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-space-structural"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-structural"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-transport-link"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-wasm"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-weight"
+version_group = "tpt-shipyard"
+
+[[package]]
+name = "tpt-yard-welding"
 version_group = "tpt-shipyard"
