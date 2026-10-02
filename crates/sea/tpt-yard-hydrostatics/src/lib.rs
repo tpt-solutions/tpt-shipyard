@@ -34,6 +34,14 @@
 
 use std::fmt;
 
+mod probabilistic;
+
+pub use probabilistic::{
+    attained_subdivision_index, combined_cargo_index, p_factor, required_index_cargo,
+    s_factor_cargo, DamageCaseProbability, DamageLengthDensity, DamagedSurvivability,
+    ProbabilisticError,
+};
+
 const RHO_SEA_T_M3: f64 = 1.025;
 
 /// A prismatic hull form at the design condition.
