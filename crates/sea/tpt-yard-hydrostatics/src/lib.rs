@@ -43,8 +43,9 @@ pub use probabilistic::{
     ProbabilisticError,
 };
 pub use scantlings::{
-    local_plate_scantling, plate_buckling_thickness_mm, plate_euler_stress_mpa,
-    slab_bending_thickness_mm, stiffener_scantling, LocalPlateScantling, LocalPlateScantlingInput,
+    local_plate_scantling, plate_buckling_check_ec3, plate_buckling_reduction_ec3,
+    plate_buckling_thickness_mm, plate_euler_stress_mpa, slab_bending_thickness_mm,
+    stiffener_scantling, LocalPlateScantling, LocalPlateScantlingInput, PlateBucklingCapacity,
     ScantlingError, ScantlingMode, StiffenerScantling,
 };
 

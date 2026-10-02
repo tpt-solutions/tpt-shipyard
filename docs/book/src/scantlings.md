@@ -59,9 +59,28 @@ assert_eq!(scantling.mode, tpt_yard_hydrostatics::ScantlingMode::Bending);
 assert!(scantling.with_corrosion_mm > scantling.governing_net_mm);
 ```
 
-The buckling leg uses the bare Euler criterion — the class reduction
-curves (post-buckling reserve via usage factors on the slenderness)
-and the rule minimum thickness tables remain class-society work.
+The buckling leg uses the bare Euler criterion on its own; for a
+verified capacity curve,
+[`plate_buckling_reduction_ec3`](tpt_yard_hydrostatics::plate_buckling_reduction_ec3)
+transcribes the EN 1993-1-5 clause 4.4 Winter-type reduction for
+internal elements (`ρ = (λ̄ − 0.055·(3+ψ))/λ̄²`, capped at 1) and
+[`plate_buckling_check_ec3`](tpt_yard_hydrostatics::plate_buckling_check_ec3)
+combines it with the Euler stress into the `ρ·f_y` capacity and
+utilisation:
+
+```rust
+use tpt_yard_hydrostatics::plate_buckling_check_ec3;
+
+// The 800x3200x10 panel from above, AH36 (fy 355 MPa), 150 MPa demand.
+let check = plate_buckling_check_ec3(10.0, 800.0, 3200.0, 150.0, 355.0, 206_000.0, 0.3)
+    .unwrap();
+assert!(check.lambda_bar > 1.0);      // slender: euler stress below fy
+assert!((check.reduction - 0.5).abs() < 0.01);
+assert!(check.passes);
+```
+
+The CSR plates' own η curves and the rule minimum thickness tables
+remain class-society work.
 
 ## Stiffeners
 

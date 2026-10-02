@@ -135,6 +135,100 @@ fn aspect_factor(short_span_mm: f64, long_span_mm: f64) -> (f64, u32) {
     (k, m)
 }
 
+/// The EN 1993-1-5:2006 clause 4.4 plate-buckling reduction factor ρ
+/// for *internal* compression elements (the Winter-type capacity
+/// curve): ρ = 1.0 below the slenderness limit
+/// `0.5 + 0.085/(1 + ψ)`, else `(λ̄ − 0.055·(3 + ψ))/λ̄²`, capped at 1.
+/// `lambda_bar = sqrt(f_y / sigma_cr)` is the normalized plate
+/// slenderness and `stress_ratio_psi = sigma_2/sigma_1` the edge
+/// stress ratio (−1..1; 1 = uniform compression). The buckling
+/// capacity follows as `ρ·f_y` (the reduced-stress method).
+///
+/// This is the Eurocode curve, transcribed verbatim from the standard
+/// text — the CSR plates use their own η curves, which remain roadmap.
+///
+/// # Errors
+///
+/// [`ScantlingError::InvalidInput`] on a non-finite/non-positive
+/// slenderness or a stress ratio outside [−1, 1].
+pub fn plate_buckling_reduction_ec3(
+    lambda_bar: f64,
+    stress_ratio_psi: f64,
+) -> Result<f64, ScantlingError> {
+    if !(lambda_bar.is_finite() && lambda_bar > 0.0)
+        || !(stress_ratio_psi.is_finite() && (-1.0..=1.0).contains(&stress_ratio_psi))
+    {
+        return Err(ScantlingError::InvalidInput);
+    }
+    let limit = 0.5 + 0.085 / (1.0 + stress_ratio_psi);
+    if lambda_bar <= limit {
+        return Ok(1.0);
+    }
+    Ok(
+        ((lambda_bar - 0.055 * (3.0 + stress_ratio_psi)) / (lambda_bar * lambda_bar))
+            .clamp(0.0, 1.0),
+    )
+}
+
+/// The EN 1993-1-5 plate-buckling capacity outcome.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlateBucklingCapacity {
+    /// Normalized plate slenderness `sqrt(f_y / sigma_E)`.
+    pub lambda_bar: f64,
+    /// The clause 4.4 reduction factor.
+    pub reduction: f64,
+    /// Compressive capacity `rho * f_y`, N/mm².
+    pub capacity_mpa: f64,
+    /// Applied compression over capacity (<= 1 passes).
+    pub utilization: f64,
+    /// True when the applied compression stays within the capacity.
+    pub passes: bool,
+}
+
+/// Runs the EN 1993-1-5 plate-buckling check for a rectangular panel
+/// under uniform edge compression: the Euler stress
+/// ([`plate_euler_stress_mpa`]) feeds the slenderness, the clause 4.4
+/// reduction gives the capacity `ρ·f_y`, and the utilisation compares
+/// it with the applied demand.
+///
+/// # Errors
+///
+/// [`ScantlingError::InvalidInput`] on non-physical inputs (including
+/// `yield_strength_mpa <= 0`).
+pub fn plate_buckling_check_ec3(
+    thickness_mm: f64,
+    short_span_mm: f64,
+    long_span_mm: f64,
+    applied_compression_mpa: f64,
+    yield_strength_mpa: f64,
+    youngs_modulus_mpa: f64,
+    poissons_ratio: f64,
+) -> Result<PlateBucklingCapacity, ScantlingError> {
+    if !(yield_strength_mpa.is_finite() && yield_strength_mpa > 0.0)
+        || !(applied_compression_mpa.is_finite() && applied_compression_mpa >= 0.0)
+    {
+        return Err(ScantlingError::InvalidInput);
+    }
+    let sigma_cr = plate_euler_stress_mpa(
+        thickness_mm,
+        short_span_mm,
+        long_span_mm,
+        youngs_modulus_mpa,
+        poissons_ratio,
+    )?;
+    let lambda_bar = (yield_strength_mpa / sigma_cr).sqrt();
+    let reduction = plate_buckling_reduction_ec3(lambda_bar, 1.0)?;
+    let capacity = reduction * yield_strength_mpa;
+    let utilization = applied_compression_mpa / capacity.max(1e-9);
+    Ok(PlateBucklingCapacity {
+        lambda_bar,
+        reduction,
+        capacity_mpa: capacity,
+        utilization,
+        passes: utilization <= 1.0,
+    })
+}
+
 /// Combined local plate scantling outcome.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LocalPlateScantling {
@@ -375,6 +469,79 @@ mod tests {
         );
         assert_eq!(
             stiffener_scantling(0.8, 3.0, 100.0, 150.0, 1.0, Some(0.0)),
+            Err(ScantlingError::InvalidInput)
+        );
+    }
+
+    /// The EN 1993-1-5 clause 4.4 reduction curve, transcribed from
+    /// the standard text: for uniform compression (psi = 1) the
+    /// formula rho = (lambda - 0.055*4)/lambda^2 exceeds 1 until
+    /// lambda = 0.673 (the cap), then falls — rho(1) = 0.78 and
+    /// rho(2) = 0.445 by hand. Continuous, decreasing; the check
+    /// combines Euler + reduction into rho f_y capacity.
+    #[test]
+    fn ec3_reduction_curve_matches_the_standard_text() {
+        // Below the formula limit (0.5425 for psi = 1) and inside the
+        // cap region: no reduction.
+        assert_eq!(plate_buckling_reduction_ec3(0.5, 1.0).unwrap(), 1.0);
+        assert_eq!(plate_buckling_reduction_ec3(0.65, 1.0).unwrap(), 1.0);
+        // Hand values: rho = (lambda - 0.22)/lambda^2, capped at 1.
+        let at_knee = plate_buckling_reduction_ec3(0.79, 1.0).unwrap();
+        assert!(
+            (at_knee - (0.79 - 0.22) / (0.79 * 0.79)).abs() < 1e-12,
+            "{at_knee}"
+        );
+        let r1 = plate_buckling_reduction_ec3(1.0, 1.0).unwrap();
+        assert!((r1 - 0.78).abs() < 1e-12, "{r1}");
+        let r2 = plate_buckling_reduction_ec3(2.0, 1.0).unwrap();
+        assert!((r2 - (2.0 - 0.22) / 4.0).abs() < 1e-12, "{r2}");
+        // Stress ratio shifts the knee: psi = 0 -> limit 0.585 and
+        // offset 0.055*3 = 0.165.
+        assert_eq!(plate_buckling_reduction_ec3(0.585, 0.0).unwrap(), 1.0);
+        let r0 = plate_buckling_reduction_ec3(1.0, 0.0).unwrap();
+        assert!((r0 - (1.0 - 0.165)).abs() < 1e-12, "{r0}");
+        // Continuity and monotone decrease on the uniform curve.
+        let mut prev = 1.0_f64;
+        for i in 1..=40 {
+            let lam = 0.5425 + (2.5 - 0.5425) * i as f64 / 40.0;
+            let rho = plate_buckling_reduction_ec3(lam, 1.0).unwrap();
+            assert!(rho <= prev + 1e-12, "rho rises at {lam}");
+            assert!((0.0..=1.0).contains(&rho));
+            prev = rho;
+        }
+        // Errors: bad slenderness and out-of-range psi.
+        assert_eq!(
+            plate_buckling_reduction_ec3(0.0, 1.0),
+            Err(ScantlingError::InvalidInput)
+        );
+        assert_eq!(
+            plate_buckling_reduction_ec3(1.0, 1.5),
+            Err(ScantlingError::InvalidInput)
+        );
+    }
+
+    /// The full buckling check: an 800x3200x10 panel, fy 355, E 206 GPa
+    /// has sigma_E = 116.36 MPa (verified above), so lambda = 1.7474
+    /// and the capacity rho fy = 0.500*355 = 177.6 MPa — a 150 MPa
+    /// demand passes with utilisation 0.845, a 250 MPa demand fails.
+    #[test]
+    fn ec3_buckling_check_end_to_end() {
+        let check = |applied| {
+            plate_buckling_check_ec3(10.0, 800.0, 3200.0, applied, 355.0, 206_000.0, 0.3).unwrap()
+        };
+        let pass = check(150.0);
+        let lambda_expected = (355.0_f64 / 116.36).sqrt();
+        assert!((pass.lambda_bar - lambda_expected).abs() < 1e-3);
+        let rho_expected = (lambda_expected - 0.22) / (lambda_expected * lambda_expected);
+        assert!((pass.reduction - rho_expected).abs() < 1e-3);
+        assert!((pass.capacity_mpa - rho_expected * 355.0).abs() < 0.5);
+        assert!(pass.passes);
+        assert!((pass.utilization - 150.0 / pass.capacity_mpa).abs() < 1e-9);
+        let fail = check(250.0);
+        assert!(!fail.passes);
+        assert!(fail.utilization > 1.0);
+        assert_eq!(
+            plate_buckling_check_ec3(10.0, 800.0, 3200.0, 100.0, -1.0, 206_000.0, 0.3),
             Err(ScantlingError::InvalidInput)
         );
     }
