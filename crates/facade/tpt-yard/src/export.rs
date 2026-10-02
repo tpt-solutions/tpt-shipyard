@@ -101,10 +101,9 @@ pub fn geometry_to_gltf(geometry: &Geometry3D, name: &str) -> String {
     )
 }
 
-/// Decodes a base64 string back to bytes (test/verification helper — the
-/// standard decoder in any glTF consumer does this internally).
-#[cfg(test)]
-pub(crate) fn decode_base64(s: &str) -> Vec<u8> {
+/// Decodes a base64 string back to bytes (the reader's counterpart to
+/// the writer's encoder).
+fn decode_base64(s: &str) -> Vec<u8> {
     fn val(c: u8) -> u32 {
         match c {
             b'A'..=b'Z' => (c - b'A') as u32,
@@ -348,6 +347,74 @@ pub fn geometry_to_ifc(geometry: &Geometry3D, name: &str) -> String {
     elements_to_ifc(&[IfcElement { name, geometry }], name)
 }
 
+/// Parses a glTF document written by [`geometry_to_gltf`] back into a
+/// `Geometry3D`: the embedded base64 buffer decodes into the POSITION
+/// (f32) and index (u32) views named by the two accessors. Exact for
+/// f32-representable coordinates — the round trip is tested.
+///
+/// # Errors
+///
+/// A message when the JSON is malformed or not the writer's layout
+/// (embedded buffer, POSITION accessor 0, indices accessor 1).
+pub fn geometry_from_gltf(text: &str) -> Result<Geometry3D, String> {
+    let v = tpt_yard_core::json::Value::parse(text).map_err(|e| format!("gltf JSON: {e}"))?;
+    let uri = v
+        .get("buffers")
+        .and_then(|b| b.as_array())
+        .and_then(|b| b.first())
+        .and_then(|b| b.get("uri"))
+        .and_then(|u| u.as_str())
+        .ok_or("gltf: embedded buffer missing")?;
+    let b64 = uri
+        .strip_prefix("data:application/octet-stream;base64,")
+        .ok_or("gltf: buffer is not an embedded base64 data URI")?;
+    let bin = decode_base64(b64);
+    let accessors = v.get("accessors").ok_or("gltf: accessors missing")?;
+    let accessors = accessors.as_array().ok_or("gltf: accessors not a list")?;
+    let positions = accessors
+        .first()
+        .and_then(|a| a.get("count"))
+        .and_then(|n| n.as_u64())
+        .ok_or("gltf: POSITION count missing")? as usize;
+    let index_count = accessors
+        .get(1)
+        .and_then(|a| a.get("count"))
+        .and_then(|n| n.as_u64())
+        .ok_or("gltf: indices count missing")? as usize;
+    let views = v
+        .get("bufferViews")
+        .and_then(|b| b.as_array())
+        .ok_or("gltf: bufferViews missing")?;
+    let pos_offset = views
+        .first()
+        .and_then(|b| b.get("byteOffset"))
+        .and_then(|n| n.as_u64())
+        .ok_or("gltf: POSITION bufferView offset missing")? as usize;
+    let idx_offset = views
+        .get(1)
+        .and_then(|b| b.get("byteOffset"))
+        .and_then(|n| n.as_u64())
+        .ok_or("gltf: index bufferView offset missing")? as usize;
+
+    let mut vertices = Vec::with_capacity(positions);
+    for i in 0..positions {
+        let o = pos_offset + i * 12;
+        let x = f32::from_le_bytes(bin[o..o + 4].try_into().expect("4 bytes")) as f64;
+        let y = f32::from_le_bytes(bin[o + 4..o + 8].try_into().expect("4 bytes")) as f64;
+        let z = f32::from_le_bytes(bin[o + 8..o + 12].try_into().expect("4 bytes")) as f64;
+        vertices.push(Vector3::new(x, y, z));
+    }
+    let mut faces = Vec::with_capacity(index_count / 3);
+    for i in 0..index_count / 3 {
+        let o = idx_offset + i * 12;
+        let a = u32::from_le_bytes(bin[o..o + 4].try_into().expect("4 bytes"));
+        let b = u32::from_le_bytes(bin[o + 4..o + 8].try_into().expect("4 bytes"));
+        let c = u32::from_le_bytes(bin[o + 8..o + 12].try_into().expect("4 bytes"));
+        faces.push([a, b, c]);
+    }
+    Ok(Geometry3D { vertices, faces })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,6 +452,26 @@ mod tests {
             }
         }
         (defs, refs)
+    }
+
+    /// The glTF reader is the writer's exact inverse for
+    /// f32-representable coordinates: export a box, parse it back,
+    /// compare every vertex and face.
+    #[test]
+    fn gltf_reader_round_trips_the_writer() {
+        let g = Geometry3D::from_box(2.5, 3.5, 7.25);
+        let text = geometry_to_gltf(&g, "round trip");
+        let back = geometry_from_gltf(&text).expect("the writer's layout parses");
+        assert_eq!(back.vertices.len(), g.vertices.len());
+        for (a, b) in back.vertices.iter().zip(&g.vertices) {
+            assert_eq!(a.x, b.x as f32 as f64, "x round-trips through f32");
+            assert_eq!(a.y, b.y as f32 as f64, "y round-trips through f32");
+            assert_eq!(a.z, b.z as f32 as f64, "z round-trips through f32");
+        }
+        assert_eq!(back.faces, g.faces);
+        // Malformed input is a message, not a panic.
+        assert!(geometry_from_gltf("{}").is_err());
+        assert!(geometry_from_gltf("not json").is_err());
     }
 
     /// The IFC document is a well-formed STEP physical file: markers in

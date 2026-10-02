@@ -41,3 +41,12 @@ from a per-entity counter (not registry GUIDs), and the header
 timestamp is fixed so re-exports diff cleanly. Scope notes: one
 building storey per file, no property sets or materials — the
 geometric interchange core.
+
+The glTF side is symmetric:
+[`geometry_from_gltf`](tpt_yard::export::geometry_from_gltf) parses
+the writer's output back to a `Geometry3D` (round-trip tested), and
+the CLI wires the formats together:
+`tpt-yard export MANIFEST.json --gltf hull.gltf` writes the block
+geometry, and `tpt-yard html-report project.json --gltf-viewer
+hull.gltf` embeds it in the calculation package as an interactive
+three.js view (orbit/zoom, CDN with an offline fallback note).

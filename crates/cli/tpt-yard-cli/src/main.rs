@@ -72,6 +72,7 @@ fn run(args: &[&str], json_mode: bool) -> Result<(), String> {
             // arguments.
             let mut out = "report.html".to_string();
             let mut structure_path: Option<&str> = None;
+            let mut gltf_viewer: Option<&str> = None;
             let mut args: Vec<&str> = Vec::new();
             let mut it = rest.iter();
             while let Some(a) = it.next() {
@@ -83,6 +84,9 @@ fn run(args: &[&str], json_mode: bool) -> Result<(), String> {
                         structure_path =
                             Some(it.next().copied().ok_or("--structure needs a path")?);
                     }
+                    "--gltf-viewer" => {
+                        gltf_viewer = Some(it.next().copied().ok_or("--gltf-viewer needs a path")?);
+                    }
                     _ => args.push(a),
                 }
             }
@@ -90,6 +94,7 @@ fn run(args: &[&str], json_mode: bool) -> Result<(), String> {
                 args.first().ok_or("html-report needs a project path")?,
                 &out,
                 structure_path,
+                gltf_viewer,
             )
         }
         "pdf-report" => {
@@ -111,7 +116,12 @@ fn run(args: &[&str], json_mode: bool) -> Result<(), String> {
 
 /// The HTML calculation-package report (review 7H roadmap item: "report
 /// generator — HTML/PDF calculation package per phase").
-fn html_report(path: &str, out_path: &str, structure_path: Option<&str>) -> Result<(), String> {
+fn html_report(
+    path: &str,
+    out_path: &str,
+    structure_path: Option<&str>,
+    gltf_viewer: Option<&str>,
+) -> Result<(), String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
     let v = tpt_yard_core::json::Value::parse(&text).map_err(|e| format!("{path}: {e}"))?;
     let project =
@@ -181,6 +191,93 @@ fn html_report(path: &str, out_path: &str, structure_path: Option<&str>) -> Resu
             "<p>No staged structure supplied (pass --structure partial.json for per-phase FEM).</p>"
                 .to_string()
         }
+    };
+
+    // 3-D viewer section: an optional glTF (the export command's
+    // output) inlined as vertex/index arrays with a three.js viewer
+    // (the same CDN-with-fallback pattern as the WASM demo).
+    let viewer_section = match gltf_viewer {
+        Some(gpath) => {
+            let gtext =
+                std::fs::read_to_string(gpath).map_err(|e| format!("reading {gpath}: {e}"))?;
+            let g = tpt_yard::export::geometry_from_gltf(&gtext)
+                .map_err(|e| format!("{gpath}: {e}"))?;
+            let verts: Vec<String> = g
+                .vertices
+                .iter()
+                .map(|v| format!("[{:.3},{:.3},{:.3}]", v.x, v.y, v.z))
+                .collect();
+            let ids: Vec<String> = g
+                .faces
+                .iter()
+                .flat_map(|f| [f[0], f[1], f[2]])
+                .map(|i| i.to_string())
+                .collect();
+            let verts_per_row = 6;
+            let verts_txt: Vec<String> = verts.chunks(verts_per_row).map(|c| c.join(",")).collect();
+            let ids_txt: Vec<String> = ids.chunks(24).map(|c| c.join(",")).collect();
+            let template = r##"<h2>Hull geometry (3-D)</h2>
+<div id="viewer3d" style="width:100%;max-width:900px;aspect-ratio:16/9;position:relative;background:#0a101b;border-radius:6px;">
+<p id="viewer-note" style="color:#8fa3b8;padding:1rem;">three.js could not be loaded (offline?) — geometry as data: @NV@ vertices, @NT@ triangles.</p>
+</div>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+<script type="module">
+const VERTS = [@VERTS@];
+const IDS = [@IDS@];
+try {{
+  const THREE = await import("three");
+  const {{ OrbitControls }} = await import("three/addons/controls/OrbitControls.js");
+  const box = document.getElementById("viewer3d");
+  box.querySelector("#viewer-note")?.remove();
+  const renderer = new THREE.WebGLRenderer({{ antialias: true }});
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(box.clientWidth, box.clientHeight);
+  box.appendChild(renderer.domElement);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a101b);
+  const camera = new THREE.PerspectiveCamera(50, box.clientWidth / box.clientHeight, 0.1, 4000);
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  scene.add(new THREE.HemisphereLight(0x9fc2ff, 0x1a2438, 1.4));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+  sun.position.set(80, 160, 120);
+  scene.add(sun);
+  // The hull is z-up; the group maps it to three.js y-up.
+  const group = new THREE.Group();
+  group.rotation.x = -Math.PI / 2;
+  scene.add(group);
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.Float32BufferAttribute(VERTS.flat(), 3));
+  geom.setIndex(IDS);
+  geom.computeVertexNormals();
+  group.add(new THREE.Mesh(geom, new THREE.MeshStandardMaterial({{ color: 0x3f7fd4, metalness: 0.15, roughness: 0.65 }})));
+  let span = 1;
+  for (const v of VERTS) {{
+    span = Math.max(span, Math.abs(v[0]), Math.abs(v[1]), Math.abs(v[2]));
+  }}
+  camera.position.set(span * 1.8, span * 1.2, span * 2.2);
+  controls.target.set(0, 0, 0);
+  window.addEventListener("resize", () => {{
+    renderer.setSize(box.clientWidth, box.clientHeight);
+    camera.aspect = box.clientWidth / box.clientHeight;
+    camera.updateProjectionMatrix();
+  }});
+  renderer.setAnimationLoop(() => {{
+    controls.update();
+    renderer.render(scene, camera);
+  }});
+}} catch (err) {{
+  const note = document.getElementById("viewer-note");
+  if (note) note.textContent = "three.js could not be loaded (offline?): " + err;
+}}
+</script>"##;
+            template
+                .replace("@NV@", &g.vertices.len().to_string())
+                .replace("@NT@", &g.faces.len().to_string())
+                .replace("@VERTS@", &verts_txt.join(",\n"))
+                .replace("@IDS@", &ids_txt.join(","))
+        }
+        None => String::new(),
     };
 
     let (sched_section, risk_section) = if acts.is_empty() {
@@ -282,6 +379,7 @@ fn html_report(path: &str, out_path: &str, structure_path: Option<&str>) -> Resu
 {risk_section}
 <h2>Per-phase FEM</h2>
 {fem_section}
+{viewer_section}
 <h2>Structural check (start state)</h2>
 <p class="{cls}">{verdict}</p>
 <p>Support reactions and full per-phase FEM: run the structural crate per phase
