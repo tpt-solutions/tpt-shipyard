@@ -13,6 +13,15 @@ print(twin.weight_report()["design_weight_kg"])
 hull = tpt_yard_py.HullForm(140.0, 22.0, 0.72, 0.85)
 print(hull.hydrostatics(6.0)["displacement_t"])
 print(hull.gz_curve(6.0, 8.0, 40.0)[:3])
+
+sched = tpt_yard_py.Scheduler([
+    (1, 10.0, [], [("drydock", 1.0)]),
+    (2, 14.0, [1], [("drydock", 1.0)]),
+])
+print(sched.critical_path())                    # [1, 2]
+print(sched.optimize("min_drydock"))            # makespan, order, dock occupancy
+print(sched.monte_carlo_risk(0.2, 500, 42))     # p50, p90, mean
+print(sched.resource_leveling_with_limits({"crew": 3.0})[0])
 ```
 
 ## Building
@@ -37,6 +46,7 @@ template.
   allow-list; it sits outside the workspace `cargo-deny` graph because
   the crate is detached.
 - Scope: `DigitalTwin` (strict project-JSON loading, phase advance,
-  weight report, JSON persistence) and `HullForm` (hydrostatics, GZ
-  curve, IMO 2008 general check). Engine errors surface as
-  `ValueError`.
+  weight report, JSON persistence), `HullForm` (hydrostatics, GZ
+  curve, IMO 2008 general check) and `Scheduler` (critical path,
+  objectives, capacity-aware levelling, Monte Carlo risk). Engine
+  errors surface as `ValueError`.

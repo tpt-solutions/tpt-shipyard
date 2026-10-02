@@ -97,6 +97,16 @@ jobs:
           assert abs(hs["displacement_t"] - 0.72*140*22*6*1.025) < 1e-6, hs
           gz = hull.gz_curve(6.0, 8.0, 40.0)
           assert gz[0][0] == 0.0 and len(gz) >= 5
+          sched = tpt_yard_py.Scheduler([
+              (1, 10.0, [], [("drydock", 1.0)]),
+              (2, 14.0, [1], [("drydock", 1.0)]),
+              (3, 30.0, [2], []),
+          ])
+          assert sched.critical_path() == [1, 2, 3]
+          mk, order, dock = sched.optimize("min_drydock")
+          assert dock == 24.0 and mk == 54.0, (mk, dock)
+          p50, p90, mean = sched.monte_carlo_risk(0.2, 500, 42)
+          assert p90 >= p50 > 0
           print("python bindings OK")
           EOF
 

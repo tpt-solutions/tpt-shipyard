@@ -195,6 +195,15 @@ dependencies = [
  "tpt-yard-core",
  "tpt-yard-digital-twin",
  "tpt-yard-hydrostatics",
+ "tpt-yard-scheduling",
+]
+
+[[package]]
+name = "tpt-yard-scheduling"
+version = "0.1.0"
+dependencies = [
+ "tpt-yard-assembly",
+ "tpt-yard-core",
 ]
 
 [[package]]

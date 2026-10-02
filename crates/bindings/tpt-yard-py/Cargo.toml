@@ -24,4 +24,5 @@ crate-type = ["cdylib"]
 pyo3 = { version = "0.22", features = ["extension-module"] }
 tpt-yard-core = { path = "../../core/tpt-yard-core" }
 tpt-yard-digital-twin = { path = "../../core/tpt-yard-digital-twin" }
+tpt-yard-scheduling = { path = "../../planning/tpt-yard-scheduling" }
 tpt-yard-hydrostatics = { path = "../../sea/tpt-yard-hydrostatics" }

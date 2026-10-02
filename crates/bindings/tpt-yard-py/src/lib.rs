@@ -25,6 +25,12 @@ use std::collections::HashMap;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+/// Activity tuple as passed from Python: `(id, duration_h, dep_ids,
+/// resources)` with resources as `(kind_name, capacity)` pairs.
+type PyActivity = (u64, f64, Vec<u64>, Vec<(String, f64)>);
+/// Levelled-schedule return: `(makespan_h, order_ids, peaks, notes)`.
+type PyLevelled = (f64, Vec<u64>, Vec<(String, f64)>, Vec<String>);
+
 /// A construction digital twin over a vessel project.
 #[pyclass]
 struct DigitalTwin {
@@ -150,10 +156,154 @@ impl HullForm {
     }
 }
 
+/// A construction scheduler over an activity network (review 7H: the
+/// planning bindings). Activities come as `(id, duration_h, dep_ids,
+/// resources)` tuples with resources as `(kind, capacity)` pairs using
+/// the kind names `crane|workshop|drydock|welding|robot|crew|transport`.
+#[pyclass]
+struct Scheduler {
+    inner: tpt_yard_scheduling::ShipyardScheduler,
+}
+
+fn resource_kind(name: &str) -> Option<tpt_yard_core::ResourceKind> {
+    match name {
+        "crane" => Some(tpt_yard_core::ResourceKind::Crane),
+        "workshop" => Some(tpt_yard_core::ResourceKind::Workshop),
+        "drydock" => Some(tpt_yard_core::ResourceKind::Drydock),
+        "welding" => Some(tpt_yard_core::ResourceKind::WeldingStation),
+        "robot" => Some(tpt_yard_core::ResourceKind::Robot),
+        "crew" => Some(tpt_yard_core::ResourceKind::Crew),
+        "transport" => Some(tpt_yard_core::ResourceKind::Transport),
+        _ => None,
+    }
+}
+
+fn kind_name(k: tpt_yard_core::ResourceKind) -> &'static str {
+    tpt_yard_scheduling::resource_kind_name(k)
+}
+
+#[pymethods]
+impl Scheduler {
+    #[new]
+    fn new(activities: Vec<PyActivity>) -> PyResult<Self> {
+        let acts = activities
+            .iter()
+            .map(|(id, duration, deps, resources)| {
+                let resources = resources
+                    .iter()
+                    .map(|(kind_name, capacity)| {
+                        let kind = resource_kind(kind_name).ok_or_else(|| {
+                            PyValueError::new_err(format!(
+                                "unknown resource kind '{kind_name}' (use crane|workshop|drydock|welding|robot|crew|transport)"
+                            ))
+                        })?;
+                        Ok(tpt_yard_core::Resource {
+                            name: kind_name.clone(),
+                            kind,
+                            capacity: *capacity,
+                        })
+                    })
+                    .collect::<PyResult<Vec<_>>>()?;
+                Ok(tpt_yard_core::AssemblyActivity::new(
+                    tpt_yard_core::ActivityId(*id),
+                    format!("activity {id}"),
+                    tpt_yard_core::ActivityType::JoinBlock,
+                    *duration,
+                )
+                .with_dependencies(&deps.iter().map(|d| tpt_yard_core::ActivityId(*d)).collect::<Vec<_>>())
+                .with_resources(resources))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(Self {
+            inner: tpt_yard_scheduling::ShipyardScheduler::new(acts),
+        })
+    }
+
+    /// The zero-float critical path as activity ids.
+    fn critical_path(&self) -> PyResult<Vec<u64>> {
+        Ok(self
+            .inner
+            .critical_path()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?
+            .into_iter()
+            .map(|a| a.0)
+            .collect())
+    }
+
+    /// Schedules under an objective named `min_duration|min_crane|min_cost|
+    /// max_parallel|min_drydock`: returns `(makespan_h, order_ids,
+    /// dock_occupancy_h)`.
+    fn optimize(&self, objective: &str) -> PyResult<(f64, Vec<u64>, Option<f64>)> {
+        use tpt_yard_scheduling::ScheduleObjective as O;
+        let objective = match objective {
+            "min_duration" => O::MinimizeDuration,
+            "min_crane" => O::MinimizeCraneUsage,
+            "min_cost" => O::MinimizeCost,
+            "max_parallel" => O::MaximizeParallelism,
+            "min_drydock" => O::MinimizeDrydockTime,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown objective '{other}'"
+                )))
+            }
+        };
+        let r = self
+            .inner
+            .optimize_sequence(objective)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok((
+            r.makespan_hours,
+            r.order.iter().map(|a| a.0).collect(),
+            r.dock_occupancy_h,
+        ))
+    }
+
+    /// Capacity-aware resource levelling: `limits` maps kind names to
+    /// yard-wide capacities. Returns `(makespan_h, order_ids, peaks,
+    /// notes)`.
+    fn resource_leveling_with_limits(&self, limits: HashMap<String, f64>) -> PyResult<PyLevelled> {
+        let mut limit_kinds = std::collections::BTreeMap::new();
+        for (name, value) in &limits {
+            let kind = resource_kind(name)
+                .ok_or_else(|| PyValueError::new_err(format!("unknown resource kind '{name}'")))?;
+            limit_kinds.insert(kind, *value);
+        }
+        let r = self
+            .inner
+            .resource_leveling_with_limits(&limit_kinds)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok((
+            r.makespan_hours,
+            r.order.iter().map(|a| a.0).collect(),
+            r.peak_resource_use
+                .iter()
+                .map(|(k, v)| (kind_name(*k).to_string(), *v))
+                .collect(),
+            r.notes,
+        ))
+    }
+
+    /// Monte Carlo schedule risk with triangular duration uncertainty:
+    /// returns `(p50_h, p90_h, mean_h)`; seed-deterministic.
+    fn monte_carlo_risk(
+        &self,
+        uncertainty_frac: f64,
+        samples: u32,
+        seed: u64,
+    ) -> PyResult<(f64, f64, f64)> {
+        let r = self
+            .inner
+            .monte_carlo_risk(uncertainty_frac, samples, seed)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok((r.p50_makespan_h, r.p90_makespan_h, r.mean_makespan_h))
+    }
+}
+
 /// The tpt-shipyard Python module.
 #[pymodule]
 fn tpt_yard_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DigitalTwin>()?;
     m.add_class::<HullForm>()?;
+    m.add_class::<Scheduler>()?;
     Ok(())
 }
