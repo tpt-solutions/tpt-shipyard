@@ -46,7 +46,11 @@ pub enum ScheduleObjective {
     MinimizeCost,
     /// Flatten crane demand peaks.
     MinimizeCraneUsage,
-    /// Shorten the dock-occupancy window (critical path via dock tasks).
+    /// Shorten the dock-occupancy window: earliest starts with the
+    /// first-to-last span over the dock-drawing activities reported in
+    /// [`ScheduleResult::dock_occupancy_h`] (dock contention itself is
+    /// a levelling job — pair this with
+    /// [`Self::resource_leveling_with_limits`] and a Drydock limit).
     MinimizeDrydockTime,
     /// Maximum parallelism (earliest starts everywhere).
     MaximizeParallelism,
@@ -64,6 +68,10 @@ pub struct ScheduleResult {
     /// Scheduled start of each activity, hours from project start
     /// (parallel to `order`).
     pub start_hours: Vec<(ActivityId, f64)>,
+    /// First dock-activity start to last dock-activity finish, hours
+    /// (`None` when no activity draws the drydock resource). The
+    /// quantity [`ScheduleObjective::MinimizeDrydockTime`] targets.
+    pub dock_occupancy_h: Option<f64>,
     /// Peak concurrent resource demand per kind, under this schedule.
     pub peak_resource_use: Vec<(ResourceKind, f64)>,
     /// Findings.
@@ -609,13 +617,43 @@ impl ShipyardScheduler {
         let mut peak_resource_use: Vec<(ResourceKind, f64)> = peaks.into_iter().collect();
         peak_resource_use.sort_by(|a, b| resource_kind_name(a.0).cmp(resource_kind_name(b.0)));
 
-        let notes = vec![format!("objective {objective:?}: makespan {makespan:.1} h")];
+        // Dock occupancy: first start to last finish over the activities
+        // that draw the drydock resource (review 7B leftover — the
+        // quantity the MinimizeDrydockTime objective targets).
+        let mut notes = vec![format!("objective {objective:?}: makespan {makespan:.1} h")];
+        let mut dock_first = f64::INFINITY;
+        let mut dock_last = 0.0_f64;
+        let mut dock_count = 0_usize;
+        for a in &self.activities {
+            if a.resources
+                .iter()
+                .any(|r| r.kind == ResourceKind::Drydock && r.capacity > 0.0)
+            {
+                let s = start[&a.id];
+                dock_first = dock_first.min(s);
+                dock_last = dock_last.max(s + a.duration_hours);
+                dock_count += 1;
+            }
+        }
+        let dock_occupancy_h = if dock_count > 0 {
+            let span = dock_last - dock_first;
+            if objective == ScheduleObjective::MinimizeDrydockTime {
+                notes.push(format!(
+                    "dock occupancy {span:.1} h ({dock_count} dock activities, first start {dock_first:.1} h); project tail outside the dock {:.1} h",
+                    (makespan - dock_last).max(0.0)
+                ));
+            }
+            Some(span)
+        } else {
+            None
+        };
         let start_hours = order.iter().map(|&id| (id, start[&id])).collect();
         Ok(ScheduleResult {
             objective,
             makespan_hours: makespan,
             order,
             start_hours,
+            dock_occupancy_h,
             peak_resource_use,
             notes,
         })
@@ -1524,5 +1562,82 @@ mod tests {
         limits.insert(ResourceKind::Crane, 50.0); // irrelevant to both
         let r = s.resource_leveling_with_limits(&limits).unwrap();
         assert_eq!(r.makespan_hours, 10.0, "no welding-station limit: parallel");
+    }
+
+    /// The dock-occupancy window: the span from the first dock-activity
+    /// start to the last dock-activity finish. A long non-dock tail
+    /// stretches the makespan but not the occupancy, and the drydock
+    /// objective reports both. No dock activities means `None`.
+    #[test]
+    fn dock_occupancy_tracks_the_dock_drawing_activities() {
+        let dock = || {
+            vec![Resource {
+                name: "building dock 1".into(),
+                kind: ResourceKind::Drydock,
+                capacity: 1.0,
+            }]
+        };
+        let s = ShipyardScheduler::new(vec![
+            // Dock chain: keel 0-10, erection 10-24.
+            AssemblyActivity::new(ActivityId(1), "keel laying", ActivityType::JoinBlock, 10.0)
+                .with_resources(dock()),
+            AssemblyActivity::new(ActivityId(2), "erection", ActivityType::JoinBlock, 14.0)
+                .with_dependencies(&[ActivityId(1)])
+                .with_resources(dock()),
+            // Long off-dock outfitting tail after the dock work.
+            AssemblyActivity::new(ActivityId(3), "outfitting", ActivityType::Paint, 30.0)
+                .with_dependencies(&[ActivityId(2)]),
+        ]);
+        let drydock = s
+            .optimize_sequence(ScheduleObjective::MinimizeDrydockTime)
+            .unwrap();
+        assert_eq!(drydock.dock_occupancy_h, Some(24.0), "keel to erection end");
+        assert_eq!(drydock.makespan_hours, 54.0, "30 h tail outside the dock");
+        assert!(drydock
+            .notes
+            .iter()
+            .any(|n| n.contains("dock occupancy 24.0 h") && n.contains("outside the dock 30.0 h")));
+
+        // The other objectives carry the same observable without the
+        // dock-specific note.
+        let plain = s
+            .optimize_sequence(ScheduleObjective::MinimizeDuration)
+            .unwrap();
+        assert_eq!(plain.dock_occupancy_h, Some(24.0));
+        assert!(!plain.notes.iter().any(|n| n.contains("dock occupancy")));
+
+        // No dock activities at all: None.
+        let bare = ShipyardScheduler::new(vec![AssemblyActivity::new(
+            ActivityId(1),
+            "steel",
+            ActivityType::CutSteel,
+            5.0,
+        )]);
+        assert_eq!(
+            bare.optimize_sequence(ScheduleObjective::MinimizeDrydockTime)
+                .unwrap()
+                .dock_occupancy_h,
+            None
+        );
+
+        // Exclusive dock (limit 1.0): two independent dock activities
+        // serialise — the occupancy grows to the sum, the makespan with
+        // them, and the pairing with capacity levelling is the tool for
+        // dock contention.
+        let mut twin = BTreeMap::new();
+        twin.insert(ResourceKind::Drydock, 1.0);
+        let two_docks = ShipyardScheduler::new(vec![
+            AssemblyActivity::new(ActivityId(1), "dock a", ActivityType::JoinBlock, 8.0)
+                .with_resources(dock()),
+            AssemblyActivity::new(ActivityId(2), "dock b", ActivityType::JoinBlock, 8.0)
+                .with_resources(dock()),
+        ]);
+        let serialised = two_docks.resource_leveling_with_limits(&twin).unwrap();
+        assert_eq!(serialised.dock_occupancy_h, Some(16.0));
+        assert_eq!(serialised.makespan_hours, 16.0);
+        let parallel = two_docks
+            .optimize_sequence(ScheduleObjective::MinimizeDrydockTime)
+            .unwrap();
+        assert_eq!(parallel.dock_occupancy_h, Some(8.0), "uncontended: overlap");
     }
 }

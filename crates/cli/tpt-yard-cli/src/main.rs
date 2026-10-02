@@ -863,13 +863,18 @@ fn schedule(rest: &[&str], json_mode: bool) -> Result<(), String> {
             .iter()
             .map(|(k, v)| format!("\"{}\":{}", kind_name(*k), v))
             .collect();
+        let dock = levelled
+            .dock_occupancy_h
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| "null".into());
         println!(
-            "{{\"critical_path\":[{}],\"makespan_h\":{:.1},\"starts\":[{}],\"limits\":{{{}}}}}",
+            "{{\"critical_path\":[{}],\"makespan_h\":{:.1},\"dock_occupancy_h\":{},\"starts\":[{}],\"limits\":{{{}}}}}",
             cp.iter()
                 .map(|a| a.0.to_string())
                 .collect::<Vec<_>>()
                 .join(","),
             levelled.makespan_hours,
+            dock,
             starts.join(","),
             lims.join(",")
         );
@@ -884,6 +889,9 @@ fn schedule(rest: &[&str], json_mode: bool) -> Result<(), String> {
         cp.len(),
         levelled.makespan_hours
     );
+    if let Some(dock) = levelled.dock_occupancy_h {
+        println!("Dock occupancy: {:.1} h", dock);
+    }
     if !limit_kinds.is_empty() {
         println!(
             "Capacity limits: {}",
