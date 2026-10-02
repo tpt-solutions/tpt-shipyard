@@ -53,7 +53,7 @@ jobs:
         run: |
           for ex in container-ship-block-assembly orbital-station-truss \
                     rotating-habitat-construction submarine-pressure-hull \
-                    space-solar-array-assembly drydock-flooding-sequence; do
+                    space-solar-array-assembly drydock-flooding-sequence                     hull-stability-screen; do
             echo "== $ex =="
             cargo run -p "$ex" --locked
           done

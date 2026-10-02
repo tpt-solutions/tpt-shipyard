@@ -1,0 +1,17 @@
+[package]
+name = "hull-stability-screen"
+description = "TPT Shipyard example: end-to-end stability and scantling screen for a hull manifest"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tpt-yard-core = { workspace = true }
+tpt-yard-hydrostatics = { workspace = true }
+
+[lints]
+workspace = true

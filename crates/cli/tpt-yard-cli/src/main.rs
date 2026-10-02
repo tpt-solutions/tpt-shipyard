@@ -7,6 +7,9 @@
 //! - `plan MANIFEST.json` — the end-to-end construction plan for a hull
 //!   manifest: block division → erection order → lift checks → schedule →
 //!   critical path, one report.
+//! - `export MANIFEST.json [--gltf out.gltf] [--ifc out.ifc]` — block
+//!   division written out as glTF 2.0 (merged mesh) and/or IFC4 STEP
+//!   (one named product per block) for web viewers and BIM tools.
 //! - `schedule FILE.json [--limit kind=value]...` — CPM critical path and
 //!   resource levelling for a vessel project's activities; `--limit`
 //!   states yard-wide capacities per resource kind (crane tonnes, crew
@@ -31,7 +34,7 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("error: {e}");
             eprintln!(
-                "usage: tpt-yard <validate|plan|schedule|risk|report|new|html-report|pdf-report> [--json] ..."
+                "usage: tpt-yard <validate|plan|schedule|risk|report|new|export|html-report|pdf-report> [--json] ..."
             );
             ExitCode::FAILURE
         }
@@ -59,6 +62,7 @@ fn run(args: &[&str], json_mode: bool) -> Result<(), String> {
             rest.first().ok_or("plan needs a hull manifest path")?,
             json_mode,
         ),
+        "export" => export_cmd(rest, json_mode),
         "schedule" => schedule(rest, json_mode),
         "risk" => risk(rest, json_mode),
         "report" => report(rest.first().ok_or("report needs a file path")?, json_mode),
@@ -1134,6 +1138,147 @@ fn risk(rest: &[&str], json_mode: bool) -> Result<(), String> {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
+    }
+    Ok(())
+}
+
+// ------------------------------------------------------------------ export
+
+/// `export MANIFEST.json [--gltf out.gltf] [--ifc out.ifc]`
+///
+/// Divides the hull into blocks (the plan command's step 1) and writes
+/// the erection geometry out: one merged-mesh glTF 2.0 document and/or
+/// one IFC4 STEP file with a named product per block — the hand-off to
+/// web viewers and BIM tools.
+fn export_cmd(rest: &[&str], json_mode: bool) -> Result<(), String> {
+    let path: &str = rest
+        .first()
+        .copied()
+        .filter(|a| !a.starts_with("--"))
+        .ok_or("export needs a hull manifest path")?;
+    let mut gltf_out: Option<String> = None;
+    let mut ifc_out: Option<String> = None;
+    let mut i = 1;
+    while i < rest.len() {
+        match rest[i] {
+            "--gltf" => {
+                i += 1;
+                gltf_out = Some(
+                    rest.get(i)
+                        .copied()
+                        .ok_or("--gltf needs an output path")?
+                        .to_string(),
+                );
+            }
+            "--ifc" => {
+                i += 1;
+                ifc_out = Some(
+                    rest.get(i)
+                        .copied()
+                        .ok_or("--ifc needs an output path")?
+                        .to_string(),
+                );
+            }
+            other => return Err(format!("unknown export flag '{other}'")),
+        }
+        i += 1;
+    }
+    if gltf_out.is_none() && ifc_out.is_none() {
+        return Err("export needs --gltf and/or --ifc with output paths".into());
+    }
+
+    // Manifest → blocks (the same division the plan command reports).
+    let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
+    let v = Value::parse(&text).map_err(|e| format!("{path}: {e}"))?;
+    let num = |o: &Value, k: &str| {
+        o.get(k)
+            .and_then(|n| n.as_f64())
+            .ok_or(format!("manifest: '{k}' missing or not a number"))
+    };
+    let hull_v = v.get("hull").ok_or("manifest: 'hull' missing")?;
+    let hull = tpt_yard::tpt_yard_hull::HullGeometry {
+        loa_m: num(hull_v, "loa_m")?,
+        boa_m: num(hull_v, "boa_m")?,
+        depth_m: num(hull_v, "depth_m")?,
+        areal_density_kg_m2: num(hull_v, "areal_density_kg_m2")?,
+        depth_bands: hull_v
+            .get("depth_bands")
+            .and_then(|n| n.as_u64())
+            .ok_or("manifest: 'depth_bands' missing")? as u32,
+    };
+    let yard = v
+        .get("yard_capabilities")
+        .ok_or("manifest: 'yard_capabilities' missing")?;
+    let crane_kn = num(yard, "crane_capacity_kn")?;
+    let ws = yard.get("workshop").ok_or("manifest: 'workshop' missing")?;
+    let workshop = tpt_yard::tpt_yard_core::Dimensions::new(
+        num(ws, "length_m")?,
+        num(ws, "breadth_m")?,
+        num(ws, "depth_m")?,
+    );
+    let construction = tpt_yard::tpt_yard_hull::HullConstruction::new(hull);
+    let blocks = construction.block_division(crane_kn, workshop);
+    if blocks.is_empty() {
+        return Err("block division produced no blocks (depth_bands == 0?)".into());
+    }
+
+    // Per-block boxes at their CoGs; merged for glTF, individual for IFC.
+    let mut merged = tpt_yard::tpt_yard_core::Geometry3D::new();
+    let mut block_geometries: Vec<tpt_yard::tpt_yard_core::Geometry3D> =
+        Vec::with_capacity(blocks.len());
+    for block in &blocks {
+        let d = block.dimensions();
+        let mut box_geometry =
+            tpt_yard::tpt_yard_core::Geometry3D::from_box(d.length, d.breadth, d.depth);
+        box_geometry.translate(block.cog);
+        merged.merge(&box_geometry, Vector3::ZERO);
+        block_geometries.push(box_geometry);
+    }
+    let elements: Vec<tpt_yard::export::IfcElement> = blocks
+        .iter()
+        .zip(&block_geometries)
+        .map(|(block, geometry)| tpt_yard::export::IfcElement {
+            name: &block.name,
+            geometry,
+        })
+        .collect();
+
+    let mut written: Vec<String> = Vec::new();
+    if let Some(out) = &gltf_out {
+        let doc = tpt_yard::export::geometry_to_gltf(&merged, path);
+        std::fs::write(out, &doc).map_err(|e| format!("writing {out}: {e}"))?;
+        written.push(format!("{out} ({} bytes)", doc.len()));
+    }
+    if let Some(out) = &ifc_out {
+        let doc = tpt_yard::export::elements_to_ifc(&elements, "hull erection");
+        std::fs::write(out, &doc).map_err(|e| format!("writing {out}: {e}"))?;
+        written.push(format!("{out} ({} bytes)", doc.len()));
+    }
+    if json_mode {
+        println!(
+            "{{\"blocks\":{},\"vertices\":{},\"triangles\":{},\"written\":[{}]}}",
+            blocks.len(),
+            merged.vertices.len(),
+            merged.faces.len(),
+            written
+                .iter()
+                .map(|w| {
+                    let (name, _rest) = w.split_once(' ').expect("name + size");
+                    format!("\"{name}\"")
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        return Ok(());
+    }
+    println!(
+        "Exported {} blocks ({} vertices, {} triangles):",
+        blocks.len(),
+        merged.vertices.len(),
+        merged.faces.len()
+    );
+    for w in &written {
+        println!("  - {w}");
     }
     Ok(())
 }

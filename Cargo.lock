@@ -330,6 +330,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hull-stability-screen"
+version = "0.1.0"
+dependencies = [
+ "tpt-yard-core",
+ "tpt-yard-hydrostatics",
+]
+
+[[package]]
 name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

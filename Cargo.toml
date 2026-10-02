@@ -47,6 +47,7 @@ members = [
     "examples/submarine-pressure-hull",
     "examples/space-solar-array-assembly",
     "examples/drydock-flooding-sequence",
+    "examples/hull-stability-screen",
     "benches",
 ]
 # The PyO3 bindings stay out of the workspace: pyo3 needs a Python

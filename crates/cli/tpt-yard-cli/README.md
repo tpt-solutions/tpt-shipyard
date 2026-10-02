@@ -5,6 +5,8 @@ Command-line front end for [tpt-shipyard](https://github.com/tpt-solutions/tpt-s
 ```text
 tpt-yard validate <project-or-manifest.json>   # consistency check
 tpt-yard plan <hull-manifest.json> [--json]    # end-to-end: blocks -> erection -> lift -> schedule
+tpt-yard export <hull-manifest.json> --gltf hull.gltf --ifc hull.ifc
+                                               # block geometry as glTF 2.0 / IFC4 STEP
 tpt-yard schedule <project.json> [--limit crane=200 --limit crew=40] [--json]
                                                # critical path + levelling; --limit states
                                                # yard-wide capacities per resource kind for
