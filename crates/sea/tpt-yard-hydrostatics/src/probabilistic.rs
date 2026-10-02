@@ -201,13 +201,18 @@ pub fn p_factor(
         jn * jn / 6.0 * (density.b11 * jn + 3.0 * density.b12)
     } else {
         // p2: the printed continuation of the contained-damage integral
-        // beyond the knuckle.
+        // beyond the knuckle — exactly Integral[0..Jn] b(j)(J - j) dj:
+        // the linear-coefficient terms carry the RAW zone length J (the
+        // start window of a longer zone keeps growing past Jm), while
+        // the density integration runs only over Jn. Using Jn everywhere
+        // saturates long zones and drives the multi-zone combinations
+        // negative — caught by the three-zone regulation test.
         let jk = density.jk;
         let (b11, b12, b21, b22) = (density.b11, density.b12, density.b21, density.b22);
-        -(1.0 / 3.0) * b11 * jk * jk * jk + (1.0 / 2.0) * (b11 * jn - b12) * jk * jk + b12 * jn * jk
+        -(1.0 / 3.0) * b11 * jk * jk * jk + (1.0 / 2.0) * (b11 * j - b12) * jk * jk + b12 * j * jk
             - (1.0 / 3.0) * b21 * (jn * jn * jn - jk * jk * jk)
-            + (1.0 / 2.0) * (b21 * jn - b22) * (jn * jn - jk * jk)
-            + b22 * jn * (jn - jk)
+            + (1.0 / 2.0) * (b21 * j - b22) * (jn * jn - jk * jk)
+            + b22 * j * (jn - jk)
     };
     if x1_m <= 0.0 || x2_m >= ls_m {
         Ok(0.5 * (mid + j))
@@ -374,9 +379,211 @@ impl HullForm {
     }
 }
 
+/// The transverse penetration factor `r(x1, x2, b)` of Reg. 7-1.2: the
+/// probability that a damage reaching the longitudinal barrier at
+/// distance `b` (m off the shell, at the deepest subdivision draft)
+/// occurs, within the zone `[x1, x2]`:
+///
+/// `r = 1 - (1 - C)·[1 - G / p(x1, x2)]`
+///
+/// with `C = 12·Jb·(4 - 45·Jb)`, `Jb = b/(15B)` (B = moulded breadth),
+/// and `G` per the zone's terminal case — `G1 = b11·Jb²/2 + b12·Jb`
+/// (whole length), `G2 = -b11·J0³/3 + (b11·J - b12)·J0²/2 + b12·J·J0`
+/// with `J0 = min(J, Jb)` (neither limit at a terminal), or
+/// `G = (G2 + G1·J)/2` (one limit at a terminal). Full penetration
+/// (`b = B/2`) gives `C = 1` and `r = 1`; zero penetration gives
+/// `r = 0`.
+///
+/// # Errors
+///
+/// [`ProbabilisticError::InvalidZone`] on bad zone bounds, plus the
+/// [`p_factor`] validation for the `p(x1, x2)` inside the formula.
+pub fn r_factor(
+    density: &DamageLengthDensity,
+    ls_m: f64,
+    breadth_m: f64,
+    x1_m: f64,
+    x2_m: f64,
+    penetration_b_m: f64,
+) -> Result<f64, ProbabilisticError> {
+    if !(breadth_m.is_finite() && breadth_m > 0.0)
+        || !(penetration_b_m.is_finite() && penetration_b_m >= 0.0)
+        || penetration_b_m > breadth_m / 2.0
+    {
+        return Err(ProbabilisticError::InvalidZone);
+    }
+    let p = p_factor(density, ls_m, x1_m, x2_m)?;
+    if penetration_b_m <= 0.0 {
+        return Ok(0.0);
+    }
+    let j = (x2_m - x1_m) / ls_m;
+    let jn = j.min(density.jm);
+    let jb = penetration_b_m / (15.0 * breadth_m);
+    // C peaks at exactly 1 for full penetration (Jb = 1/30).
+    let c = 12.0 * jb * (4.0 - 45.0 * jb);
+    let g1 = density.b11 * jb * jb / 2.0 + density.b12 * jb;
+    let g = if x1_m <= 0.0 && x2_m >= ls_m {
+        g1
+    } else {
+        let j0 = jn.min(jb);
+        let g2 = -density.b11 * j0 * j0 * j0 / 3.0
+            + (density.b11 * jn - density.b12) * j0 * j0 / 2.0
+            + density.b12 * jn * j0;
+        if x1_m <= 0.0 || x2_m >= ls_m {
+            (g2 + g1 * jn) / 2.0
+        } else {
+            g2
+        }
+    };
+    let r = 1.0 - (1.0 - c) * (1.0 - g / p.max(1e-12));
+    Ok(r.clamp(0.0, 1.0))
+}
+
+/// The longitudinal zone factor for a *group of adjacent zones*
+/// (Reg. 7-1, the p·r combinations): the chain `[x1_j, x2_(j+n-1)]`
+/// with the regulation's alternating form
+///
+/// - one zone: `p(x1, x2)·[r(b_k) - r(b_(k-1))]`,
+/// - two zones: `p(both)·[...] - p(aft)·[...] - p(fwd)·[...]`,
+/// - three or more: the four-term form
+///   `p(all)·[...] - p(all but fore)·[...] - p(all but aft)·[...] +
+///   p(intermediate)·[...]`,
+///
+/// where each bracket is the r-difference across the longitudinal
+/// bulkhead pair `(b_outer, b_inner)` — `r(·, 0) = 0`, so a single
+/// bulkhead at `b` reduces the factor by the wing-compartment share.
+/// With `bulkhead_b_m = None` (pure longitudinal subdivision, no
+/// barrier) every bracket is 1 and the formulas reduce to the printed
+/// pure-p combinations.
+///
+/// `zones` are the adjacent `(aft_end, fore_end)` metre bounds in
+/// order; gaps between zones are allowed (the p terms use the printed
+/// endpoints, so a gap simply contributes its own span).
+///
+/// # Errors
+///
+/// [`ProbabilisticError::InvalidZone`] on bad bounds or an empty list.
+pub fn multi_zone_p_factor(
+    density: &DamageLengthDensity,
+    ls_m: f64,
+    breadth_m: f64,
+    zones: &[(f64, f64)],
+    bulkhead_b_m: Option<f64>,
+) -> Result<f64, ProbabilisticError> {
+    if zones.is_empty() {
+        return Err(ProbabilisticError::InvalidZone);
+    }
+    // r(·, 0) = 0, so a single bulkhead's bracket is just r(·, b); no
+    // barrier means every bracket is 1 (the pure-p combinations).
+    let rdiff = |x1: f64, x2: f64| -> Result<f64, ProbabilisticError> {
+        match bulkhead_b_m {
+            None => Ok(1.0),
+            Some(b) => r_factor(density, ls_m, breadth_m, x1, x2, b),
+        }
+    };
+    let term = |a: f64, b: f64| -> Result<f64, ProbabilisticError> {
+        Ok(p_factor(density, ls_m, a, b)? * rdiff(a, b)?)
+    };
+    let n = zones.len();
+    let (aft, fore) = (zones[0].0, zones[n - 1].1);
+    let total = term(aft, fore)?;
+    match n {
+        1 => Ok(total),
+        2 => {
+            let aft_only = term(zones[0].0, zones[0].1)?;
+            let fwd_only = term(zones[1].0, zones[1].1)?;
+            Ok(total - aft_only - fwd_only)
+        }
+        _ => {
+            let drop_fore = term(zones[0].0, zones[n - 2].1)?;
+            let drop_aft = term(zones[1].0, fore)?;
+            let middle = term(zones[1].0, zones[n - 2].1)?;
+            Ok(total - drop_fore - drop_aft + middle)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The penetration factor's boundary conditions from the
+    /// regulation: r = 0 at zero penetration, r = 1 at B/2 (where
+    /// C = 12*(1/30)*(4 - 45/30) = 1 exactly), monotone growth in
+    /// between, and a mid-ship wing compartment at 0.1*B keeps most of
+    /// the probability off the inner space.
+    #[test]
+    fn r_factor_boundary_conditions() {
+        let d = DamageLengthDensity::for_subdivision_length(150.0).unwrap();
+        // Zero penetration: r = 0 (r(x1, x2, b0) = 0).
+        assert_eq!(r_factor(&d, 150.0, 22.0, 40.0, 60.0, 0.0).unwrap(), 0.0);
+        // Full penetration: C = 1 exactly at Jb = 1/30 -> r = 1.
+        assert_eq!(r_factor(&d, 150.0, 22.0, 40.0, 60.0, 11.0).unwrap(), 1.0);
+        // Monotone in the penetration depth.
+        let mut prev = 0.0;
+        for i in 1..=20 {
+            let b = 11.0 * i as f64 / 20.0;
+            let r = r_factor(&d, 150.0, 22.0, 40.0, 60.0, b).unwrap();
+            assert!(r >= prev - 1e-12, "r fell at b = {b}");
+            assert!((0.0..=1.0).contains(&r));
+            prev = r;
+        }
+        // A wing compartment at 0.1 B (2.2 m barrier): the inner space
+        // still takes the majority share (the HARDER statistics give
+        // shallow penetrations the bulk of the probability).
+        let wing = r_factor(&d, 150.0, 22.0, 40.0, 60.0, 2.2).unwrap();
+        assert!(wing < 0.9, "wing barrier share {wing}");
+        assert!(wing > 0.0);
+        // Penetration beyond B/2 is not physical.
+        assert_eq!(
+            r_factor(&d, 150.0, 22.0, 40.0, 60.0, 12.0),
+            Err(ProbabilisticError::InvalidZone)
+        );
+    }
+
+    /// The multi-zone combination: a two-zone group is the union minus
+    /// both singles (each with its r bracket); a three-zone group takes
+    /// the four-term form and stays below the union probability; no
+    /// barrier reduces every bracket to 1 (the pure-p combinations).
+    #[test]
+    fn multi_zone_combinations_match_the_regulation_forms() {
+        let d = DamageLengthDensity::for_subdivision_length(150.0).unwrap();
+        // Two zones, no barrier: pj,2 = p(union) - p(aft) - p(fwd).
+        let zones = [(30.0, 55.0), (55.0, 80.0)];
+        let two = multi_zone_p_factor(&d, 150.0, 22.0, &zones, None).unwrap();
+        let union = p_factor(&d, 150.0, 30.0, 80.0).unwrap();
+        let aft = p_factor(&d, 150.0, 30.0, 55.0).unwrap();
+        let fwd = p_factor(&d, 150.0, 55.0, 80.0).unwrap();
+        assert!((two - (union - aft - fwd)).abs() < 1e-12);
+        assert!(two > 0.0 && two < union);
+
+        // Three zones, no barrier: the four-term form.
+        let zones3 = [(30.0, 50.0), (50.0, 70.0), (70.0, 95.0)];
+        let three = multi_zone_p_factor(&d, 150.0, 22.0, &zones3, None).unwrap();
+        let full = p_factor(&d, 150.0, 30.0, 95.0).unwrap();
+        let drop_fore = p_factor(&d, 150.0, 30.0, 70.0).unwrap();
+        let drop_aft = p_factor(&d, 150.0, 50.0, 95.0).unwrap();
+        let middle = p_factor(&d, 150.0, 50.0, 70.0).unwrap();
+        assert!((three - (full - drop_fore - drop_aft + middle)).abs() < 1e-12);
+        assert!(three > 0.0);
+
+        // With a longitudinal bulkhead at 2 m, every zone group scores
+        // less than its pure form (the wing share is taken out).
+        let two_b = multi_zone_p_factor(&d, 150.0, 22.0, &zones, Some(2.0)).unwrap();
+        assert!(two_b < two, "bulkhead must reduce the group factor");
+
+        // Single zone passes through with the r bracket.
+        let single = multi_zone_p_factor(&d, 150.0, 22.0, &[(30.0, 55.0)], Some(2.0)).unwrap();
+        let p = p_factor(&d, 150.0, 30.0, 55.0).unwrap();
+        let r = r_factor(&d, 150.0, 22.0, 30.0, 55.0, 2.0).unwrap();
+        assert!((single - p * r).abs() < 1e-12);
+
+        // Empty zone list is refused.
+        assert_eq!(
+            multi_zone_p_factor(&d, 150.0, 22.0, &[], None),
+            Err(ProbabilisticError::InvalidZone)
+        );
+    }
 
     /// The reference coefficients for `Ls <= 198 m` in exact fractions:
     /// Jm = 10/33, Jk = 5/33 give b11 = -3267/50, b12 = 11, b21 = -363/50,

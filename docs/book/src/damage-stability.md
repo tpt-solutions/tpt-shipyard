@@ -59,7 +59,12 @@ let r = required_index_cargo(ls).unwrap();
 assert!(a < r, "two vulnerable holds do not satisfy a 150 m cargo ship");
 ```
 
-The first slice covers single-zone damages without longitudinal
-bulkheads (`r = 1`) and full-height compartments (`v = 1`); the
-longitudinal-bulkhead reductions, passenger intermediate stages and the
-80–100 m `R` interpolation remain class-society work.
+Longitudinal zones combine with the regulation's alternating forms via
+[`multi_zone_p_factor`](tpt_yard_hydrostatics::multi_zone_p_factor), and
+wing bulkheads reduce a group through the Reg. 7-1.2 penetration factor
+[`r_factor`](tpt_yard_hydrostatics::r_factor)
+(`r = 1 − (1−C)·[1 − G/p]`, `C = 12·Jb·(4−45·Jb)` — zero at no
+penetration, exactly 1 at `B/2`).
+
+The remaining gaps: horizontal-deck `v` factors, passenger intermediate
+stages and the 80–100 m `R` interpolation stay class-society work.
