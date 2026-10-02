@@ -107,3 +107,68 @@ fixed-end offsets so simple supports recover zero end moments.
 screens launch load cases (way pressure against the 500 kPa class screening
 limit). The full launch physics — sliding, tip-up, flooding sequences — is
 `tpt-yard-launch`, Phase 3.
+
+## Plate bending elements
+
+Two plate theories share the axis-aligned rectangular mesh machinery in
+`tpt-yard-structural`:
+
+- [`PlateModel`](tpt_yard_structural::plates::PlateModel) — thin
+  (Kirchhoff) plates with the C1-conforming Bogner-Fox-Schmit element
+  (16 DOF per element: `w`, both slopes and the twist per corner).
+  Verified against the Timoshenko closed forms: simply supported
+  `0.00406 q a^4 / D`, clamped `0.00126 q a^4 / D`.
+- [`MindlinModel`](tpt_yard_structural::mindlin::MindlinModel) —
+  shear-deformable plates with the MITC4 assumed-strain element of
+  Bathe & Dvorkin (`w`, `theta_x`, `theta_y` per node). The transverse
+  shear is interpolated from its edge-midsides values, so the element
+  is locking-free and converges to the same thin-plate values on the
+  same meshes while remaining valid for thick plates (span/thickness
+  down to ~5, where shear flexibility adds real deflection).
+
+```rust
+use tpt_yard_structural::mindlin::{MindlinModel, MindlinSupport};
+use tpt_yard_structural::plates::{PlateElement, PlateNode};
+
+// Square plate, 2 m side, 20 mm thick, uniform pressure.
+let n = 8_usize;
+let mut nodes = Vec::new();
+for j in 0..=n {
+    for i in 0..=n {
+        nodes.push(PlateNode {
+            position: (2.0 * i as f64 / n as f64, 2.0 * j as f64 / n as f64),
+        });
+    }
+}
+let idx = |i: usize, j: usize| j * (n + 1) + i;
+let mut elements = Vec::new();
+for j in 0..n {
+    for i in 0..n {
+        elements.push(PlateElement {
+            nodes: [idx(i, j), idx(i + 1, j), idx(i + 1, j + 1), idx(i, j + 1)],
+            thickness_m: 0.02,
+            youngs_modulus_gpa: 210.0,
+            poissons_ratio: 0.3,
+            pressure_n_m2: 10_000.0,
+        });
+    }
+}
+let mut model = MindlinModel { nodes, elements, supports: Vec::new() };
+for j in 0..=n {
+    for i in 0..=n {
+        if i == 0 || i == n || j == 0 || j == n {
+            // "Soft" simply supported: deflection fixed, rotations free.
+            model.supports.push(MindlinSupport::simply_supported(idx(i, j)));
+        }
+    }
+}
+let sol = model.solve().unwrap();
+let centre = sol.deflections[idx(4, 4)].abs();
+assert!(centre > 0.0);
+```
+
+The MITC4 midsides operators are verified by strain-free fields (rigid
+and linear-slope states exert no force; the twisting thin-limit mode
+carries exactly the Kirchhoff twisting curvature and no shear energy) —
+the checks that caught a transverse-shear edge-orientation error during
+development.

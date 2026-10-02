@@ -7,8 +7,9 @@
 //! the shape functions are tensor products of 1D cubic Hermite
 //! polynomials — a C1-conforming element, so closed-form plate
 //! deflections are approached monotonically with refinement. Solved by
-//! the shared penalized sparse CG path. Curved geometry and Mindlin
-//! (shear-deformable) elements remain roadmap.
+//! the shared penalized sparse CG path. Shear-deformable plates are the
+//! sibling [`MindlinModel`](crate::mindlin::MindlinModel); curved
+//! geometry remains roadmap.
 //!
 //! Verification targets (Timoshenko & Woinowsky-Krieger, uniform load q
 //! on a square plate of side a, flexural rigidity

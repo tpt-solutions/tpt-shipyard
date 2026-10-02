@@ -66,6 +66,7 @@ use tpt_yard_core::{MassProperties, PhaseId, Vector3, VesselProject};
 
 pub mod fem;
 pub mod frame;
+pub mod mindlin;
 pub mod plates;
 
 pub use fem::{Element, FemError, NodalLoad, Node, Support, TrussModel, TrussSolution};
