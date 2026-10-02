@@ -35,11 +35,17 @@
 use std::fmt;
 
 mod probabilistic;
+mod scantlings;
 
 pub use probabilistic::{
     attained_subdivision_index, combined_cargo_index, p_factor, required_index_cargo,
     s_factor_cargo, DamageCaseProbability, DamageLengthDensity, DamagedSurvivability,
     ProbabilisticError,
+};
+pub use scantlings::{
+    local_plate_scantling, plate_buckling_thickness_mm, plate_euler_stress_mpa,
+    slab_bending_thickness_mm, LocalPlateScantling, LocalPlateScantlingInput, ScantlingError,
+    ScantlingMode,
 };
 
 const RHO_SEA_T_M3: f64 = 1.025;

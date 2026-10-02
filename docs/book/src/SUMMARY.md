@@ -22,6 +22,7 @@
 - [Hull Blocks](hull-blocks.md)
 - [Launch Analysis](launch-analysis.md)
 - [Damage Stability](damage-stability.md)
+- [Scantling Checks](scantlings.md)
 - [Outfitting](outfitting.md)
 - [Sea Trials](sea-trials.md)
 
