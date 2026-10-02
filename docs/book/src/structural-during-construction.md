@@ -101,6 +101,16 @@ Member end forces come back as `(axial, shear, M1, M2)` with tension
 positive and moments positive sagging; uniform member loads carry their
 fixed-end offsets so simple supports recover zero end moments.
 
+Curved members: [`add_arc`](tpt_yard_structural::frame::FrameModel::add_arc)
+appends a faceted circular arc (straight members along the arc — the
+standard practice for curved frames); closed rings and arcs solve via
+[`solve_dense`](tpt_yard_structural::frame::FrameModel::solve_dense),
+whose dense Cholesky handles the self-equilibrated load cases where the
+CG free-row residual test is blind to weakly restrained rigid modes.
+The membrane verification (a ring under radial pressure carrying
+exactly the hoop force pR with vanishing bending) doubles as the
+transformation regression for inclined members.
+
 ## Launch screening
 
 [`launch_analysis`](tpt_yard_structural::ConstructionStructuralSolver::launch_analysis)

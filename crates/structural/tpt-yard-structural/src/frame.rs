@@ -145,6 +145,22 @@ impl std::fmt::Display for FrameError {
 
 impl std::error::Error for FrameError {}
 
+/// The assembled penalized system returned by `FrameModel::assemble`.
+struct AssembledFrame {
+    /// DOF count (3 per node).
+    dof: usize,
+    /// Row-major penalized stiffness matrix.
+    k: Vec<f64>,
+    /// Load vector.
+    f: Vec<f64>,
+    /// Stiffness scale for the solver's pivot thresholds.
+    k_scale: f64,
+    /// Which DOFs carry penalties (excluded from CG's residual test).
+    penalty_mask: Vec<bool>,
+    /// Per-member local transverse load (moment recovery).
+    w_local_by_element: Vec<f64>,
+}
+
 /// A plane frame finite-element model.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FrameModel {
@@ -201,6 +217,31 @@ impl FrameModel {
     /// [`FrameError`] on singular systems, bad indices, or an empty
     /// member set.
     pub fn solve(&self) -> Result<FrameSolution, FrameError> {
+        let a = self.assemble()?;
+        let x = crate::fem::pcg_solve(a.dof, &a.k, &a.f, a.k_scale, &a.penalty_mask)
+            .map_err(|_| FrameError::SingularSystem)?;
+        self.recover(a.dof / 3, &x, &a.w_local_by_element)
+    }
+
+    /// Assembles and solves the frame with a dense Cholesky over the
+    /// penalized system. For **closed rings and arcs**: the CG path's
+    /// free-row residual test is blind to rigid modes restrained at a
+    /// single penalty DOF, and self-equilibrated loads leave exactly such
+    /// modes — the dense solve removes the conditioning gamble (the same
+    /// call the plate module made; DOF stays O(mesh²)).
+    ///
+    /// # Errors
+    ///
+    /// [`FrameError`] on singular systems, bad indices, or an empty
+    /// member set.
+    pub fn solve_dense(&self) -> Result<FrameSolution, FrameError> {
+        let mut a = self.assemble()?;
+        let x = crate::fem::dense_cholesky_solve(a.dof, &mut a.k, &a.f, a.k_scale)
+            .map_err(|_| FrameError::SingularSystem)?;
+        self.recover(a.dof / 3, &x, &a.w_local_by_element)
+    }
+
+    fn assemble(&self) -> Result<AssembledFrame, FrameError> {
         let n = self.nodes.len();
         if self.elements.is_empty() {
             return Err(FrameError::NoMembers);
@@ -253,14 +294,20 @@ impl FrameModel {
             // kg = T^T kl T with T = diag(R, R): first kl T (each block
             // column times R), then R^T times each block row. Block-index
             // arithmetic reads clearest as plain indexed loops.
+            // kg = T^T kl T with T = diag(R, R) the global->local map
+            // (rot[l][g]): the column pass contracts kl's local component
+            // index against rot[l][g], the row pass against rot[l][g] on
+            // the left. (Both were transposed before review 7H's inclined
+            // cantilever probe — horizontal members hide it behind an
+            // identity rotation.)
             let mut kt = [[0.0_f64; 6]; 6];
             #[allow(clippy::needless_range_loop)]
             for a in 0..6 {
                 for b in 0..6 {
-                    let (ab, bb) = (b % 3, b / 3);
+                    let (lg, bb) = (b % 3, b / 3);
                     let mut sum = 0.0;
-                    for c2 in 0..3 {
-                        sum += kl[a][bb * 3 + c2] * rot[ab][c2];
+                    for ll in 0..3 {
+                        sum += kl[a][bb * 3 + ll] * rot[ll][lg];
                     }
                     kt[a][b] = sum;
                 }
@@ -268,11 +315,11 @@ impl FrameModel {
             let mut kg = [[0.0_f64; 6]; 6];
             #[allow(clippy::needless_range_loop)]
             for a in 0..6 {
-                let (aa, ba) = (a % 3, a / 3);
+                let (lg, ba) = (a % 3, a / 3);
                 for b in 0..6 {
                     let mut sum = 0.0;
-                    for c2 in 0..3 {
-                        sum += rot[aa][c2] * kt[ba * 3 + c2][b];
+                    for ll in 0..3 {
+                        sum += rot[ll][lg] * kt[ba * 3 + ll][b];
                     }
                     kg[a][b] = sum;
                 }
@@ -340,9 +387,24 @@ impl FrameModel {
             }
         }
 
-        let x = crate::fem::pcg_solve(dof, &k, &f, k_scale, &penalty_mask)
-            .map_err(|_| FrameError::SingularSystem)?;
+        Ok(AssembledFrame {
+            dof,
+            k,
+            f,
+            k_scale,
+            penalty_mask,
+            w_local_by_element,
+        })
+    }
 
+    /// Recovers displacements and member end forces from a solved
+    /// displacement vector.
+    fn recover(
+        &self,
+        n: usize,
+        x: &[f64],
+        w_local_by_element: &[f64],
+    ) -> Result<FrameSolution, FrameError> {
         let displacements: Vec<(f64, f64, f64)> = (0..n)
             .map(|i| (x[3 * i], x[3 * i + 1], x[3 * i + 2]))
             .collect();
@@ -390,11 +452,204 @@ impl FrameModel {
             max_displacement_m,
         })
     }
+
+    /// Appends a circular arch in the x-z plane: `segments` straight
+    /// members along the arc of `radius_m` centred at `(cx, cz)`, from
+    /// angle `a0` to `a1` (radians from +x, counter-clockwise, x right /
+    /// z up), all sharing the given section. Returns the node indices of
+    /// the arc's two ends. Faceted arcs are how practice models curved
+    /// members with straight frame elements — the membrane verification
+    /// below shows the faceting converging to the closed form.
+    ///
+    /// # Errors
+    ///
+    /// [`FrameError::OutOfRange`] on a non-positive radius, fewer than
+    /// two segments, or a non-physical section.
+    pub fn add_arc(
+        &mut self,
+        cx: f64,
+        cz: f64,
+        radius_m: f64,
+        a0: f64,
+        a1: f64,
+        segments: u32,
+        area_m2: f64,
+        inertia_m4: f64,
+        youngs_modulus_gpa: f64,
+    ) -> Result<(usize, usize), FrameError> {
+        if !(radius_m.is_finite() && radius_m > 0.0)
+            || segments < 2
+            || !(area_m2.is_finite() && area_m2 > 0.0)
+            || !(inertia_m4.is_finite() && inertia_m4 > 0.0)
+            || !(youngs_modulus_gpa.is_finite() && youngs_modulus_gpa > 0.0)
+        {
+            return Err(FrameError::OutOfRange);
+        }
+        let first = self.nodes.len();
+        for i in 0..=segments {
+            let a = a0 + (a1 - a0) * i as f64 / segments as f64;
+            self.nodes.push(FrameNode {
+                position: (cx + radius_m * a.cos(), cz + radius_m * a.sin()),
+            });
+        }
+        for i in 0..segments {
+            self.elements.push(FrameElement {
+                nodes: [first + i as usize, first + i as usize + 1],
+                area_m2,
+                inertia_m4,
+                youngs_modulus_gpa,
+                density_kg_m3: 0.0,
+            });
+        }
+        Ok((first, first + segments as usize))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Curved-member verification (review 7H "curved elements"): a ring
+    /// under uniform radial pressure is in a pure membrane state — every
+    /// section carries the hoop force pR and (essentially) no bending.
+    /// Modelled as a half ring with SYMMETRY restraints (uz and rot
+    /// fixed on the cut planes, ux fixed at the crown) — restraints that
+    /// lie in the null directions of the uniform radial-shrinkage
+    /// membrane field, so they cannot self-stress the ring. The faceted
+    /// arc converges: member axial approaches pR (compression, negative)
+    /// and bending vanishes as the discretisation refines.
+    #[test]
+    fn faceted_ring_converges_to_the_membrane_hoop_state() {
+        let radius = 5.0_f64;
+        // Working pressure: far below the ring's classical buckling load
+        // 3EI/R^3 = 50.4 kN/m (above it the linear response amplifies
+        // the lozenge mode instead — see the buckling test below).
+        let pressure = 8_000.0_f64; // N/m2
+        let hoop = pressure * radius; // N of hoop compression per m
+        let area = 0.01_f64;
+        let inertia = 1.0e-5_f64;
+        let e = 210.0_f64;
+        for &(chords_per_quadrant, axial_tol) in &[(9_u32, 0.03_f64), (36, 0.002)] {
+            let per_half = chords_per_quadrant * 2;
+            let step = std::f64::consts::PI / per_half as f64;
+            let mut model = FrameModel::default();
+            // The open half arc: per_half chords over pi, per_half + 1
+            // nodes (the cut ends at theta = 0 and pi).
+            let (n0, n_last) = model
+                .add_arc(
+                    0.0,
+                    0.0,
+                    radius,
+                    0.0,
+                    std::f64::consts::PI,
+                    per_half,
+                    area,
+                    inertia,
+                    e,
+                )
+                .unwrap();
+            // Radial nodal loads: ends carry half their tributary arc
+            // (the mirrored half provides the rest), interior nodes the
+            // full p R dtheta.
+            let node_count = per_half + 1;
+            for i in 0..node_count {
+                let a = step * i as f64;
+                let load = if i == 0 || i == node_count - 1 {
+                    pressure * radius * step / 2.0
+                } else {
+                    pressure * radius * step
+                };
+                model.loads.push(FrameLoad {
+                    node: n0 + i as usize,
+                    fx: -load * a.cos(),
+                    fz: -load * a.sin(),
+                    moment_nm: 0.0,
+                });
+            }
+            // Symmetry restraints on the cut planes and the crown: all
+            // perpendicular to the uniform radial-shrinkage field.
+            model.supports.push(FrameSupport {
+                node: n0,
+                fix_x: false,
+                fix_z: true,
+                fix_rot: true,
+            });
+            model.supports.push(FrameSupport {
+                node: n_last,
+                fix_x: false,
+                fix_z: true,
+                fix_rot: true,
+            });
+            let crown = n0 + chords_per_quadrant as usize;
+            model.supports.push(FrameSupport {
+                node: crown,
+                fix_x: true,
+                fix_z: false,
+                fix_rot: false,
+            });
+            let sol = model.solve_dense().unwrap();
+            for (i, (n_f, _v, m1, _m2)) in sol.member_forces.iter().enumerate() {
+                eprintln!("dbg: m{i}: N {n_f:.3e} M {m1:.3e}");
+            }
+            let mut worst_axial = 0.0_f64;
+            let mut worst_bending = 0.0_f64;
+            for (n_f, _v, m1, m2) in &sol.member_forces {
+                worst_axial = worst_axial.max((n_f.abs() - hoop).abs());
+                worst_bending = worst_bending.max(m1.abs().max(m2.abs()));
+            }
+            assert!(
+                worst_axial < axial_tol * hoop,
+                "chords {per_half}: axial error {} vs pR {hoop}",
+                worst_axial
+            );
+            assert!(
+                worst_bending < 0.02 * hoop * radius,
+                "chords {per_half}: bending {worst_bending} not small"
+            );
+        }
+    }
+
+    /// An inclined (45 deg) cantilever with a transverse tip load must
+    /// deflect exactly P L^3 / 3EI — the transformation sanity check for
+    /// non-horizontal members.
+    #[test]
+    fn inclined_cantilever_matches_the_closed_form() {
+        let l = 2.0_f64;
+        let mut model = FrameModel::default();
+        model.nodes.push(FrameNode {
+            position: (0.0, 0.0),
+        });
+        model.nodes.push(FrameNode {
+            position: (l * 0.5f64.sqrt(), l * 0.5f64.sqrt()),
+        });
+        model.elements.push(FrameElement {
+            nodes: [0, 1],
+            area_m2: 0.01,
+            inertia_m4: 1.0e-5,
+            youngs_modulus_gpa: 210.0,
+            density_kg_m3: 0.0,
+        });
+        model.supports.push(FrameSupport::fixed(0));
+        // The load is transverse to the member (perpendicular, in -local z
+        // direction: for a 45 deg member the local z maps to global
+        // (-s, c)).
+        let p = 50_000.0_f64;
+        model.loads.push(FrameLoad {
+            node: 1,
+            fx: -p * 0.5f64.sqrt(),
+            fz: p * 0.5f64.sqrt(),
+            moment_nm: 0.0,
+        });
+        let sol = model.solve().unwrap();
+        // Tip deflection along the load direction = P L^3 / 3EI.
+        let expected = p * l.powi(3) / (3.0 * 2.1e11 * 1.0e-5);
+        let (ux, uz, _t) = sol.displacements[1];
+        let deflection = -ux * 0.5f64.sqrt() + uz * 0.5f64.sqrt();
+        assert!(
+            (deflection - expected).abs() < 1e-6 * expected,
+            "tip {deflection} vs {expected}"
+        );
+    }
 
     const L: f64 = 4.0; // m
     const EI: f64 = 2.1e11 * 8.0e-5; // 210 GPa x 8e4 cm4
