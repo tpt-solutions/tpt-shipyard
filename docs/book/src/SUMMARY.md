@@ -44,6 +44,7 @@
 
 # Integration
 
+- [Exporting Geometry](exporting-geometry.md)
 - [Transport Integration](transport-integration.md)
 - [Earth/Weather Integration](earth-weather-integration.md)
 - [WASM Dashboard Integration](wasm.md)

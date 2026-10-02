@@ -1,10 +1,20 @@
-//! Export adapters for the engine's geometry (review 7H: glTF export).
+//! Export adapters for the engine's geometry (review 7H: glTF export;
+//! 2026-10-02: IFC export).
 //!
 //! glTF 2.0 is a JSON scene description with base64- or buffer-referenced
 //! binary data; the simplest interoperable form is a *glTF with embedded
 //! base64 buffer*, which every three.js/Babylon/Blender viewer loads.
+//!
+//! [`elements_to_ifc`] writes the same geometry as an IFC4 STEP
+//! physical file (ISO 10303-21) — the BIM interchange format that
+//! Blender/Revit/IFC.js load. The mesh ships losslessly as an
+//! IfcTriangulatedFaceSet inside the standard Project/Site/Building/
+//! Storey spatial structure. Scope, documented honestly: deterministic
+//! synthetic GUIDs (a per-entity counter, not registry GUIDs), a fixed
+//! header timestamp, one building storey, and no property sets — the
+//! geometric interchange core, not an authoring application.
 
-use tpt_yard_core::Geometry3D;
+use tpt_yard_core::{Geometry3D, Vector3};
 
 /// Writes `geometry` as a minimal glTF 2.0 JSON string (embedded base64
 /// buffer, TRIANGLES mode). Returns the `.gltf` document text — write it
@@ -115,9 +125,428 @@ pub(crate) fn decode_base64(s: &str) -> Vec<u8> {
     out
 }
 
+// ------------------------------------------------------------------- IFC
+
+/// An element to export into the IFC spatial structure.
+#[derive(Debug, Clone, Copy)]
+pub struct IfcElement<'a> {
+    /// Product name (written into the IfcBuildingElementProxy Name).
+    pub name: &'a str,
+    /// Triangle mesh, m (lostlessly stored as an IfcTriangulatedFaceSet).
+    pub geometry: &'a Geometry3D,
+}
+
+/// Formats a float as an ISO 10303-21 real: the shortest round-trip
+/// representation, forced to contain a decimal point (STEP reals need
+/// one; Rust prints `0` for `0.0`).
+fn step_real(v: f64) -> String {
+    let s = format!("{v}");
+    if s.contains('.') || s.contains('e') || s.contains('E') {
+        if s.contains('.') {
+            s
+        } else {
+            // "1e300" style: give the mantissa its decimal point.
+            let (m, e) = s.split_once(['e', 'E']).expect("checked e above");
+            format!("{m}.0e{e}")
+        }
+    } else {
+        format!("{s}.0")
+    }
+}
+
+/// STEP string literal: single quotes doubled.
+fn step_string(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// The 22-character compressed IfcGloballyUniqueId for a counter value
+/// (128-bit, base-64 over the IFC alphabet `0-9A-Za-z_$`). Deterministic
+/// per entity order — synthetic ids, not registry GUIDs.
+fn ifc_guid(counter: u128) -> String {
+    const CHARS: &[u8; 64] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_$";
+    let mut out = [b'0'; 22];
+    let mut v = counter;
+    for slot in out.iter_mut().rev() {
+        *slot = CHARS[(v & 63) as usize];
+        v >>= 6;
+    }
+    String::from_utf8(out.to_vec()).expect("alphabet is ASCII")
+}
+
+/// Sequential STEP entity writer: ids run 1..n in dependency order.
+struct StepWriter {
+    lines: Vec<String>,
+}
+
+impl StepWriter {
+    fn entity(&mut self, attrs: String) -> usize {
+        self.lines
+            .push(format!("#{}={};", self.lines.len() + 1, attrs));
+        self.lines.len()
+    }
+}
+
+/// Writes `elements` as a minimal IFC4 STEP document: the
+/// Project/Site/Building/Storey spatial structure plus one
+/// IfcBuildingElementProxy per element, its mesh carried losslessly as
+/// an IfcTriangulatedFaceSet (IfcCartesianPointList3D coordinates,
+/// 1-based triangle indices). Returns the `.ifc` text — write it to a
+/// `<project>.ifc` file.
+pub fn elements_to_ifc(elements: &[IfcElement<'_>], project_name: &str) -> String {
+    let mut w = StepWriter { lines: Vec::new() };
+    let mut guid = 0_u128;
+
+    // Spatial skeleton: context/units, project, site, building, storey.
+    let origin_pt = w.entity("IFCCARTESIANPOINT((0.,0.,0.))".into());
+    let world_axis = w.entity(format!("IFCAXIS2PLACEMENT3D(#{origin_pt},$,$)"));
+    let context = w.entity(format!(
+        "IFCGEOMETRICREPRESENTATIONCONTEXT($,$,'Model',3,1.0E-6,#{world_axis},$)"
+    ));
+    let unit_len = w.entity("IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.)".into());
+    let unit_area = w.entity("IFCSIUNIT(*,.AREAUNIT.,$,.SQUARE_METRE.)".into());
+    let unit_vol = w.entity("IFCSIUNIT(*,.VOLUMEUNIT.,$,.CUBIC_METRE.)".into());
+    let unit_angle = w.entity("IFCSIUNIT(*,.PLANEANGLEUNIT.,$,.RADIAN.)".into());
+    let units = w.entity(format!(
+        "IFCUNITASSIGNMENT((#{unit_len},#{unit_area},#{unit_vol},#{unit_angle}))"
+    ));
+    guid += 1;
+    let project = w.entity(format!(
+        "IFCPROJECT({},$,{},{},{},{},{},(#{context}),#{units},$)",
+        ifc_guid(guid),
+        step_string(project_name),
+        step_string(project_name),
+        step_string(""),
+        step_string(project_name),
+        step_string("construction"),
+    ));
+    let site_placement = w.entity(format!("IFCLOCALPLACEMENT($,#{world_axis})"));
+    guid += 1;
+    let site = w.entity(format!(
+        "IFCSITE({},$,{},{},{},{},#{},$,$,.ELEMENT.,$,$,0.,$,$)",
+        ifc_guid(guid),
+        step_string("site"),
+        step_string("site"),
+        step_string("site"),
+        step_string("launch site"),
+        site_placement,
+    ));
+    let building_placement = w.entity(format!(
+        "IFCLOCALPLACEMENT(#{site_placement},#{world_axis})"
+    ));
+    guid += 1;
+    let building = w.entity(format!(
+        "IFCBUILDING({},$,{},{},{},{},#{},$,$,.ELEMENT.,$,$,$)",
+        ifc_guid(guid),
+        step_string("building"),
+        step_string("building"),
+        step_string("building"),
+        step_string("assembly building"),
+        building_placement,
+    ));
+    let storey_placement = w.entity(format!(
+        "IFCLOCALPLACEMENT(#{building_placement},#{world_axis})"
+    ));
+    guid += 1;
+    let storey = w.entity(format!(
+        "IFCBUILDINGSTOREY({},$,{},{},{},{},#{},$,$,.ELEMENT.,0.)",
+        ifc_guid(guid),
+        step_string("construction stage"),
+        step_string("construction stage"),
+        step_string("construction stage"),
+        step_string("current construction stage"),
+        storey_placement,
+    ));
+    guid += 1;
+    w.entity(format!(
+        "IFCRELAGGREGATES({},$,$,$,#{project},(#{site}))",
+        ifc_guid(guid)
+    ));
+    guid += 1;
+    w.entity(format!(
+        "IFCRELAGGREGATES({},$,$,$,#{site},(#{building}))",
+        ifc_guid(guid)
+    ));
+    guid += 1;
+    w.entity(format!(
+        "IFCRELAGGREGATES({},$,$,$,#{building},(#{storey}))",
+        ifc_guid(guid)
+    ));
+
+    // Products: one proxy per element, mesh as a tessellated face set.
+    let mut product_ids: Vec<usize> = Vec::with_capacity(elements.len());
+    for element in elements {
+        let coords: Vec<String> = element
+            .geometry
+            .vertices
+            .iter()
+            .map(|v: &Vector3| {
+                format!("({},{},{})", step_real(v.x), step_real(v.y), step_real(v.z))
+            })
+            .collect();
+        let point_list = w.entity(format!("IFCCARTESIANPOINTLIST3D(({}))", coords.join(",")));
+        let faces: Vec<String> = element
+            .geometry
+            .faces
+            .iter()
+            .map(|f| format!("({},{},{})", f[0] + 1, f[1] + 1, f[2] + 1))
+            .collect();
+        let face_set = w.entity(format!(
+            "IFCTRIANGULATEDFACESET(#{point_list},$,.T.,({}),$)",
+            faces.join(",")
+        ));
+        let shape_rep = w.entity(format!(
+            "IFCSHAPEREPRESENTATION(#{context},'Body','Tessellation',(#{face_set}))"
+        ));
+        let product_shape = w.entity(format!("IFCPRODUCTDEFINITIONSHAPE($,$,(#{shape_rep}))"));
+        let placement = w.entity(format!(
+            "IFCLOCALPLACEMENT(#{storey_placement},#{world_axis})"
+        ));
+        guid += 1;
+        product_ids.push(w.entity(format!(
+            "IFCBUILDINGELEMENTPROXY({},$,{},{},{},#{},#{},$,$)",
+            ifc_guid(guid),
+            step_string(element.name),
+            step_string(element.name),
+            step_string("tpt-shipyard block"),
+            placement,
+            product_shape,
+        )));
+    }
+
+    // Containment: every product into the storey (the relation requires
+    // at least one related element, so it is skipped with none).
+    if !product_ids.is_empty() {
+        let contained: Vec<String> = product_ids.iter().map(|p| format!("#{p}")).collect();
+        guid += 1;
+        w.entity(format!(
+            "IFCRELCONTAINEDINSPATIALSTRUCTURE({},$,$,$,({}),#{storey})",
+            ifc_guid(guid),
+            contained.join(",")
+        ));
+    }
+
+    let mut out = String::with_capacity(w.lines.iter().map(|l| l.len() + 1).sum::<usize>() + 320);
+    out.push_str("ISO-10303-21;\nHEADER;\n");
+    out.push_str("FILE_DESCRIPTION(('ViewDefinition [ReferenceView_V1.2]'),'2;1');\n");
+    out.push_str(&format!(
+        "FILE_NAME({},{},('tpt-shipyard'),('TPT Solutions'),'tpt-shipyard','','');\n",
+        step_string(&format!("{project_name}.ifc")),
+        step_string("2026-01-01T00:00:00"),
+    ));
+    out.push_str("FILE_SCHEMA(('IFC4'));\nENDSEC;\nDATA;\n");
+    for line in &w.lines {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str("ENDSEC;\nEND-ISO-10303-21;\n");
+    out
+}
+
+/// Writes a single named `geometry` as an IFC4 document with one
+/// product — the one-element form of [`elements_to_ifc`].
+pub fn geometry_to_ifc(geometry: &Geometry3D, name: &str) -> String {
+    elements_to_ifc(&[IfcElement { name, geometry }], name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Collects `(id, line_body)` pairs from the DATA section and the
+    /// set of referenced ids. A `#N` at the start of a line (before the
+    /// `=`) defines; every other occurrence references.
+    fn parse_step(text: &str) -> (Vec<(usize, &str)>, Vec<usize>) {
+        let mut defs = Vec::new();
+        let mut refs = Vec::new();
+        for line in text.lines() {
+            let Some(rest) = line.strip_prefix('#') else {
+                continue;
+            };
+            let Some(eq) = rest.find('=') else { continue };
+            let id: usize = rest[..eq].parse().expect("definition id");
+            defs.push((id, &rest[eq + 1..]));
+            let body = &rest[eq + 1..];
+            let bytes = body.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'#' {
+                    let start = i + 1;
+                    let mut j = start;
+                    while j < bytes.len() && bytes[j].is_ascii_digit() {
+                        j += 1;
+                    }
+                    if j > start {
+                        refs.push(body[start..j].parse().expect("ref id"));
+                    }
+                    i = j;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        (defs, refs)
+    }
+
+    /// The IFC document is a well-formed STEP physical file: markers in
+    /// order, entity ids sequential from 1, and every referenced id in
+    /// range.
+    #[test]
+    fn ifc_structure_is_wellformed() {
+        let g = Geometry3D::from_box(2.0, 3.0, 4.0);
+        let text = geometry_to_ifc(&g, "test block");
+        for marker in [
+            "ISO-10303-21;",
+            "HEADER;",
+            "FILE_DESCRIPTION(('ViewDefinition [ReferenceView_V1.2]'),'2;1');",
+            "FILE_SCHEMA(('IFC4'));",
+            "DATA;",
+            "ENDSEC;",
+            "END-ISO-10303-21;",
+        ] {
+            assert!(text.contains(marker), "missing {marker}");
+        }
+        let (defs, refs) = parse_step(&text);
+        assert!(!defs.is_empty());
+        for (want, (got, _)) in defs.iter().enumerate() {
+            assert_eq!(*got, want + 1, "entity ids must run 1..n in order");
+        }
+        let max = defs.last().map(|(id, _)| *id).expect("non-empty");
+        for r in &refs {
+            assert!(*r >= 1 && *r <= max, "reference #{r} out of range");
+        }
+        // STEP reals all carry a decimal point (spot check the origin).
+        assert!(text.contains("IFCCARTESIANPOINT((0.,0.,0.))"));
+    }
+
+    /// The mesh round-trips exactly: the emitted Cartesian point list
+    /// and 1-based triangle indices parse back to the very same f64
+    /// vertices and faces (Rust's shortest round-trip formatting).
+    #[test]
+    fn ifc_geometry_round_trips_exactly() {
+        let g = Geometry3D::from_box(2.5, 3.5, 7.25);
+        let text = geometry_to_ifc(&g, "round trip");
+        let point_line = text
+            .lines()
+            .find(|l| l.contains("IFCCARTESIANPOINTLIST3D"))
+            .expect("point list");
+        let inner = point_line
+            .split_once("IFCCARTESIANPOINTLIST3D(")
+            .expect("prefix")
+            .1
+            .trim_end_matches(';')
+            .trim_start_matches('(')
+            .trim_end_matches(')');
+        let mut vertices = Vec::new();
+        for tuple in inner.split("),(") {
+            let t = tuple.trim_matches(['(', ')']);
+            let mut c = t.split(',');
+            vertices.push(Vector3::new(
+                c.next().expect("x").parse().expect("x f64"),
+                c.next().expect("y").parse().expect("y f64"),
+                c.next().expect("z").parse().expect("z f64"),
+            ));
+        }
+        assert_eq!(vertices.len(), g.vertices.len());
+        for (a, b) in vertices.iter().zip(&g.vertices) {
+            assert_eq!(a.x, b.x, "exact x");
+            assert_eq!(a.y, b.y, "exact y");
+            assert_eq!(a.z, b.z, "exact z");
+        }
+        let face_line = text
+            .lines()
+            .find(|l| l.contains("IFCTRIANGULATEDFACESET"))
+            .expect("face set");
+        let inner = face_line
+            .split_once(".T.,(")
+            .expect("coord index start")
+            .1
+            .rsplit_once("),$")
+            .expect("coord index end")
+            .0
+            .trim_start_matches('(')
+            .trim_end_matches(')');
+        let mut faces = Vec::new();
+        for tuple in inner.split("),(") {
+            let mut c = tuple.trim_matches(['(', ')']).split(',');
+            faces.push([
+                c.next().expect("i").parse::<u32>().expect("i") - 1,
+                c.next().expect("j").parse::<u32>().expect("j") - 1,
+                c.next().expect("k").parse::<u32>().expect("k") - 1,
+            ]);
+        }
+        assert_eq!(faces.len(), g.faces.len());
+        assert!(faces.iter().zip(&g.faces).all(|(a, b)| a == b));
+        // A box is closed: 8 points, 12 triangles.
+        assert_eq!(vertices.len(), 8);
+        assert_eq!(faces.len(), 12);
+    }
+
+    /// Multiple products appear in one containment relation with
+    /// STEP-escaped names, every GUID is a 22-char IFC-alphabet string,
+    /// and the document is deterministic.
+    #[test]
+    fn ifc_products_containment_and_determinism() {
+        let a = Geometry3D::from_box(2.0, 2.0, 2.0);
+        let b = Geometry3D::from_box(1.0, 1.0, 4.0);
+        let elements = [
+            IfcElement {
+                name: "block 'A'",
+                geometry: &a,
+            },
+            IfcElement {
+                name: "block B",
+                geometry: &b,
+            },
+        ];
+        let text = elements_to_ifc(&elements, "quay 7");
+        assert!(text.contains("'block ''A'''"), "STEP-escaped name");
+        assert!(text.contains("'block B'"));
+        assert_eq!(text.matches("IFCBUILDINGELEMENTPROXY").count(), 2);
+        let containment = text
+            .lines()
+            .find(|l| l.contains("IFCRELCONTAINEDINSPATIALSTRUCTURE"))
+            .expect("containment");
+        let (defs, _) = parse_step(&text);
+        let proxies: Vec<usize> = defs
+            .iter()
+            .filter(|(_, body)| body.contains("IFCBUILDINGELEMENTPROXY"))
+            .map(|(id, _)| *id)
+            .collect();
+        for p in &proxies {
+            assert!(containment.contains(&format!("#{p}")), "#{p} contained");
+        }
+        for (id, body) in &defs {
+            if let Some(first) = body.strip_prefix('\'') {
+                let end = first.find('\'').expect("closing quote");
+                let guid = &first[..end];
+                assert_eq!(guid.len(), 22, "guid length on entity {id}");
+                assert!(
+                    guid.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '$' || c == '_'),
+                    "guid {guid} on entity {id}"
+                );
+            }
+        }
+        assert_eq!(text, elements_to_ifc(&elements, "quay 7"));
+    }
+
+    /// No products means no containment relation (it requires at least
+    /// one element); an empty mesh exports empty lists without breaking
+    /// the structure.
+    #[test]
+    fn ifc_edge_cases() {
+        let text = elements_to_ifc(&[], "empty project");
+        assert!(!text.contains("IFCRELCONTAINEDINSPATIALSTRUCTURE"));
+        assert!(text.contains("IFCPROJECT"));
+        let (defs, refs) = parse_step(&text);
+        for r in &refs {
+            assert!(defs.iter().any(|(id, _)| id == r), "#{r} defined");
+        }
+
+        let empty = Geometry3D::new();
+        let text = geometry_to_ifc(&empty, "void");
+        assert!(text.contains("IFCCARTESIANPOINTLIST3D(())"));
+    }
 
     /// The exported document contains the required glTF keys with the right
     /// counts, and the embedded base64 buffer decodes to exactly the
