@@ -1,5 +1,11 @@
 # Changelog
 
+
+## [0.1.0](https://github.com/tpt-solutions/tpt-shipyard/releases/tag/tpt-yard-cli-v0.1.0) - 2026-10-02
+
+### Added
+
+- capacity-aware resource levelling in tpt-yard-scheduling
 ##
 - `pdf-report project.json [--out file.pdf]`: the full calculation
   package (weights, by-group, phases, schedule, risk, structural check)
