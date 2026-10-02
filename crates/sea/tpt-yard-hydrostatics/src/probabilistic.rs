@@ -231,33 +231,112 @@ pub fn p_factor(
 /// `GZmax` (m) is the peak righting arm between the equilibrium heel
 /// and the vanishing angle; `range` (degrees) is `θv - θe`.
 pub fn s_factor_cargo(equilibrium_heel_deg: f64, gz_max_m: f64, range_deg: f64) -> f64 {
-    const THETA_MIN_DEG: f64 = 15.0;
-    const THETA_MAX_DEG: f64 = 30.0;
-    const GZ_REF_M: f64 = 0.12;
-    const RANGE_REF_DEG: f64 = 16.0;
-    let heel = equilibrium_heel_deg.max(0.0);
-    let k = if heel <= THETA_MIN_DEG {
+    s_final_factor(equilibrium_heel_deg, gz_max_m, range_deg, false, false)
+}
+
+/// The Reg. 7-2.3 final-stage survival factor for either ship type:
+/// `s = K·[(Range/TRange)·(GZmax/TGZmax)]^(1/4)`, capped to `[0, 1]`,
+/// with `TGZmax = 0.20 m` / `TRange = 20°` for ro-ro passenger spaces
+/// and `0.12 m` / `16°` otherwise, and the heel gate `K = 1` at or
+/// below `theta_min` (7° passenger, **25° cargo**), `K = 0` at or above
+/// `theta_max` (15° passenger, 30° cargo) — the cargo lower gate is 25°
+/// in the MSC.421(98)-amended text (pre-amendment literature prints
+/// 15°).
+///
+/// `gz_max_m` is the peak righting arm up to the vanishing angle;
+/// `range_deg` the positive range from the equilibrium heel.
+pub fn s_final_factor(
+    equilibrium_heel_deg: f64,
+    gz_max_m: f64,
+    range_deg: f64,
+    passenger: bool,
+    ro_ro_deck: bool,
+) -> f64 {
+    let (theta_min, theta_max, t_gz, t_range) = if passenger {
+        (
+            7.0,
+            15.0,
+            if ro_ro_deck { 0.20 } else { 0.12 },
+            if ro_ro_deck { 20.0 } else { 16.0 },
+        )
+    } else {
+        (
+            25.0,
+            30.0,
+            if ro_ro_deck { 0.20 } else { 0.12 },
+            if ro_ro_deck { 20.0 } else { 16.0 },
+        )
+    };
+    heel_gate_k(equilibrium_heel_deg, theta_min, theta_max)
+        * ((range_deg.max(0.0) / t_range) * (gz_max_m.max(0.0) / t_gz))
+            .powf(0.25)
+            .clamp(0.0, 1.0)
+}
+
+/// The Reg. 7-2.2 intermediate-stage factor: `[GZmax/0.05 ×
+/// Range/7]^(1/4)` with the statutory caps (GZmax not more than 0.05 m,
+/// Range not more than 7°), zero when the intermediate heel exceeds 15°
+/// (passenger) or 30° (cargo). Cargo ships without cross-flooding
+/// devices take unity (pass `None`/ignore this function).
+pub fn s_intermediate_factor(heel_deg: f64, gz_max_m: f64, range_deg: f64, passenger: bool) -> f64 {
+    let gate = if passenger { 15.0 } else { 30.0 };
+    if heel_deg.max(0.0) > gate {
+        return 0.0;
+    }
+    let gz = gz_max_m.clamp(0.0, 0.05);
+    let range = range_deg.clamp(0.0, 7.0);
+    ((gz / 0.05) * (range / 7.0)).powf(0.25).clamp(0.0, 1.0)
+}
+
+/// The Reg. 7-2.4 heeling-moment survival factor (passenger ships
+/// only; cargo takes unity): `((GZmax - 0.04)·Displacement / Mheel)`,
+/// capped to `[0, 1]`. `m_heel_tm` is the maximum assumed heeling
+/// moment (passenger movement `0.075·Np·0.45·B`, wind `120·A·Z/9.806`,
+/// or survival-craft launching — the maximum of the three).
+pub fn s_mom_factor(gz_max_m: f64, displacement_t: f64, m_heel_tm: f64) -> f64 {
+    if m_heel_tm <= 0.0 || !m_heel_tm.is_finite() {
+        return 1.0;
+    }
+    (((gz_max_m.max(0.0) - 0.04) * displacement_t.max(0.0)) / m_heel_tm).clamp(0.0, 1.0)
+}
+
+/// The linear heel gate `K`: 1 at or below `theta_min`, 0 at or above
+/// `theta_max`, linear between (Reg. 7-2.3).
+fn heel_gate_k(heel_deg: f64, theta_min: f64, theta_max: f64) -> f64 {
+    let heel = heel_deg.max(0.0);
+    if heel <= theta_min {
         1.0
-    } else if heel >= THETA_MAX_DEG {
+    } else if heel >= theta_max {
         0.0
     } else {
-        (THETA_MAX_DEG - heel) / (THETA_MAX_DEG - THETA_MIN_DEG)
-    };
-    let gz = gz_max_m.max(0.0);
-    let range = range_deg.max(0.0);
-    (k * (range / RANGE_REF_DEG * gz / GZ_REF_M).powf(0.25)).clamp(0.0, 1.0)
+        (theta_max - heel) / (theta_max - theta_min)
+    }
+}
+
+/// The Reg. 7-1.3 horizontal-subdivision factor `v(H, d)`:
+/// `0.8 + 0.2·[(H - d) - 7.8]/4.7` for the least height `H` (m above
+/// baseline) of the horizontal boundary limiting the flooding, at the
+/// subdivision draft `d` — capped to `[0, 1]`. The caller supplies
+/// decks above the damage waterline (the rule's precondition).
+pub fn v_factor(deck_height_above_baseline_m: f64, draft_m: f64) -> f64 {
+    let h = deck_height_above_baseline_m - draft_m;
+    (0.8 + 0.2 * ((h - 7.8) / 4.7)).clamp(0.0, 1.0)
 }
 
 /// The required subdivision index `R` of Reg. 6 for cargo ships:
-/// `R = 1 - 128/(Ls + 152)`. Only defined above 100 m subdivision
-/// length (`None` below; the 80–100 m interpolation stays with the
-/// class societies).
+/// `R = 1 - 128/(Ls + 152)` above 100 m, and the printed 80–100 m
+/// interpolation `R = 1 - [1/(1 + (Ls/100)·R0/(1-R0))]` (continuous
+/// with `R0` at 100 m by construction) down to 80 m. `None` below 80 m.
 pub fn required_index_cargo(ls_m: f64) -> Option<f64> {
-    if ls_m.is_finite() && ls_m > 100.0 {
-        Some(1.0 - 128.0 / (ls_m + 152.0))
-    } else {
-        None
+    if !ls_m.is_finite() || ls_m < 80.0 {
+        return None;
     }
+    if ls_m > 100.0 {
+        return Some(1.0 - 128.0 / (ls_m + 152.0));
+    }
+    let r0 = 1.0 - 128.0 / 252.0; // the 100 m value of the .1 formula
+    let denom = 1.0 + (ls_m / 100.0) * r0 / (1.0 - r0);
+    Some(1.0 - 1.0 / denom)
 }
 
 /// One damage case's contribution to the attained subdivision index.
@@ -765,38 +844,72 @@ mod tests {
         );
     }
 
-    /// Hand values of the cargo s-factor: the reference point (16 deg
-    /// range, 0.12 m arm) scores 1, the heel gate kills s at 30 deg and
-    /// scales linearly, and the fourth-root scaling is exact.
+    /// Hand values of the cargo s-factor against the MSC.421(98)-
+    /// amended gate (theta_min 25 deg, not the pre-amendment 15): the
+    /// reference point (16 deg range, 0.12 m arm) scores 1, the gate
+    /// kills s at 30 deg, scales linearly between 25 and 30, and the
+    /// fourth-root scaling is exact.
     #[test]
     fn s_factor_matches_hand_values() {
         // Reference: K = 1, bracket = 1 -> s = 1.
         assert!((s_factor_cargo(0.0, 0.12, 16.0) - 1.0).abs() < 1e-12);
         // Clamped at 1 beyond the reference.
         assert_eq!(s_factor_cargo(0.0, 0.30, 40.0), 1.0);
-        // At the 30 deg heel gate s = 0; at 15 deg it is full.
+        // At the 30 deg heel gate s = 0; at 25 deg it is full.
         assert_eq!(s_factor_cargo(30.0, 0.12, 16.0), 0.0);
-        assert!((s_factor_cargo(15.0, 0.12, 16.0) - 1.0).abs() < 1e-12);
-        // Linear K at 22.5 deg: K = (30 - 22.5)/15 = 0.5; bracket
-        // (8/16 * 0.06/0.12)^(1/4) = 0.25^0.25 = 0.7071 -> 0.35355.
-        assert!((s_factor_cargo(22.5, 0.06, 8.0) - 0.5 * 0.25_f64.powf(0.25)).abs() < 1e-12);
+        assert!((s_factor_cargo(25.0, 0.12, 16.0) - 1.0).abs() < 1e-12);
+        // Linear K at 27.5 deg: K = (30 - 27.5)/5 = 0.5; bracket
+        // (8/16 * 0.06/0.12)^(1/4) = 0.7071 -> 0.35355.
+        assert!((s_factor_cargo(27.5, 0.06, 8.0) - 0.5 * 0.25_f64.powf(0.25)).abs() < 1e-12);
         // K = 1, bracket (4/16)(0.03/0.12) = 0.0625, fourth root = 0.5.
         assert!((s_factor_cargo(0.0, 0.03, 4.0) - 0.5).abs() < 1e-12);
+        // The passenger final factor: gate 7-15 deg, and the ro-ro deck
+        // caps lift the reference (TGZmax 0.20, TRange 20).
+        assert_eq!(s_final_factor(15.0, 0.12, 16.0, true, false), 0.0);
+        assert!((s_final_factor(7.0, 0.12, 16.0, true, false) - 1.0).abs() < 1e-12);
+        assert!((s_final_factor(0.0, 0.20, 20.0, true, true) - 1.0).abs() < 1e-12);
+        // The intermediate factor: caps at 0.05 m / 7 deg, heel gate.
+        assert!((s_intermediate_factor(0.0, 0.05, 7.0, true) - 1.0).abs() < 1e-12);
+        assert!((s_intermediate_factor(0.0, 0.025, 3.5, true) - 0.25_f64.powf(0.25)).abs() < 1e-12);
+        assert_eq!(s_intermediate_factor(16.0, 0.05, 7.0, true), 0.0);
+        assert_eq!(s_intermediate_factor(31.0, 0.05, 7.0, false), 0.0);
+        // The heeling-moment factor: ((GZ - 0.04) Displ)/Mheel.
+        assert!((s_mom_factor(0.14, 20_000.0, 4000.0) - 0.5).abs() < 1e-12);
+        assert_eq!(s_mom_factor(0.04, 20_000.0, 100.0), 0.0);
+        assert_eq!(s_mom_factor(0.30, 50_000.0, 100.0), 1.0);
     }
 
     /// The required cargo index: R = 1 - 128/(Ls + 152) above 100 m,
-    /// nothing below (the 80-100 m interpolation is out of scope).
+    /// the printed interpolation down to 80 m (continuous with R0 at
+    /// exactly 100 m), None below 80 m.
     #[test]
     fn required_index_follows_regulation_6() {
         let r = required_index_cargo(150.0).unwrap();
         assert!((r - (1.0 - 128.0 / 302.0)).abs() < 1e-15);
         let r = required_index_cargo(101.0).unwrap();
         assert!((r - (1.0 - 128.0 / 253.0)).abs() < 1e-15);
-        assert_eq!(required_index_cargo(100.0), None);
-        assert_eq!(required_index_cargo(80.0), None);
+        // At exactly 100 m the interpolation reproduces R0.
+        let r0 = required_index_cargo(100.0).unwrap();
+        assert!((r0 - (1.0 - 128.0 / 252.0)).abs() < 1e-12);
+        // The 80 m interpolation: hand-computed from the printed form.
+        let r80 = required_index_cargo(80.0).unwrap();
+        let expected80 = 1.0 - 1.0 / (1.0 + 0.8 * r0 / (1.0 - r0));
+        assert!((r80 - expected80).abs() < 1e-12);
+        assert!(r80 < r0, "shorter ships carry a lower requirement");
+        assert_eq!(required_index_cargo(79.9), None);
         // R grows with length and stays in (0, 1).
         assert!(required_index_cargo(300.0).unwrap() > r);
         assert!(required_index_cargo(350.0).unwrap() < 1.0);
+    }
+
+    /// The horizontal-subdivision factor: 0.8 at 7.8 m headroom above
+    /// the waterline, 1.0 at 12.5 m, clamped outside.
+    #[test]
+    fn v_factor_matches_the_printed_form() {
+        assert!((v_factor(7.8 + 6.0, 6.0) - 0.8).abs() < 1e-12);
+        assert!((v_factor(12.5 + 6.0, 6.0) - 1.0).abs() < 1e-12);
+        assert_eq!(v_factor(30.0 + 6.0, 6.0), 1.0);
+        assert!((v_factor(6.0, 6.0) - (0.8 - 0.2 * 7.8 / 4.7)).abs() < 1e-12);
     }
 
     /// The attained index sums p*s and the three-condition weighting is

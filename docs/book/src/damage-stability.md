@@ -64,7 +64,23 @@ Longitudinal zones combine with the regulation's alternating forms via
 wing bulkheads reduce a group through the Reg. 7-1.2 penetration factor
 [`r_factor`](tpt_yard_hydrostatics::r_factor)
 (`r = 1 − (1−C)·[1 − G/p]`, `C = 12·Jb·(4−45·Jb)` — zero at no
-penetration, exactly 1 at `B/2`).
+penetration, exactly 1 at `B/2`). Horizontal decks enter through
+[`v_factor`](tpt_yard_hydrostatics::v_factor)
+(`0.8 + 0.2·[(H−d)−7.8]/4.7`, the MSC.421(98) form).
 
-The remaining gaps: horizontal-deck `v` factors, passenger intermediate
-stages and the 80–100 m `R` interpolation stay class-society work.
+Survival factors cover both ship types:
+[`s_final_factor`](tpt_yard_hydrostatics::s_final_factor)
+(`K·[(Range/TRange)·(GZmax/TGZmax)]^{1/4}` with the ro-ro deck caps and
+the heel gates — cargo **25°–30°** in the amended text),
+[`s_intermediate_factor`](tpt_yard_hydrostatics::s_intermediate_factor)
+(the 0.05 m / 7° caps) and
+[`s_mom_factor`](tpt_yard_hydrostatics::s_mom_factor)
+(passenger heeling moments); [`s_factor_cargo`](tpt_yard_hydrostatics::s_factor_cargo)
+stays the convenient cargo wrapper. The Reg. 6 requirement extends to
+80 m with the printed interpolation
+([`required_index_cargo`](tpt_yard_hydrostatics::required_index_cargo),
+continuous with `R0` at 100 m).
+
+What remains class-society work: the flood-stage solvers that feed
+these factors (per-stage heel/GZ from the damaged equilibrium) and the
+survival-craft heeling-moment assumptions.
