@@ -34,9 +34,14 @@
 
 use std::fmt;
 
+mod flooding;
 mod probabilistic;
 mod scantlings;
 
+pub use flooding::{
+    cross_flooding_time, flood_cg_z, flood_volume_m3, tank_free_surface_moment_tm,
+    tank_stage_compartment, FloodingError, TankCompartment,
+};
 pub use probabilistic::{
     attained_subdivision_index, combined_cargo_index, multi_zone_p_factor, p_factor, r_factor,
     required_index_cargo, s_factor_cargo, s_final_factor, s_intermediate_factor, s_mom_factor,

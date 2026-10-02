@@ -90,6 +90,17 @@ equilibrium exactly — and the survival-craft moment from
 [`survival_craft_moment`](tpt_yard_hydrostatics::survival_craft_moment)
 over the swung-out craft list.
 
-What remains class-society work: tank-plan flooding geometry (the
-added-weight stages keep compartment centroids fixed) and the
-per-stage heel solvers with cross-flooding time effects.
+Tank-plan geometry: a
+[`TankCompartment`](tpt_yard_hydrostatics::TankCompartment) (bottom,
+plan area, height, permeability) fills physically from the bottom up —
+[`flood_volume_m3`](tpt_yard_hydrostatics::flood_volume_m3),
+[`flood_cg_z`](tpt_yard_hydrostatics::flood_cg_z) and
+[`tank_stage_compartment`](tpt_yard_hydrostatics::tank_stage_compartment)
+bridge into the staged solver — and
+[`cross_flooding_time`](tpt_yard_hydrostatics::cross_flooding_time)
+integrates Torricelli's law for the Reg. 7-2.2 equalization time
+through a duct (compare the 10-minute limit).
+
+What remains class-society work: tank plans with non-vertical walls,
+per-stage heel solvers with cross-flooding time effects inside the
+stage physics, and survival-craft arrangement assumptions.

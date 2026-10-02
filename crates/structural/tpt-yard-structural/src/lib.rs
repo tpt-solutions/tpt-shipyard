@@ -68,6 +68,7 @@ pub mod fem;
 pub mod frame;
 pub mod mindlin;
 pub mod plates;
+pub mod shells;
 
 pub use fem::{Element, FemError, NodalLoad, Node, Support, TrussModel, TrussSolution};
 pub use frame::{

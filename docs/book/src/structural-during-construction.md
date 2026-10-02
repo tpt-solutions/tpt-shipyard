@@ -101,6 +101,32 @@ Member end forces come back as `(axial, shear, M1, M2)` with tension
 positive and moments positive sagging; uniform member loads carry their
 fixed-end offsets so simple supports recover zero end moments.
 
+## Pressure-hull screening
+
+[`cylinder_shell_screen`](tpt_yard_structural::shells::cylinder_shell_screen)
+gives the curved-shell slice for circular pressure hulls: thin-wall
+hoop `p·d/(2t)` and longitudinal `p·d/(4t)` stresses plus the
+Windenburg–Trilling elastic external-pressure buckling pressure
+`2.42·E·(t/d)^2.5/(1−ν²)^0.75`, against a stress allowable and a
+buckling safety factor, reporting the salt-water crush depth.
+
+```rust
+use tpt_yard_structural::shells::cylinder_shell_screen;
+
+let screen = cylinder_shell_screen(
+    2.0,   // 2 MPa external lateral pressure (200 m depth)
+    8.0,   // hull diameter, m
+    0.045, // wall thickness, m (t/d = 1/178)
+    210_000.0, 0.3, 400.0, 1.5,
+)
+.unwrap();
+assert!(screen.buckling_pressure_mpa > 2.0);
+assert!(screen.crush_depth_m > 200.0);
+```
+
+Full curved-shell finite elements (general shells, ring stiffeners,
+inelastic knockdowns) remain roadmap.
+
 Curved members: [`add_arc`](tpt_yard_structural::frame::FrameModel::add_arc)
 appends a faceted circular arc (straight members along the arc — the
 standard practice for curved frames); closed rings and arcs solve via
