@@ -412,27 +412,37 @@ impl HullForm {
                 compartments,
             )
             .ok_or(ProbabilisticError::UnsolvedDamage)?;
-        let hs = self.hydrostatics(damaged.mean_draft_m);
-        // GM already carries the free-surface correction; the wall-sided
-        // arm rebuilds from GM and BM at the damaged draft.
-        let gm = damaged.gm_m;
-        let bm = hs.km_m - hs.kb_m;
+        let theta_e = damaged.list_angle_deg.max(0.0);
+        let (gz_max, range, theta_v) = self.gz_scan(damaged.mean_draft_m, damaged.gm_m, theta_e);
+        let s = s_factor_cargo(theta_e, gz_max, range);
+        Ok(DamagedSurvivability {
+            equilibrium_heel_deg: theta_e,
+            gz_max_m: gz_max,
+            range_deg: range,
+            vanishing_angle_deg: theta_v,
+            s_factor: s,
+        })
+    }
+
+    /// The wall-sided righting-arm scan at a damaged state: peak arm
+    /// and range measured from the equilibrium heel, in 0.25 deg steps
+    /// to 90 deg. `gm` carries the free-surface correction; the arm
+    /// rebuilds as `GM sin(phi) + BM tan^2(phi) sin(phi) / 2`. A
+    /// non-positive GM gives `(0, 0, theta_e)`.
+    fn gz_scan(&self, mean_draft_m: f64, gm: f64, theta_e_deg: f64) -> (f64, f64, f64) {
+        let bm = {
+            let hs = self.hydrostatics(mean_draft_m);
+            hs.km_m - hs.kb_m
+        };
         let gz_at = |phi_deg: f64| {
             let phi = phi_deg.to_radians();
             let (sin, tan) = (phi.sin(), phi.tan());
             gm * sin + 0.5 * bm * tan * tan * sin
         };
-        let theta_e = damaged.list_angle_deg.max(0.0);
+        let theta_e = theta_e_deg.max(0.0);
         if gm <= 0.0 {
-            return Ok(DamagedSurvivability {
-                equilibrium_heel_deg: theta_e,
-                gz_max_m: 0.0,
-                range_deg: 0.0,
-                vanishing_angle_deg: theta_e,
-                s_factor: 0.0,
-            });
+            return (0.0, 0.0, theta_e);
         }
-        // Scan in 0.25 deg steps to 90 deg for the peak and the vanish.
         let step = 0.25_f64;
         let (mut gz_max, mut theta_v) = (0.0_f64, 90.0_f64);
         let mut phi = theta_e;
@@ -447,15 +457,112 @@ impl HullForm {
             }
             phi += step;
         }
-        let s = s_factor_cargo(theta_e, gz_max, theta_v - theta_e);
-        Ok(DamagedSurvivability {
-            equilibrium_heel_deg: theta_e,
-            gz_max_m: gz_max,
-            range_deg: theta_v - theta_e,
-            vanishing_angle_deg: theta_v,
-            s_factor: s,
-        })
+        (gz_max, theta_v - theta_e, theta_v)
     }
+}
+
+/// One intermediate flooding stage of the added-weight model.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FloodStage {
+    /// Flooded volume fraction of every compartment (i/n for stage i
+    /// of `n`).
+    pub fraction: f64,
+    /// Displacement including the stage's floodwater, t.
+    pub displacement_t: f64,
+    /// Mean draft of the stage waterline, m.
+    pub mean_draft_m: f64,
+    /// Equilibrium heel of the stage, degrees.
+    pub heel_deg: f64,
+    /// Stage GM with the stage's free-surface correction, m.
+    pub gm_m: f64,
+    /// Peak righting arm from the equilibrium heel, m.
+    pub gz_max_m: f64,
+    /// Positive-arm range from the equilibrium heel, degrees.
+    pub range_deg: f64,
+    /// Vanishing angle, degrees.
+    pub vanishing_angle_deg: f64,
+}
+
+impl HullForm {
+    /// Staged flooding (Reg. 7-2.2's "all flooding stages including the
+    /// stage before equalization"): floods every compartment at
+    /// fractions `i/n` for `i = 1..=n_stages` — volume and free-surface
+    /// moment scale with the fraction, centroids stay put (the
+    /// added-weight model has no tank plan geometry; documented
+    /// approximation) — and reports each stage's damaged state plus the
+    /// wall-sided GZ scan. The last stage reproduces
+    /// [`Self::damage_stability`] and
+    /// [`Self::damaged_survivability_cargo`] exactly; feed the
+    /// per-stage `(heel, gz_max, range)` into
+    /// [`s_intermediate_factor`](crate::s_intermediate_factor) for the
+    /// Reg. 7-2.2 survival probability.
+    ///
+    /// # Errors
+    ///
+    /// [`ProbabilisticError::UnsolvedDamage`] when any stage's
+    /// equilibrium cannot be solved, or `n_stages` is zero.
+    #[allow(clippy::cast_precision_loss)]
+    pub fn damage_stages(
+        &self,
+        displacement_t: f64,
+        lcg_from_midship_m: f64,
+        kg_m: f64,
+        free_surface_moment_tm: f64,
+        compartments: &[DamageCompartment],
+        n_stages: u32,
+    ) -> Result<Vec<FloodStage>, ProbabilisticError> {
+        if n_stages == 0 {
+            return Err(ProbabilisticError::UnsolvedDamage);
+        }
+        let mut stages = Vec::with_capacity(n_stages as usize);
+        for i in 1..=n_stages {
+            let fraction = i as f64 / n_stages as f64;
+            let scaled: Vec<DamageCompartment> = compartments
+                .iter()
+                .map(|c| DamageCompartment {
+                    name: c.name.clone(),
+                    volume_m3: c.volume_m3 * fraction,
+                    centroid: c.centroid,
+                    free_surface_moment_tm: c.free_surface_moment_tm * fraction,
+                })
+                .collect();
+            let damaged = self
+                .damage_stability(
+                    displacement_t,
+                    lcg_from_midship_m,
+                    kg_m,
+                    free_surface_moment_tm,
+                    &scaled,
+                )
+                .ok_or(ProbabilisticError::UnsolvedDamage)?;
+            let theta_e = damaged.list_angle_deg.max(0.0);
+            let (gz_max, range, theta_v) =
+                self.gz_scan(damaged.mean_draft_m, damaged.gm_m, theta_e);
+            stages.push(FloodStage {
+                fraction,
+                displacement_t: damaged.displacement_t,
+                mean_draft_m: damaged.mean_draft_m,
+                heel_deg: theta_e,
+                gm_m: damaged.gm_m,
+                gz_max_m: gz_max,
+                range_deg: range,
+                vanishing_angle_deg: theta_v,
+            });
+        }
+        Ok(stages)
+    }
+}
+
+/// The Reg. 7-2.4.1.3 survival-craft heeling moment (t·m): every
+/// davit-launched craft swung out fully loaded on one side, as
+/// `(mass_kg, outboard_distance_m)` pairs — the moment is
+/// `sum(mass * 9.81 * distance) / 1000`. The rule's arrangement
+/// assumptions (which craft, swung positions) are the caller's.
+pub fn survival_craft_moment(craft: &[(f64, f64)]) -> f64 {
+    craft
+        .iter()
+        .map(|(mass_kg, outboard_m)| mass_kg * 9.81 * outboard_m / 1000.0)
+        .sum()
 }
 
 /// The transverse penetration factor `r(x1, x2, b)` of Reg. 7-1.2: the
@@ -662,6 +769,79 @@ mod tests {
             multi_zone_p_factor(&d, 150.0, 22.0, &[], None),
             Err(ProbabilisticError::InvalidZone)
         );
+    }
+
+    /// Staged flooding: the final stage reproduces damage_stability
+    /// and damaged_survivability_cargo exactly (same solver, same
+    /// scan), drafts grow monotonically with the flood fraction, and
+    /// a transverse offset produces growing heel across the stages.
+    #[test]
+    fn damage_stages_converge_to_the_final_state() {
+        let hull = HullForm {
+            loa_m: 140.0,
+            boa_m: 22.0,
+            cb: 0.72,
+            cwp: 0.85,
+        };
+        let db = |name: String, x: f64, y: f64| DamageCompartment {
+            name,
+            volume_m3: 500.0,
+            centroid: (x, y, 1.25),
+            free_surface_moment_tm: 120.0,
+        };
+        let compartments = vec![
+            db("DB 3".into(), 10.0, 0.0),
+            db("DB 4".into(), -8.0, 2.0), // off-centre: heel builds up
+        ];
+        let stages = hull
+            .damage_stages(30_000.0, 0.0, 9.0, 200.0, &compartments, 5)
+            .expect("all stages solve");
+        assert_eq!(stages.len(), 5);
+        assert!((stages[4].fraction - 1.0).abs() < 1e-12);
+
+        // Final-stage identity against the single-shot solvers.
+        let final_stage = &stages[4];
+        let single = hull
+            .damage_stability(30_000.0, 0.0, 9.0, 200.0, &compartments)
+            .expect("final stage solves");
+        assert!((final_stage.mean_draft_m - single.mean_draft_m).abs() < 1e-12);
+        assert!((final_stage.heel_deg - single.list_angle_deg.max(0.0)).abs() < 1e-12);
+        assert!((final_stage.gm_m - single.gm_m).abs() < 1e-12);
+        let surv = hull
+            .damaged_survivability_cargo(30_000.0, 0.0, 9.0, 200.0, &compartments)
+            .unwrap();
+        assert!((final_stage.gz_max_m - surv.gz_max_m).abs() < 1e-12);
+        assert!((final_stage.range_deg - surv.range_deg).abs() < 1e-12);
+        assert!((final_stage.vanishing_angle_deg - surv.vanishing_angle_deg).abs() < 1e-12);
+
+        // Drafts grow with the flooded fraction; the off-centre
+        // compartment's heel grows with it.
+        for pair in stages.windows(2) {
+            assert!(pair[1].mean_draft_m > pair[0].mean_draft_m);
+            assert!(pair[1].heel_deg >= pair[0].heel_deg - 1e-12);
+        }
+        assert!(stages[4].heel_deg > 0.0, "off-centre flood heels the ship");
+        // Every stage's stage-s intermediate factor is well-defined.
+        for st in &stages {
+            let s = s_intermediate_factor(st.heel_deg, st.gz_max_m, st.range_deg, false);
+            assert!((0.0..=1.0).contains(&s));
+        }
+        // Zero stages refused.
+        assert_eq!(
+            hull.damage_stages(30_000.0, 0.0, 9.0, 200.0, &compartments, 0),
+            Err(ProbabilisticError::UnsolvedDamage)
+        );
+    }
+
+    /// The survival-craft moment sums mass * g * outboard arm.
+    #[test]
+    fn survival_craft_moment_sums_the_launching_list() {
+        // Two fully loaded boats at 3 m and one raft at 4 m outboard.
+        let m = survival_craft_moment(&[(6_000.0, 3.0), (6_000.0, 3.0), (1_000.0, 4.0)]);
+        let expected = (6_000.0 * 9.81 * 3.0) * 2.0 / 1000.0 + 1_000.0 * 9.81 * 4.0 / 1000.0;
+        assert!((m - expected).abs() < 1e-9);
+        assert!((m - 392.4).abs() < 1e-9, "hand value {m}");
+        assert_eq!(survival_craft_moment(&[]), 0.0);
     }
 
     /// The reference coefficients for `Ls <= 198 m` in exact fractions:

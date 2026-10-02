@@ -81,6 +81,15 @@ stays the convenient cargo wrapper. The Reg. 6 requirement extends to
 ([`required_index_cargo`](tpt_yard_hydrostatics::required_index_cargo),
 continuous with `R0` at 100 m).
 
-What remains class-society work: the flood-stage solvers that feed
-these factors (per-stage heel/GZ from the damaged equilibrium) and the
-survival-craft heeling-moment assumptions.
+The intermediate stages that feed
+[`s_intermediate_factor`](tpt_yard_hydrostatics::s_intermediate_factor)
+come from
+[`damage_stages`](tpt_yard_hydrostatics::HullForm::damage_stages) —
+partial-volume floods at i/n, the last stage reproducing the final
+equilibrium exactly — and the survival-craft moment from
+[`survival_craft_moment`](tpt_yard_hydrostatics::survival_craft_moment)
+over the swung-out craft list.
+
+What remains class-society work: tank-plan flooding geometry (the
+added-weight stages keep compartment centroids fixed) and the
+per-stage heel solvers with cross-flooding time effects.
