@@ -47,7 +47,17 @@ Beyond golden files, the crates carry closed-form verification tests:
   relation, Euler `sigma_E(t_req) = sigma_applied` exactly, and the
   stiffener closed forms (p s l^2/12, p s l/2);
 - IFC export: STEP well-formedness plus an exact (bit-identical)
-  geometry round-trip through the emitted reals.
+  geometry round-trip through the emitted reals;
+- SOLAS r/multi-zone/v/intermediate: r monotone in penetration depth
+  and exactly 1 at B/2, group factors bounded by the union span, the
+  s-factors monotone in GZmax/range and gated by heel, the v factor
+  monotone in deck height, and the cross-flooding closed form against
+  a brute-force ODE integration (proptest_damage, 128 cases each);
+- the hull-stability-screen example exercises the full pipeline on the
+  container-ship manifest: tank-plan damage screen, staged flooding
+  with per-stage intermediate s, cross-flooding equalization, the
+  multi-zone p·r group factor, and the plate/frame/EC3 buckling
+  checks.
 
 ## Benchmarks
 

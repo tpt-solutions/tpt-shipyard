@@ -11,10 +11,10 @@
 
 use tpt_yard_core::json::Value;
 use tpt_yard_hydrostatics::{
-    attained_subdivision_index, combined_cargo_index, high_strength_factor, local_plate_scantling,
-    p_factor, plate_buckling_check_ec3, required_index_cargo, s_factor_cargo, stiffener_scantling,
-    DamageCase, DamageCompartment, DamageLengthDensity, HullForm, LoadingCondition,
-    LocalPlateScantlingInput,
+    attained_subdivision_index, combined_cargo_index, cross_flooding_time, high_strength_factor,
+    local_plate_scantling, multi_zone_p_factor, p_factor, plate_buckling_check_ec3,
+    required_index_cargo, s_factor_cargo, s_intermediate_factor, stiffener_scantling, DamageCase,
+    DamageLengthDensity, HullForm, LoadingCondition, LocalPlateScantlingInput, TankCompartment,
 };
 
 fn main() {
@@ -99,31 +99,42 @@ allowable {:.0} MPa -> required modulus {:.3} m^3",
         girder.allowable_mpa, girder.required_modulus_m3
     );
 
-    // 4. Damage stability screen: two double-bottom cases sized off the
-    // hull (12 m x 18 m x 2.5 m = 540 m3 floodable volume each).
-    let db = |name: &str, x: f64| DamageCompartment {
-        name: name.to_string(),
-        volume_m3: 540.0,
-        centroid: (x, 0.0, 1.25),
-        free_surface_moment_tm: 1.025 * 12.0 * 18.0_f64.powi(3) / 12.0,
+    // 4. Damage stability screen: two double-bottom TANKS with real
+    // vertical-walled geometry (12 m x 18 m plan, 2.5 m height, mu 0.85),
+    // flooded to the full stage via the tank-plan geometry bridge.
+    let tank = |name: &str, x: f64| {
+        (
+            name.to_string(),
+            x,
+            TankCompartment {
+                name: name.to_string(),
+                bottom_z: 0.0,
+                plan_area_m2: 12.0 * 18.0,
+                height_m: 2.5,
+                permeability: 0.85,
+            },
+        )
     };
-    let cases = [
-        DamageCase {
-            name: "DB 3 alone".into(),
-            compartments: vec![db("DB 3", 0.15 * loa)],
-        },
-        DamageCase {
-            name: "DB 4 alone".into(),
-            compartments: vec![db("DB 4", -0.05 * loa)],
-        },
-    ];
+    let tanks = [tank("DB 3", 0.15 * loa), tank("DB 4", -0.05 * loa)];
+    let cases: Vec<DamageCase> = tanks
+        .iter()
+        .map(|(name, x, t)| {
+            let mut c =
+                tpt_yard_hydrostatics::tank_stage_compartment(t, 1.0, None).expect("tank geometry");
+            c.name = name.clone();
+            c.centroid.0 = *x;
+            DamageCase {
+                name: name.clone(),
+                compartments: vec![c],
+            }
+        })
+        .collect();
     let summary = hull
         .damage_screen(hs.displacement_t, 0.0, kg, 250.0, &cases)
         .expect("damage cases solve");
     let governing = &summary.cases[summary.governing_index];
     println!(
-        "4. Damage screen: {} of {} cases pass the 0.05 m floor; governing '{}': \
-GM {:.2} m, list {:.2} deg",
+        "4. Damage screen (tank plan): {} of {} cases pass the 0.05 m floor; governing '{}': GM {:.2} m, list {:.2} deg",
         summary
             .cases
             .iter()
@@ -134,42 +145,88 @@ GM {:.2} m, list {:.2} deg",
         governing.gm_m,
         governing.list_angle_deg
     );
+    // Staged flooding of the governing case: per-stage heel/GZ with the
+    // Reg. 7-2.2 intermediate factor per stage, plus the Torricelli
+    // cross-flooding equalization time through a 0.2 m2 duct.
+    let gov_compartments = &cases[summary.governing_index].compartments;
+    let stages = hull
+        .damage_stages(hs.displacement_t, 0.0, kg, 250.0, gov_compartments, 4)
+        .expect("stages solve");
+    let worst_int = stages
+        .iter()
+        .map(|st| s_intermediate_factor(st.heel_deg, st.gz_max_m, st.range_deg, false))
+        .fold(1.0_f64, f64::min);
+    let eq_time = cross_flooding_time(2.0, 0.0, 0.2, 0.6, 12.0 * 18.0, 40.0).expect("duct inputs");
+    println!(
+        "   staged flood (4 stages): worst intermediate s = {worst_int:.2}; cross-flooding equalization {eq_time:.0} s ({})",
+        if eq_time <= 600.0 {
+            "within 10 min"
+        } else {
+            "EXCEEDS 10 min"
+        }
+    );
 
-    // 5. Probabilistic damage stability (cargo): three single-zone
-    // damages along the cargo length with healthy survivability, at the
-    // deepest condition only (the full method weighs three conditions).
+    // 5. Probabilistic damage stability (cargo): one three-zone group
+    // (the midbody) scored with the p·r combination through a 2 m wing
+    // bulkhead, plus the single-zone contributions, at the deepest
+    // condition only (the full method weighs three conditions).
     let ls = 0.96 * loa; // subdivision length screen
     let density = DamageLengthDensity::for_subdivision_length(ls).unwrap();
+    let bulkhead_b = 2.0; // m off the shell: one longitudinal bulkhead
     let zones = [(0.25, 0.45), (0.45, 0.65), (0.65, 0.85)];
+    // The three-zone GROUP factor: the p combination with the r
+    // reduction through the wing bulkhead. The alternating form can
+    // cancel to a hair negative for bulkheads shallow against the zone
+    // spans; a probability floors at zero.
+    let group = {
+        let z: Vec<(f64, f64)> = zones.iter().map(|(x1, x2)| (x1 * ls, x2 * ls)).collect();
+        multi_zone_p_factor(&density, ls, boa, &z, Some(bulkhead_b))
+            .expect("zones")
+            .max(0.0)
+    };
+    let singles: Vec<f64> = zones
+        .iter()
+        .map(|(x1, x2)| p_factor(&density, ls, x1 * ls, x2 * ls).expect("zone"))
+        .collect();
     let cases_p: Vec<_> = zones
         .iter()
-        .map(|(x1, x2)| {
-            let p = p_factor(&density, ls, x1 * ls, x2 * ls).expect("zone in range");
+        .zip(&singles)
+        .map(|((x1, x2), p)| {
             let s = s_factor_cargo(0.0, 0.35, 25.0); // healthy damaged GZ screen
             format!("{:.0}-{:.0}%L p={p:.3} s={s:.2}", x1 * 100.0, x2 * 100.0)
         })
         .collect();
-    let a_deepest = attained_subdivision_index(
-        &(0..zones.len())
-            .map(|i| {
-                let (x1, x2) = zones[i];
-                tpt_yard_hydrostatics::DamageCaseProbability {
-                    name: format!("zone {i}"),
-                    p_factor: p_factor(&density, ls, x1 * ls, x2 * ls).expect("zone"),
-                    s_factor: s_factor_cargo(0.0, 0.35, 25.0),
-                }
-            })
-            .collect::<Vec<_>>(),
-    );
+    // The group (3-zone, bulkhead-reduced) plus the two outboard
+    // single-zone damages, all with healthy survivability.
+    let a_deepest = attained_subdivision_index(&[
+        tpt_yard_hydrostatics::DamageCaseProbability {
+            name: "3-zone midbody group".into(),
+            p_factor: group,
+            s_factor: s_factor_cargo(0.0, 0.35, 25.0),
+        },
+        tpt_yard_hydrostatics::DamageCaseProbability {
+            name: "fore single zone".into(),
+            p_factor: singles[0],
+            s_factor: 0.5,
+        },
+    ]);
     let a = combined_cargo_index(a_deepest, 0.8 * a_deepest, 0.6 * a_deepest);
-    if let Some(r) = required_index_cargo(loa) {
+    if let Some(r_req) = required_index_cargo(loa) {
         println!(
-            "5. Probabilistic damage (SOLAS): A = {a:.3} vs R = {r:.3} -> {}",
-            if a >= r { "PASS" } else { "FAIL" }
+            "5. Probabilistic damage (SOLAS): A = {a:.3} vs R = {r_req:.3} -> {}",
+            if a >= r_req { "PASS" } else { "FAIL" }
+        );
+        println!(
+            "   3-zone group (25-85%L, 2 m wing bulkhead): p·r = {group:.3}; singles p = {}",
+            singles
+                .iter()
+                .map(|p| format!("{p:.3}"))
+                .collect::<Vec<_>>()
+                .join(", ")
         );
         println!("   {}", cases_p.join(", "));
         println!(
-            "   screen note: three midship zones only — a design study enumerates all zone combinations, longitudinal bulkheads (r) and horizontal decks (v)"
+            "   screen note: one group plus two singles — a design study enumerates all zone combinations and horizontal decks (v)"
         );
     } else {
         println!("5. Probabilistic damage (SOLAS): length below 100 m, R undefined");
