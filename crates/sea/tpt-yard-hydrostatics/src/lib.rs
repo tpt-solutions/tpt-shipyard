@@ -44,8 +44,8 @@ pub use probabilistic::{
 };
 pub use scantlings::{
     local_plate_scantling, plate_buckling_thickness_mm, plate_euler_stress_mpa,
-    slab_bending_thickness_mm, LocalPlateScantling, LocalPlateScantlingInput, ScantlingError,
-    ScantlingMode,
+    slab_bending_thickness_mm, stiffener_scantling, LocalPlateScantling, LocalPlateScantlingInput,
+    ScantlingError, ScantlingMode, StiffenerScantling,
 };
 
 const RHO_SEA_T_M3: f64 = 1.025;

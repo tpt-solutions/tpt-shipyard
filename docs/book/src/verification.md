@@ -32,7 +32,22 @@ Beyond golden files, the crates carry closed-form verification tests:
 - CoG tracking through 10 phases against the weighted mean (RFC 0001
   milestone);
 - `omega = sqrt(g/r)` and the 2 rpm comfort limit (RFC 0005);
-- t8/5 scaling with heat input; distance independence of the 3D solution.
+- t8/5 scaling with heat input; distance independence of the 3D solution;
+- plate FEM: Timoshenko 0.00406/0.00126 q a^4/D (BFS and MITC4 Mindlin on
+  identical meshes), strain-free rigid/linear fields, and the twisting
+  thin-limit mode carrying exactly the Kirchhoff curvature;
+- capacity-aware levelling: parallel sharing vs deferral at exact
+  breakpoints, and the whole-window regression (a start-only check would
+  overrun the limit mid-activity);
+- SOLAS probabilistic damage stability: the bi-linear damage-length
+  density against exact hand fractions, `p` against Simpson integration of
+  the contained-damage integral in both branches, `p(Jm) = Jm - E[J]`, and
+  s-factor hand values;
+- local scantlings: the 22.4 slab constant round-trips the clamped-plate
+  relation, Euler `sigma_E(t_req) = sigma_applied` exactly, and the
+  stiffener closed forms (p s l^2/12, p s l/2);
+- IFC export: STEP well-formedness plus an exact (bit-identical)
+  geometry round-trip through the emitted reals.
 
 ## Benchmarks
 

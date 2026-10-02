@@ -60,6 +60,26 @@ assert!(scantling.with_corrosion_mm > scantling.governing_net_mm);
 ```
 
 The buckling leg uses the bare Euler criterion — the class reduction
-curves (post-buckling reserve via usage factors on the slenderness),
-rule minimum thickness tables and stiffener flange/web checks remain
-class-society work.
+curves (post-buckling reserve via usage factors on the slenderness)
+and the rule minimum thickness tables remain class-society work.
+
+## Stiffeners
+
+[`stiffener_scantling`](tpt_yard_hydrostatics::stiffener_scantling)
+sizes the longitudinal/transverse under lateral pressure with the
+fixed-fixed load model: end moment `p·s·l²/12` (governing), midspan
+`p·s·l²/24`, reaction `p·s·l/2`. It returns the required section
+modulus (`1000·M/σ` cm³, demand-side `k`) and — when a shear
+allowable is supplied — the required shear area (`10·V/τ` cm²).
+
+```rust
+use tpt_yard_hydrostatics::stiffener_scantling;
+
+// Frame: 0.8 m spacing, 3 m span, 100 kN/m2, 150 MPa allowable.
+let frame = stiffener_scantling(0.8, 3.0, 100.0, 150.0, 1.0, Some(90.0))
+    .unwrap();
+// The end moment carries the classic closed form p s l^2 / 12:
+assert!((frame.end_moment_knm - 100.0 * 0.8 * 9.0 / 12.0).abs() < 1e-12);
+assert!(frame.required_modulus_cm3 > 0.0);
+assert!(frame.required_shear_area_cm2.unwrap() > 0.0);
+```

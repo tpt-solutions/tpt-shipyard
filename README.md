@@ -44,24 +44,24 @@ deepen). **Stand-in** = a thin, honest bridge awaiting the companion
 | `tpt-yard-assembly` | Shared assembly-activity primitives: dependency graphs | Done |
 | `tpt-yard-weight` | Weight and CoG management | Done |
 | `tpt-yard-digital-twin` | Construction state tracking and simulation | Done |
-| `tpt-yard-structural` | Structural analysis during build | Simplified model (3-D truss + 2-D frame FEM, penalty BCs, sparse CG) |
+| `tpt-yard-structural` | Structural analysis during build | Simplified model (3-D truss + 2-D frame + plate FEM: BFS thin and MITC4 Mindlin elements, penalty BCs, sparse CG/Cholesky) |
 | `tpt-yard-welding` | Welding simulation | Done (analytical Rosenthal, experimentally verified) |
 | `tpt-yard-distortion` | Block distortion management | Simplified model (threshold-based correction planning) |
 | `tpt-yard-joints` | Shared joint-geometry primitives | Done (closed-form groove/fillet geometry) |
 | `tpt-yard-hull` | Hull block construction | Done (pre-design weight estimate) |
 | `tpt-yard-blocks` | Block lifting and sling loads | Done |
 | `tpt-yard-drydock` | Drydock flooding and ballast sequencing | Simplified model (rectangular-block hydrostatics) |
-| `tpt-yard-launch` | Launch calculations | Simplified model (statics screening + dynamic slipway simulation; stern-lift/poppet load split on roadmap) |
+| `tpt-yard-launch` | Launch calculations | Simplified model (statics screening + dynamic slipway simulation with stern-lift/poppet/way-moment series) |
 | `tpt-yard-outfitting` | Systems installation and routing | Simplified model (AABB routing checks) |
 | `tpt-yard-sea-trials` | Sea-trial test planning | Done |
-| `tpt-yard-hydrostatics` | Hydrostatics, GZ curves, IMO 2008 stability | Simplified model (prismatic screening; Bonjean/damage stability on roadmap) |
+| `tpt-yard-hydrostatics` | Hydrostatics, GZ curves, IMO 2008 stability, hull-girder strength, damage stability, scantlings | Simplified model (prismatic hull; Bonjean/cross-curves, SOLAS probabilistic damage stability (cargo, single-zone), local plate scantlings + Euler buckling shipped; class buckling curves and probabilistic r/v factors on roadmap) |
 | `tpt-yard-orbital-assembly` | Orbital assembly planning | Simplified model (greedy sequence, kinematic checks) |
 | `tpt-yard-space-structural` | Structures without launch constraints | Simplified model (analytical screening) |
 | `tpt-yard-space-manufacturing` | In-space manufacturing and additive construction | Simplified model (estimate-grade constants) |
 | `tpt-yard-robotic-assembly` | Robotic arm planning | Simplified model (planar RRT, 2-4 link arms) |
 | `tpt-yard-habitat` | Rotating habitat design | Simplified model (analytical shell stress) |
 | `tpt-yard-propellant` | Propellant loading and boil-off management | Simplified model (lump-parameter thermal) |
-| `tpt-yard-scheduling` | Construction scheduling | Done (exact CPM; heuristic levelling) |
+| `tpt-yard-scheduling` | Construction scheduling | Done (exact CPM; Monte Carlo risk with delivery/weather gates; capacity-aware levelling at exact breakpoints) |
 | `tpt-yard-logistics` | Material and resource logistics | Simplified model (flow accounting) |
 | `tpt-yard-facility` | Shipyard facility layout planning | Done (plan-view capacity/placement) |
 | `tpt-yard-quality` | Quality control and inspection | Simplified model (plan generation only) |
@@ -71,6 +71,7 @@ deepen). **Stand-in** = a thin, honest bridge awaiting the companion
 | `tpt-yard-cli` | CLI: `validate` / `plan` / `schedule` / `risk` / `report` / `new` / `html-report` / `pdf-report` | Done |
 | `tpt-yard` | Facade: one dependency, curated prelude, feature flags | Done |
 | `tpt-yard-wasm` | WebAssembly bindings for dashboards | Simplified model (browser tests in CI; 3-D three.js dashboard shipped) |
+| `tpt-yard-py` | Python bindings (PyO3; detached from the workspace build) | First slice (DigitalTwin + HullForm; CI job exercises both) |
 
 ## Quick Start
 
@@ -135,6 +136,12 @@ Run a complete worked example with
 `test-data/`. The `examples/` directory covers block assembly, a submarine
 pressure hull, drydock flooding, orbital truss assembly, a rotating habitat,
 and in-space solar-array manufacturing.
+
+Geometry leaves the engine in open formats: `tpt_yard::export::geometry_to_gltf`
+writes a self-contained glTF 2.0 document for web viewers,
+`tpt_yard::export::elements_to_ifc` writes an IFC4 (STEP) file for BIM tools,
+and Python bindings (`crates/bindings/tpt-yard-py`, PyO3) expose the digital
+twin and hull hydrostatics directly from Python.
 
 ## Build Anything, Anywhere
 

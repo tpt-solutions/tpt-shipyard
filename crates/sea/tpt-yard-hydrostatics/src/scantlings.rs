@@ -270,10 +270,114 @@ pub fn local_plate_scantling(
     })
 }
 
+/// The stiffener check outcome: the load model's internal actions plus
+/// the required section modulus and shear area.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StiffenerScantling {
+    /// Fixed-end moment `p·s·l²/12`, kN·m (the governing bending
+    /// action for a stiffener fixed at both ends).
+    pub end_moment_knm: f64,
+    /// Midspan moment `p·s·l²/24`, kN·m.
+    pub midspan_moment_knm: f64,
+    /// Support reaction `p·s·l/2`, kN.
+    pub reaction_kn: f64,
+    /// Required section modulus against the bending allowable, cm³
+    /// (`1000·M/σ` with the demand-side material factor).
+    pub required_modulus_cm3: f64,
+    /// Required shear area against the shear allowable, cm² (`None`
+    /// without a shear allowable).
+    pub required_shear_area_cm2: Option<f64>,
+}
+
+/// Lateral-pressure stiffener check (first-principles model): a
+/// stiffener of span `l` fixed at both ends carrying the panel load
+/// `p·s` (spacing `s`) has end moment `p·s·l²/12`, midspan moment
+/// `p·s·l²/24` and support reactions `p·s·l/2` — the standard
+/// load model behind the class girder formulas. The required section
+/// modulus is `1000·M/σ` in cm³ (kN·m over N/mm²); the required shear
+/// area is `10·V/τ` in cm² (kN over N/mm²) when a shear allowable is
+/// supplied.
+///
+/// # Errors
+///
+/// [`ScantlingError::InvalidInput`] on non-physical inputs.
+pub fn stiffener_scantling(
+    spacing_m: f64,
+    span_m: f64,
+    pressure_kn_m2: f64,
+    allowable_bending_mpa: f64,
+    material_factor_k: f64,
+    allowable_shear_mpa: Option<f64>,
+) -> Result<StiffenerScantling, ScantlingError> {
+    if !(spacing_m.is_finite() && spacing_m > 0.0)
+        || !(span_m.is_finite() && span_m > 0.0)
+        || !(pressure_kn_m2.is_finite() && pressure_kn_m2 >= 0.0)
+        || !(allowable_bending_mpa.is_finite() && allowable_bending_mpa > 0.0)
+        || !(material_factor_k.is_finite() && material_factor_k > 0.0)
+    {
+        return Err(ScantlingError::InvalidInput);
+    }
+    if let Some(tau) = allowable_shear_mpa {
+        if !tau.is_finite() || tau <= 0.0 {
+            return Err(ScantlingError::InvalidInput);
+        }
+    }
+    let load = material_factor_k * pressure_kn_m2 * spacing_m; // kN/m
+    let end_moment = load * span_m * span_m / 12.0;
+    let midspan_moment = end_moment / 2.0;
+    let reaction = load * span_m / 2.0;
+    let shear_area = allowable_shear_mpa.map(|tau| 10.0 * reaction / tau);
+    Ok(StiffenerScantling {
+        end_moment_knm: end_moment,
+        midspan_moment_knm: midspan_moment,
+        reaction_kn: reaction,
+        required_modulus_cm3: 1000.0 * end_moment / allowable_bending_mpa,
+        required_shear_area_cm2: shear_area,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::high_strength_factor;
+
+    /// The stiffener load model: fixed-fixed internal actions are the
+    /// exact closed forms (end p s l^2/12, mid p s l^2/24, reaction
+    /// p s l/2), the modulus recovers the demand (back-computing the
+    /// stress from the modulus gives sigma/k), and the shear area is
+    /// 10 V / tau.
+    #[test]
+    fn stiffener_model_matches_the_closed_forms() {
+        let r = stiffener_scantling(0.8, 3.0, 100.0, 150.0, 1.0, Some(90.0)).unwrap();
+        let load = 100.0 * 0.8; // kN/m
+        assert!((r.end_moment_knm - load * 9.0 / 12.0).abs() < 1e-12);
+        assert!((r.midspan_moment_knm - load * 9.0 / 24.0).abs() < 1e-12);
+        assert!((r.reaction_kn - load * 1.5).abs() < 1e-12);
+        assert!((r.required_modulus_cm3 - 1000.0 * r.end_moment_knm / 150.0).abs() < 1e-9);
+        // Round-trip: the modulus at the allowable means M/Z = sigma.
+        let stress = r.end_moment_knm * 1000.0 / r.required_modulus_cm3;
+        assert!((stress - 150.0).abs() < 1e-9);
+        // Shear area: 10 V / tau (kN over N/mm2 -> cm2).
+        assert!((r.required_shear_area_cm2.unwrap() - 10.0 * r.reaction_kn / 90.0).abs() < 1e-9);
+        // Scaling: span doubles -> moments x4, reaction x2.
+        let r2 = stiffener_scantling(0.8, 6.0, 100.0, 150.0, 1.0, None).unwrap();
+        assert!((r2.end_moment_knm / r.end_moment_knm - 4.0).abs() < 1e-12);
+        assert!((r2.reaction_kn / r.reaction_kn - 2.0).abs() < 1e-12);
+        // Demand-side k thickens the demand linearly.
+        let r3 = stiffener_scantling(0.8, 3.0, 100.0, 150.0, 1.25, None).unwrap();
+        assert!((r3.required_modulus_cm3 / r.required_modulus_cm3 - 1.25).abs() < 1e-12);
+        assert!(r.required_shear_area_cm2.is_some());
+        assert!(r3.required_shear_area_cm2.is_none());
+        // Errors.
+        assert_eq!(
+            stiffener_scantling(0.0, 3.0, 100.0, 150.0, 1.0, None),
+            Err(ScantlingError::InvalidInput)
+        );
+        assert_eq!(
+            stiffener_scantling(0.8, 3.0, 100.0, 150.0, 1.0, Some(0.0)),
+            Err(ScantlingError::InvalidInput)
+        );
+    }
 
     /// The slab constant is the clamped-plate relation in rule units:
     /// the returned thickness reproduces sigma = 0.5 p s^2 / t^2
