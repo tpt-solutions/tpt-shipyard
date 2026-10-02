@@ -63,6 +63,43 @@ jobs:
       - name: Compile-test book and README snippets
         run: python scripts/test-snippets.py
 
+  python-bindings:
+    name: Python bindings
+    needs: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # The PyO3 crate is detached from the workspace (pyo3 needs a
+      # Python interpreter at build time); build it standalone, rename
+      # the cdylib to the module name and drive it end-to-end.
+      - name: Build extension module
+        run: cargo build --release --locked --manifest-path crates/bindings/tpt-yard-py/Cargo.toml
+      - name: Import and exercise the module
+        run: |
+          mkdir -p /tmp/tpt_yard_py
+          cp crates/bindings/tpt-yard-py/target/release/libtpt_yard_py.so /tmp/tpt_yard_py/tpt_yard_py.so
+          python - <<'EOF'
+          import sys
+          sys.path.insert(0, "/tmp/tpt_yard_py")
+          import tpt_yard_py
+          twin = tpt_yard_py.DigitalTwin.from_project_json(
+              open("templates/container-ship.json", encoding="utf-8").read())
+          report = twin.weight_report()
+          assert report["design_weight_kg"] == 8400000.0, report
+          twin.advance_phase(1)
+          hull = tpt_yard_py.HullForm(140.0, 22.0, 0.72, 0.85)
+          hs = hull.hydrostatics(6.0)
+          assert abs(hs["displacement_t"] - 0.72*140*22*6*1.025) < 1e-6, hs
+          gz = hull.gz_curve(6.0, 8.0, 40.0)
+          assert gz[0][0] == 0.0 and len(gz) >= 5
+          print("python bindings OK")
+          EOF
+
   wasm:
     name: WASM build + browser tests
     needs: fmt

@@ -49,6 +49,10 @@ members = [
     "examples/drydock-flooding-sequence",
     "benches",
 ]
+# The PyO3 bindings stay out of the workspace: pyo3 needs a Python
+# interpreter at build time, so plain workspace builds must not touch
+# them (see crates/bindings/tpt-yard-py/README.md).
+exclude = ["crates/bindings/tpt-yard-py"]
 
 [workspace.package]
 rust-version = "1.98"

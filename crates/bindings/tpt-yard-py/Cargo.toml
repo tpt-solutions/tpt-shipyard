@@ -1,0 +1,27 @@
+# Python bindings for tpt-shipyard (PyO3). Deliberately DETACHED from
+# the workspace (the empty `[workspace]` below): pyo3 needs a Python
+# interpreter at build time, so plain workspace builds must not touch
+# this crate. Build it on its own:
+#
+#   cargo build --release --manifest-path crates/bindings/tpt-yard-py/Cargo.toml
+#
+# then import the produced cdylib renamed to `tpt_yard_py.pyd`/`.so`.
+[workspace]
+
+[package]
+name = "tpt-yard-py"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Python bindings for the tpt-shipyard construction engine"
+
+[lib]
+name = "tpt_yard_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+tpt-yard-core = { path = "../../core/tpt-yard-core" }
+tpt-yard-digital-twin = { path = "../../core/tpt-yard-digital-twin" }
+tpt-yard-hydrostatics = { path = "../../sea/tpt-yard-hydrostatics" }
