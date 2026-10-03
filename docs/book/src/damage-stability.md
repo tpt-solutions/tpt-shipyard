@@ -100,6 +100,12 @@ bridge into the staged solver — and
 [`cross_flooding_time`](tpt_yard_hydrostatics::cross_flooding_time)
 integrates Torricelli's law for the Reg. 7-2.2 equalization time
 through a duct (compare the 10-minute limit).
+[`damage_stages_equalization`](tpt_yard_hydrostatics::HullForm::damage_stages_equalization)
+drives the stage fractions by the same dynamics ( at
+equal time slices — half the transfer in the first 29.3% of the
+equalization), and `top_plan_area_m2` gives tanks trapezoidal walls
+(fill height by the quadratic formula, CG by the first-moment closed
+form).
 
 What remains class-society work: tank plans with non-vertical walls,
 per-stage heel solvers with cross-flooding time effects inside the

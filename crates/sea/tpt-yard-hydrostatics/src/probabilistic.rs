@@ -429,7 +429,7 @@ impl HullForm {
     /// to 90 deg. `gm` carries the free-surface correction; the arm
     /// rebuilds as `GM sin(phi) + BM tan^2(phi) sin(phi) / 2`. A
     /// non-positive GM gives `(0, 0, theta_e)`.
-    fn gz_scan(&self, mean_draft_m: f64, gm: f64, theta_e_deg: f64) -> (f64, f64, f64) {
+    pub(crate) fn gz_scan(&self, mean_draft_m: f64, gm: f64, theta_e_deg: f64) -> (f64, f64, f64) {
         let bm = {
             let hs = self.hydrostatics(mean_draft_m);
             hs.km_m - hs.kb_m
