@@ -199,10 +199,6 @@ Benevolent Dictator + public RFC process. See [GOVERNANCE.md](GOVERNANCE.md).
 Releases follow SemVer on a 6-week cadence — see [RELEASES.md](RELEASES.md).
 Roadmap tracking happens on the public GitHub Projects board linked from the repository.
 
-## Contributing
-
-Contributions are welcome — CLA-free, DCO sign-off only. See [CONTRIBUTING.md](CONTRIBUTING.md).
-
 ## Security
 
 Please report vulnerabilities privately — see [SECURITY.md](SECURITY.md).
