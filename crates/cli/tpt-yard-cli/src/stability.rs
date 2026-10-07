@@ -16,8 +16,8 @@ use std::path::Path;
 
 use tpt_yard_core::json::Value;
 use tpt_yard_hydrostatics::{
-    imo_2008_general_criteria, parse_offsets_csv, Bonjean, GzCurve, HullForm, Hydrostatics,
-    ImoVerdict, LoadingCondition,
+    imo_2008_general_criteria_with_flooding, parse_offsets_csv, Bonjean, GzCurve, HullForm,
+    Hydrostatics, ImoVerdict, LoadingCondition,
 };
 
 /// The hull behind the calculation.
@@ -70,6 +70,7 @@ struct Options<'a> {
     kg: Option<f64>,
     fsm: Option<f64>,
     to_deg: Option<f64>,
+    flooding_deg: Option<f64>,
     csv_prefix: Option<&'a str>,
     svg: Option<&'a str>,
     strict: bool,
@@ -93,6 +94,7 @@ fn parse_options<'a>(rest: &[&'a str]) -> Result<Options<'a>, String> {
             "--kg" => o.kg = Some(number(a, it.next())?),
             "--fsm" => o.fsm = Some(number(a, it.next())?),
             "--to-deg" => o.to_deg = Some(number(a, it.next())?),
+            "--flooding-deg" => o.flooding_deg = Some(number(a, it.next())?),
             "--csv" => o.csv_prefix = Some(it.next().ok_or("--csv needs a file prefix")?),
             "--svg" => o.svg = Some(it.next().ok_or("--svg needs a path")?),
             "--strict" => o.strict = true,
@@ -150,12 +152,12 @@ pub fn run(rest: &[&str], json_mode: bool) -> Result<(), String> {
             cb: cb.unwrap_or(0.70),
             cwp: cwp.unwrap_or(0.85),
         };
-        if form.loa_m <= 0.0
-            || form.boa_m <= 0.0
-            || !(0.0..=1.0).contains(&form.cb)
-            || !(0.0..=1.0).contains(&form.cwp)
+        if !(form.loa_m.is_finite() && form.loa_m > 0.0)
+            || !(form.boa_m.is_finite() && form.boa_m > 0.0)
+            || !(form.cb > 0.0 && form.cb <= 1.0)
+            || !(form.cwp > 0.0 && form.cwp <= 1.0)
         {
-            return Err("hull: loa_m and boa_m must be positive and cb, cwp within 0..1".into());
+            return Err("hull: loa_m and boa_m must be positive and cb, cwp in (0, 1]".into());
         }
         Model::Prismatic(form)
     };
@@ -187,11 +189,30 @@ pub fn run(rest: &[&str], json_mode: bool) -> Result<(), String> {
     if draft <= 0.0 || fsm < 0.0 {
         return Err("draft must be positive and the free-surface moment not negative".into());
     }
+    if let Some(depth) = depth {
+        if draft >= depth {
+            return Err(format!(
+                "draft {draft} m must be below the hull depth {depth} m (hull.depth_m)"
+            ));
+        }
+    }
     let to_deg = o.to_deg.unwrap_or(60.0);
     if !(40.0..=180.0).contains(&to_deg) {
         return Err(
             "--to-deg must be between 40 and 180 (the criteria need the curve to 40°)".into(),
         );
+    }
+    if matches!(model, Model::Prismatic(_)) && to_deg > 80.0 {
+        return Err(
+            "--to-deg above 80 is not meaningful for the prismatic model (the wall-sided arm blows up with tan^2); use an offsets table for large angles"
+                .into(),
+        );
+    }
+    let flooding_deg = o.flooding_deg.or(lget("flooding_angle_deg"));
+    if let Some(f) = flooding_deg {
+        if !(f > 0.0 && f <= 180.0) {
+            return Err("the flooding angle must be in (0, 180] degrees".into());
+        }
     }
     let loading = LoadingCondition::new(draft, kg).with_free_surface_tm(fsm);
 
@@ -204,7 +225,20 @@ pub fn run(rest: &[&str], json_mode: bool) -> Result<(), String> {
     let gz = model
         .gz_curve(loading, to_deg)
         .ok_or("could not compute the GZ curve")?;
-    let verdict = imo_2008_general_criteria(&gz);
+    if gz
+        .points
+        .iter()
+        .any(|p| !p.gz_m.is_finite() || p.gz_m.abs() > 1.0e6)
+    {
+        return Err("the GZ curve is not finite: check the draft, KG and heel range".into());
+    }
+    let verdict = imo_2008_general_criteria_with_flooding(&gz, flooding_deg);
+    if matches!(model, Model::Prismatic(_)) {
+        notes.push(
+            "the prismatic wall-sided arm rises monotonically, so the max-GZ-angle and the 30-40 deg criteria are not meaningful here: use an offsets table for an actual verdict"
+                .into(),
+        );
+    }
     if gz
         .points
         .last()
@@ -301,11 +335,24 @@ fn print_report(
         ">= 0.055",
         verdict.area_to_30_deg >= 0.055,
     );
+    let limit = verdict.flooding_angle_deg.map_or(40.0, |f| f.min(40.0));
     row(
-        "area 0-40 deg",
+        &format!("area 0-{limit:.0} deg"),
         format!("{:.4} m.rad", verdict.area_to_40_deg),
         ">= 0.090",
         verdict.area_to_40_deg >= 0.090,
+    );
+    row(
+        &format!("area 30-{limit:.0} deg"),
+        format!("{:.4} m.rad", verdict.area_30_to_40_deg),
+        ">= 0.030",
+        verdict.area_30_to_40_deg >= 0.030 && limit >= 30.0,
+    );
+    row(
+        "GZ at 30 deg",
+        format!("{:.3} m", verdict.gz_at_30_deg_m),
+        ">= 0.20",
+        verdict.gz_at_30_deg_m >= 0.20,
     );
     row(
         "angle of max GZ",
@@ -401,6 +448,12 @@ fn json_report(
                 ("passed", Value::Bool(verdict.passed)),
                 ("area_to_30_deg_m_rad", num(verdict.area_to_30_deg)),
                 ("area_to_40_deg_m_rad", num(verdict.area_to_40_deg)),
+                ("area_30_to_40_deg_m_rad", num(verdict.area_30_to_40_deg)),
+                ("gz_at_30_deg_m", num(verdict.gz_at_30_deg_m)),
+                (
+                    "flooding_angle_deg",
+                    verdict.flooding_angle_deg.map_or(Value::Null, num),
+                ),
                 ("max_gz_heel_deg", num(verdict.max_gz_heel_deg)),
                 ("max_gz_m", num(verdict.max_gz_m)),
                 (
@@ -494,7 +547,11 @@ fn gz_svg(vessel: &str, gz: &GzCurve, verdict: &ImoVerdict) -> String {
         ));
         deg += 10.0;
     }
-    let y_step = if y_max - y_min > 4.0 { 1.0 } else { 0.5 };
+    // A step that keeps the gridline count bounded however large the span.
+    let mut y_step = if y_max - y_min > 4.0 { 1.0 } else { 0.5 };
+    while (y_max - y_min) / y_step > 20.0 {
+        y_step *= 2.0;
+    }
     let mut m = (y_min / y_step).ceil() * y_step;
     while m <= y_max + 1e-9 {
         let y = py(m);
@@ -667,5 +724,50 @@ mod tests {
         let csv = std::fs::read_to_string(data("wigley-offsets.csv")).expect("csv");
         let header = csv.lines().find(|l| !l.starts_with('#')).expect("header");
         assert_eq!(header, names.join(","));
+    }
+    fn temp_case(tag: &str, body: &str) -> String {
+        let dir = std::env::temp_dir().join(format!("tpt-yard-stab-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("case.json");
+        std::fs::write(&path, body).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    /// Phase 8 (8A10): the prismatic screen validates its inputs and caps
+    /// the scan instead of printing GZ ~1e32 or hanging the SVG axis.
+    #[test]
+    fn the_prismatic_screen_validates_inputs_and_caps_the_scan() {
+        let good = r#"{"hull":{"loa_m":100,"boa_m":16,"cb":0.7,"cwp":0.85,"depth_m":8},
+                       "loading":{"draft_m":5,"kg_m":6}}"#;
+        let ok = temp_case("ok", good);
+        assert!(run(&[&ok], true).is_ok());
+        // cb = 0 is not a hull.
+        let zero_cb = temp_case("cb0", &good.replace("\"cb\":0.7", "\"cb\":0"));
+        assert!(run(&[&zero_cb], true).is_err());
+        // Draft at or above the depth.
+        let deep = temp_case(
+            "deep",
+            r#"{"hull":{"loa_m":100,"boa_m":16,"cb":0.7,"cwp":0.85,"depth_m":8},
+                "loading":{"draft_m":9,"kg_m":6}}"#,
+        );
+        let err = run(&[&deep], true).unwrap_err();
+        assert!(err.contains("below the hull depth"), "{err}");
+        // 90 degrees on the wall-sided model is refused, not 1e32.
+        let err = run(&[&ok, "--to-deg", "90", "--svg", "target/unused.svg"], true).unwrap_err();
+        assert!(err.contains("prismatic"), "{err}");
+        // A flooding angle outside (0, 180] is refused.
+        assert!(run(&[&ok, "--flooding-deg", "0"], true).is_err());
+    }
+
+    /// Phase 8 (8A8): a hull whose GZ at 30 deg is under 0.20 m exits
+    /// non-zero under --strict, and the flooding angle is honoured.
+    #[test]
+    fn strict_catches_the_gz_at_30_and_honours_the_flooding_angle() {
+        let case = data("wigley.json");
+        // Wigley at KG 3.5 passes everything; a flooding angle of 20 deg
+        // (below 30) fails outright.
+        assert!(run(&[&case, "--strict"], true).is_ok());
+        let err = run(&[&case, "--strict", "--flooding-deg", "20"], true).unwrap_err();
+        assert!(err.contains("fail"), "{err}");
     }
 }

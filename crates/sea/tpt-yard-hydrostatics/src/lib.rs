@@ -163,8 +163,16 @@ pub struct ImoVerdict {
     pub passed: bool,
     /// Area under GZ to 30°, m·rad (criterion ≥ 0.055).
     pub area_to_30_deg: f64,
-    /// Area under GZ to 40°, m·rad (criterion ≥ 0.090).
+    /// Area under GZ to 40° — or to the flooding angle when that is
+    /// smaller — m·rad (criterion ≥ 0.090).
     pub area_to_40_deg: f64,
+    /// Area under GZ between 30° and 40° (or the flooding angle), m·rad
+    /// (criterion ≥ 0.030).
+    pub area_30_to_40_deg: f64,
+    /// Righting arm at 30° of heel, m (criterion ≥ 0.20 m at 30° or more).
+    pub gz_at_30_deg_m: f64,
+    /// Downflooding angle the areas were limited to, degrees, when given.
+    pub flooding_angle_deg: Option<f64>,
     /// Heel at maximum GZ, degrees (criterion ≥ 25°).
     pub max_gz_heel_deg: f64,
     /// Maximum GZ, m.
@@ -269,17 +277,40 @@ impl HullForm {
     }
 }
 
-/// The IMO 2008 IS Code general criteria on any GZ curve — the prismatic
-/// model's or one from hull offsets ([`Bonjean::gz_curve`]). The curve
-/// must reach 40° (and have at least two points); a shorter curve fails
-/// with a message rather than being extrapolated.
+/// The IMO 2008 IS Code general criteria (Part A, 2.2) on any GZ curve —
+/// the prismatic model's or one from hull offsets ([`Bonjean::gz_curve`]),
+/// with no downflooding limit. See
+/// [`imo_2008_general_criteria_with_flooding`] for the full set.
 pub fn imo_2008_general_criteria(gz: &GzCurve) -> ImoVerdict {
+    imo_2008_general_criteria_with_flooding(gz, None)
+}
+
+/// The IMO 2008 IS Code general criteria, all six:
+///
+/// 1. area under GZ to 30° ≥ 0.055 m·rad;
+/// 2. area to 40° — or to the downflooding angle `θf` if smaller —
+///    ≥ 0.090 m·rad;
+/// 3. area between 30° and 40° (or `θf`) ≥ 0.030 m·rad;
+/// 4. GZ ≥ 0.20 m at 30° of heel or more (checked at 30°);
+/// 5. the maximum GZ at 25° or more;
+/// 6. corrected initial GM ≥ 0.15 m.
+///
+/// A downflooding angle below 30° fails outright (the 30–40° area cannot
+/// exist). The curve must reach 40° (and have at least two points); a
+/// shorter curve fails with a message rather than being extrapolated.
+pub fn imo_2008_general_criteria_with_flooding(
+    gz: &GzCurve,
+    flooding_angle_deg: Option<f64>,
+) -> ImoVerdict {
     let reach = gz.points.last().map_or(0.0, |p| p.heel_deg);
     if gz.points.len() < 2 || reach < 40.0 {
         return ImoVerdict {
             passed: false,
             area_to_30_deg: 0.0,
             area_to_40_deg: 0.0,
+            area_30_to_40_deg: 0.0,
+            gz_at_30_deg_m: 0.0,
+            flooding_angle_deg,
             max_gz_heel_deg: 0.0,
             max_gz_m: 0.0,
             gm_corrected_m: gz.gm_corrected_m,
@@ -301,22 +332,26 @@ pub fn imo_2008_general_criteria(gz: &GzCurve) -> ImoVerdict {
         let t = (deg - a.heel_deg) / (b.heel_deg - a.heel_deg).max(1e-9);
         a.gz_m + t * (b.gz_m - a.gz_m)
     };
-    // Area by trapezoid on a fine grid.
+    // Exact area of the piecewise-linear curve from 0 to `limit` degrees
+    // (GZ in metres, dphi in radians): each point-to-point segment is
+    // clipped to the window and integrated as a trapezoid, so kinks that
+    // fall between sample angles cost nothing.
     let area_to = |limit: f64| -> f64 {
-        let n = 60;
-        let step = limit / n as f64;
-        (0..n)
-            .map(|i| {
-                // GZ is in metres, dφ in radians — no conversion of the
-                // ordinate.
-                let a = interp(limit * i as f64 / n as f64);
-                let b = interp(limit * (i + 1) as f64 / n as f64);
-                0.5 * (a + b) * step.to_radians()
+        gz.points
+            .windows(2)
+            .filter_map(|w| {
+                let (a, b) = (w[0].heel_deg.max(0.0), w[1].heel_deg.min(limit));
+                (b > a).then(|| 0.5 * (interp(a) + interp(b)) * (b - a).to_radians())
             })
             .sum::<f64>()
     };
+    let limit = flooding_angle_deg
+        .filter(|f| f.is_finite() && *f > 0.0)
+        .map_or(40.0, |f| f.min(40.0));
     let area_30 = area_to(30.0);
-    let area_40 = area_to(40.0);
+    let area_40 = area_to(limit);
+    let area_30_40 = (area_40 - area_30).max(0.0);
+    let gz_30 = interp(30.0);
     // Ties resolve to the LARGEST heel (a flat curve attains its max
     // at every angle, so "max GZ at >= 25 deg" must hold).
     let (max_gz, max_heel) = gz.points.iter().fold((0.0f64, 0.0f64), |(gm, gh), p| {
@@ -330,8 +365,22 @@ pub fn imo_2008_general_criteria(gz: &GzCurve) -> ImoVerdict {
     if area_30 < 0.055 {
         failures.push(format!("area to 30° {area_30:.4} < 0.055 m·rad"));
     }
+    if limit < 30.0 {
+        failures.push(format!(
+            "downflooding at {limit:.1}° is below 30°: the 30-40° area cannot be met"
+        ));
+    }
     if area_40 < 0.090 {
-        failures.push(format!("area to 40° {area_40:.4} < 0.090 m·rad"));
+        failures.push(format!("area to {limit:.0}° {area_40:.4} < 0.090 m·rad"));
+    }
+    if area_30_40 < 0.030 {
+        failures.push(format!(
+            "area {:.0}-{limit:.0}° {area_30_40:.4} < 0.030 m·rad",
+            30.0
+        ));
+    }
+    if gz_30 < 0.20 {
+        failures.push(format!("GZ at 30° {gz_30:.3} m < 0.20 m"));
     }
     if max_heel < 25.0 {
         failures.push(format!("max GZ at {max_heel:.0}° < 25°"));
@@ -343,6 +392,9 @@ pub fn imo_2008_general_criteria(gz: &GzCurve) -> ImoVerdict {
         passed: failures.is_empty(),
         area_to_30_deg: area_30,
         area_to_40_deg: area_40,
+        area_30_to_40_deg: area_30_40,
+        gz_at_30_deg_m: gz_30,
+        flooding_angle_deg,
         max_gz_heel_deg: max_heel,
         max_gz_m: max_gz,
         gm_corrected_m: gz.gm_corrected_m,
@@ -494,15 +546,17 @@ pub struct GirderScantling {
     pub required_modulus_m3: f64,
 }
 
-/// Higher-strength steel factor `k` per IACS UR S: 1.0 for ordinary
-/// strength (mild) steel, 0.91 for AH32, 0.78 for AH36, 0.72 for AH40.
-/// The CSR hull-girder allowable follows as `175 / k` MPa.
+/// Higher-strength steel factor `k` per IACS UR S4 / CSR, by the grade's
+/// minimum yield: 1.0 for ordinary-strength steel (ReH 235), 0.78 for
+/// the 32 grades (ReH 315), 0.72 for the 36 grades (ReH 355) and 0.68
+/// for the 40 grades (ReH 390). The CSR hull-girder allowable follows as
+/// `175 / k` MPa.
 pub fn high_strength_factor(grade: &str) -> Option<f64> {
     match grade {
         "MS" | "A" | "B" | "D" | "AH" => Some(1.0),
-        "AH32" | "DH32" | "EH32" => Some(0.91),
-        "AH36" | "DH36" | "EH36" => Some(0.78),
-        "AH40" | "DH40" | "EH40" => Some(0.72),
+        "AH32" | "DH32" | "EH32" => Some(0.78),
+        "AH36" | "DH36" | "EH36" => Some(0.72),
+        "AH40" | "DH40" | "EH40" => Some(0.68),
         _ => None,
     }
 }
@@ -1271,14 +1325,16 @@ mod tests {
         let hull = feeder(); // 140 x 22 x Cb 0.72
         let swbm = 42_000.0; // kN m, a loaded bulk-carrier-ish SWBM
 
-        // AH36: k = 0.78, allowable = 224.36 MPa.
+        // AH36: k = 0.72, allowable = 243.06 MPa.
         let k = high_strength_factor("AH36").expect("AH36 known");
-        assert!((k - 0.78).abs() < 1e-12);
+        assert!((k - 0.72).abs() < 1e-12);
+        assert_eq!(high_strength_factor("AH32"), Some(0.78));
+        assert_eq!(high_strength_factor("EH40"), Some(0.68));
         let req = hull.scantling_requirement(swbm, k).expect("in rule range");
         let cw = 10.75 - (1.6_f64).powf(1.5);
         let sag = 0.11 * cw * 140.0 * 140.0 * 22.0 * 1.42;
         let hog = 0.13 / 0.11 * sag;
-        let allowable = 175.0 / 0.78;
+        let allowable = 175.0 / 0.72;
         let w_sag = (swbm + sag) / allowable * 1e-3;
         let w_hog = (swbm + hog) / allowable * 1e-3;
         assert!((req.wave_sagging_knm - sag).abs() < 1e-6);
@@ -1286,9 +1342,9 @@ mod tests {
         // Sagging governs here (larger wave moment ratio).
         assert!(req.required_modulus_m3 > w_hog - 1e-12);
         // AH36's higher allowable shrinks the required modulus: mild
-        // steel needs 1/0.78 times as much section.
+        // steel needs 1/0.72 times as much section.
         let mild = hull.scantling_requirement(swbm, 1.0).unwrap();
-        assert!((mild.required_modulus_m3 / req.required_modulus_m3 - 1.0 / 0.78).abs() < 1e-9);
+        assert!((mild.required_modulus_m3 / req.required_modulus_m3 - 1.0 / 0.72).abs() < 1e-9);
 
         // Outside the rule range / bad inputs: None.
         let short = HullForm {
@@ -1887,5 +1943,107 @@ mod heel_solver_tests {
         // Offset far beyond any arm with no BM: no root below 90 deg
         // would need TCG > GM tan(89.9); a huge offset capsizes.
         assert_eq!(heel_equilibrium_deg(0.1, 0.0, 1.0e6), 90.0);
+    }
+}
+
+#[cfg(test)]
+mod imo_full_criteria_tests {
+    use super::*;
+
+    fn curve(points: &[(f64, f64)]) -> GzCurve {
+        GzCurve {
+            points: points
+                .iter()
+                .map(|&(heel_deg, gz_m)| GzPoint { heel_deg, gz_m })
+                .collect(),
+            gm_corrected_m: 1.0,
+            free_surface_correction_m: 0.0,
+        }
+    }
+
+    /// Regression (Phase 8, 8A8): a curve that met the old four criteria
+    /// (A30 0.077, A40 0.110, max GZ at 30 deg, GM 1.0) but has only
+    /// 0.195 m at 30 deg must fail the 0.20 m criterion.
+    #[test]
+    fn gz_at_30_degrees_must_reach_0_20_m() {
+        let c = curve(&[
+            (0.0, 0.0),
+            (5.0, 0.08),
+            (10.0, 0.14),
+            (15.0, 0.18),
+            (20.0, 0.19),
+            (25.0, 0.195),
+            (30.0, 0.195),
+            (35.0, 0.19),
+            (40.0, 0.17),
+        ]);
+        let v = imo_2008_general_criteria(&c);
+        assert!(v.area_to_30_deg >= 0.055 && v.area_to_40_deg >= 0.090);
+        assert!(v.max_gz_heel_deg >= 25.0);
+        assert!((v.gz_at_30_deg_m - 0.195).abs() < 1e-12);
+        assert!(!v.passed);
+        assert_eq!(v.failures.len(), 1, "{:?}", v.failures);
+        assert!(v.failures[0].contains("0.20 m"));
+    }
+
+    /// Regression (8A8): GZ collapsing between 30 and 40 deg passed the old
+    /// areas but its 30-40 deg area is 0.0214 m.rad < 0.030.
+    #[test]
+    fn area_between_30_and_40_degrees_is_checked() {
+        let c = curve(&[
+            (0.0, 0.0),
+            (5.0, 0.10),
+            (10.0, 0.20),
+            (15.0, 0.27),
+            (20.0, 0.30),
+            (25.0, 0.31),
+            (30.0, 0.25),
+            (35.0, 0.12),
+            (40.0, 0.0),
+        ]);
+        let v = imo_2008_general_criteria(&c);
+        assert!(v.area_to_30_deg >= 0.055 && v.area_to_40_deg >= 0.090);
+        let hand = (0.185 + 0.06) * 5.0_f64.to_radians();
+        assert!(
+            (v.area_30_to_40_deg - hand).abs() < 1e-9,
+            "{}",
+            v.area_30_to_40_deg
+        );
+        assert!(!v.passed);
+        assert!(
+            v.failures.iter().any(|f| f.contains("0.030")),
+            "{:?}",
+            v.failures
+        );
+    }
+
+    /// A healthy curve passes everything, and a downflooding angle limits
+    /// the areas: flooding at 35 deg cuts the 0-40 area to the 0-35 one and
+    /// below 30 deg fails outright.
+    #[test]
+    fn downflooding_angle_limits_the_areas() {
+        let c = curve(&[
+            (0.0, 0.0),
+            (10.0, 0.3),
+            (20.0, 0.6),
+            (30.0, 0.8),
+            (40.0, 0.85),
+            (50.0, 0.8),
+        ]);
+        let open = imo_2008_general_criteria(&c);
+        assert!(open.passed, "{:?}", open.failures);
+        assert_eq!(open.flooding_angle_deg, None);
+        let flooded = imo_2008_general_criteria_with_flooding(&c, Some(35.0));
+        assert!(flooded.passed, "{:?}", flooded.failures);
+        assert!(flooded.area_to_40_deg < open.area_to_40_deg);
+        assert!(flooded.area_30_to_40_deg < open.area_30_to_40_deg);
+        // Tight limit: flooding at 31 deg leaves a 30-31 deg area of about
+        // 0.8 m x 1 deg = 0.014 m.rad < 0.030.
+        let tight = imo_2008_general_criteria_with_flooding(&c, Some(31.0));
+        assert!(!tight.passed);
+        assert!(tight.failures.iter().any(|f| f.contains("0.030")));
+        let early = imo_2008_general_criteria_with_flooding(&c, Some(25.0));
+        assert!(!early.passed);
+        assert!(early.failures.iter().any(|f| f.contains("below 30")));
     }
 }

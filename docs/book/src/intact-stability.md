@@ -65,9 +65,13 @@ station to deck height: the section is closed by a flat deck there.
   section is clipped exactly against the inclined waterline, the plane is
   solved so the displaced volume equals the upright volume, and
   `GZ = KN − (KG + FSC)·sin φ` with `KN = −y_B cos φ + z_B sin φ`.
-- **IMO 2008 criteria**: areas to 30° and 40°, angle of maximum GZ and
-  corrected GM, with a pass/fail row each. `--strict` turns a failure into
-  exit status 1.
+- **IMO 2008 criteria** (IS Code part A, 2.2): area 0-30° >= 0.055 m·rad;
+  area 0-40° (or to the downflooding angle if smaller) >= 0.090 m·rad; area
+  30-40° (or to downflooding) >= 0.030 m·rad; GZ >= 0.20 m at 30°; angle of
+  maximum GZ >= 25°; corrected GM >= 0.15 m, with a pass/fail row each. Give
+  the downflooding angle with `--flooding-deg` (or `loading.flooding_angle_deg`
+  in the case file); below 30° fails outright. `--strict` turns a failure into
+  exit status 1. The areas integrate the piecewise-linear GZ curve exactly.
 
 ## Outputs
 

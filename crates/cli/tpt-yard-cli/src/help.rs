@@ -15,7 +15,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "stability",
-        "stability CASE.json [--offsets F.csv] [--draft M] [--kg M] [--fsm TM] [--to-deg DEG] [--csv PREFIX] [--svg F.svg] [--strict] [--json]",
+        "stability CASE.json [--offsets F.csv] [--draft M] [--kg M] [--fsm TM] [--to-deg DEG] [--flooding-deg DEG] [--csv PREFIX] [--svg F.svg] [--strict] [--json]",
         "hydrostatics, GZ curve and IMO 2008 criteria from hull offsets or prismatic coefficients",
     ),
     (

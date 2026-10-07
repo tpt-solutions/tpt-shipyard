@@ -12,7 +12,7 @@ combines the supplied still-water bending moment with the IACS CSR
 wave-induced moments ([`wave_bending_moment`](tpt_yard_hydrostatics::HullForm::wave_bending_moment))
 against the `175/k` normal-stress allowable and returns the required
 section modulus. [`high_strength_factor`](tpt_yard_hydrostatics::high_strength_factor)
-maps steel grades to `k` (MS 1.0, AH32 0.91, AH36 0.78, AH40 0.72).
+maps steel grades to `k` by minimum yield (MS 1.0, AH32 0.78, AH36 0.72, AH40 0.68).
 
 ## Local plating
 
