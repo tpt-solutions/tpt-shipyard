@@ -15,7 +15,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "stability",
-        "stability CASE.json [--offsets F.csv] [--draft M] [--kg M] [--fsm TM] [--to-deg DEG] [--flooding-deg DEG] [--csv PREFIX] [--svg F.svg] [--strict] [--json]",
+        "stability CASE.json [--offsets F.csv] [--draft M] [--kg M] [--fsm TM] [--to-deg DEG] [--flooding-deg DEG] [--csv PREFIX] [--svg F.svg] [--strict] [--force] [--json]",
         "hydrostatics, GZ curve and IMO 2008 criteria from hull offsets or prismatic coefficients",
     ),
     (
@@ -35,7 +35,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "risk",
-        "risk FILE.json [--samples N] [--uncertainty F] [--gate ...] [--weather F.json] [--launch-method M] [--max-sea-state N] [--json]",
+        "risk FILE.json [--samples N] [--uncertainty F] [--seed N] [--gate id=hours[:slip]]... [--weather F.json] [--weather-activity ID] [--launch-method slipway|drydock|side|shiplift] [--max-sea-state 0-9] [--vessel-mass-t T] [--way-length-m M] [--friction F] [--breadth-m M] [--json]",
         "Monte Carlo schedule risk with delivery and weather gates",
     ),
     (
@@ -45,22 +45,22 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "new",
-        "new <sea|space> [NAME] [--json]",
+        "new <sea|space|container-ship|submarine|orbital-truss|habitat|solar-array> [NAME] [--out FILE] [--force] [--json]",
         "print a scaffolded project JSON from the workspace templates",
     ),
     (
         "export",
-        "export MANIFEST.json [--gltf out.gltf] [--ifc out.ifc] [--json]",
+        "export MANIFEST.json [--gltf out.gltf] [--ifc out.ifc] [--force] [--json]",
         "block geometry as glTF 2.0 and/or IFC4 STEP",
     ),
     (
         "html-report",
-        "html-report PROJECT.json [--out F.html] [--structure F.json] [--gltf-viewer F.gltf]",
+        "html-report PROJECT.json [--out F.html] [--structure F.json] [--gltf-viewer F.gltf] [--force] [--json]",
         "self-contained HTML calculation package",
     ),
     (
         "pdf-report",
-        "pdf-report PROJECT.json [--out F.pdf]",
+        "pdf-report PROJECT.json [--out F.pdf] [--force] [--json]",
         "PDF calculation package",
     ),
 ];
@@ -73,6 +73,8 @@ pub fn overview() -> String {
     }
     s.push_str(
         "\nEvery command takes --json for machine-readable output.\n\
+         Output files are never overwritten without --force; missing folders are created.\n\
+         Exit codes: 0 ok, 1 a check failed (validate, --strict), 2 usage error, 3 runtime or I/O failure.\n\
          Run `tpt-yard <command> --help` for a command's options.\n",
     );
     s
@@ -89,6 +91,10 @@ pub fn usage_of(cmd: &str) -> Option<String> {
 /// The known command closest to a mistyped one: a prefix match, or within
 /// two edits.
 pub fn suggest(unknown: &str) -> Option<&'static str> {
+    // An empty or tiny string is a prefix of everything: no useful hint.
+    if unknown.chars().count() < 2 {
+        return None;
+    }
     COMMANDS
         .iter()
         .map(|(name, _, _)| *name)
@@ -120,6 +126,7 @@ mod tests {
         assert_eq!(suggest("sched"), Some("schedule"));
         assert_eq!(suggest("valdiate"), Some("validate"));
         assert_eq!(suggest("zzzzzz"), None);
+        assert_eq!(suggest(""), None, "an empty string matches everything");
     }
 
     #[test]

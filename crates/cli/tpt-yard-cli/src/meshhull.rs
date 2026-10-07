@@ -8,6 +8,12 @@
 //! (no tumblehome pockets or tunnels) and for either a whole-hull mesh or
 //! a half mesh on one side of the centreline.
 //!
+//! The mesh is taken as a *whole* hull (the centreline is the middle of its
+//! beam, so a hull modelled over y = 0..B is centred first); `--half` says it
+//! is one half with the centreline on y = 0. `--baseline Z` and `--depth M`
+//! cut away keels, skegs, rudders and superstructure that would otherwise
+//! set the baseline and depth.
+//!
 //! Axes: the hull length runs along the mesh X axis (bow towards `+x`
 //! unless `--bow -x`), up is `--up z` (default) or `--up y`. The baseline is
 //! the lowest point of the mesh and midship is the middle of its length.
@@ -118,9 +124,21 @@ struct Options {
     up_y: bool,
     bow_neg: bool,
     scale: f64,
+    /// `--scale` was given explicitly (confirms the unit).
+    scale_given: bool,
     stations: usize,
     levels: usize,
+    /// The mesh is one half of the hull, centreline on y = 0.
+    half: bool,
+    /// Height of the keel line in the (scaled) mesh vertical axis, m.
+    baseline: Option<f64>,
+    /// Deck height above the baseline, m.
+    depth: Option<f64>,
 }
+
+/// The longest ship that is plausible in metres; beyond this the mesh is
+/// almost certainly in millimetres.
+const MAX_PLAUSIBLE_LOA_M: f64 = 600.0;
 
 /// Slices the mesh and returns `(csv, loa, beam, depth)` in metres.
 fn mesh_to_offsets(mesh: &Mesh, o: &Options) -> Result<(String, f64, f64, f64), String> {
@@ -146,25 +164,53 @@ fn mesh_to_offsets(mesh: &Mesh, o: &Options) -> Result<(String, f64, f64, f64), 
         .map(|t| [map(t[0]), map(t[1]), map(t[2])])
         .collect();
     let (mut lmin, mut lmax, mut vmin, mut vmax) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
-    let mut tmax = 0.0_f64;
+    let (mut tmin, mut tmax) = (f64::MAX, f64::MIN);
     for p in tris.iter().flatten() {
         lmin = lmin.min(p[0]);
         lmax = lmax.max(p[0]);
         vmin = vmin.min(p[2]);
         vmax = vmax.max(p[2]);
-        tmax = tmax.max(p[1].abs());
+        tmin = tmin.min(p[1]);
+        tmax = tmax.max(p[1]);
     }
-    let (loa, depth) = (lmax - lmin, vmax - vmin);
-    if loa <= 0.0 || depth <= 0.0 || tmax <= 0.0 {
-        return Err("the mesh is flat along length, height or beam — check --up".into());
+    let loa = lmax - lmin;
+    if !o.scale_given && loa > MAX_PLAUSIBLE_LOA_M {
+        return Err(format!(
+            "the mesh is {loa:.0} m long: it looks like millimetres. Pass --scale 0.001 (or --scale 1 to confirm metres)"
+        ));
+    }
+    // Keel line and deck: the lowest/highest mesh point unless given.
+    let z0 = o.baseline.unwrap_or(vmin);
+    let depth = o.depth.unwrap_or(vmax - z0);
+    // Whole hull: centre on the middle of its beam; half hull: on y = 0.
+    let (centre, beam) = if o.half {
+        (0.0, 2.0 * tmin.abs().max(tmax.abs()))
+    } else {
+        ((tmin + tmax) / 2.0, tmax - tmin)
+    };
+    if loa <= 0.0 || depth.is_nan() || depth <= 0.0 || beam.is_nan() || beam <= 0.0 {
+        return Err(
+            "the mesh is flat along length, height or beam (or --baseline/--depth leave no hull) — check --up"
+                .into(),
+        );
     }
     let eps = 1e-6 * loa;
+    let n_levels = o.levels;
+    let dz = depth / (n_levels - 1) as f64;
     let mut csv = String::from("station_x_m,draft_m,half_breadth_m\n");
     for i in 0..o.stations {
         let f = i as f64 / (o.stations - 1) as f64;
         let x = lmin + eps + f * (loa - 2.0 * eps);
-        // Segments of the section in (trans, vert).
-        let mut segs: Vec<([f64; 2], [f64; 2])> = Vec::new();
+        // Widest crossing of the section at each waterline, found by
+        // walking every section segment across the levels it spans.
+        let mut half_breadth = vec![0.0_f64; n_levels];
+        let mut hit = |zrel: f64, y: f64| {
+            let k = (zrel / dz).round();
+            if k >= 0.0 && (k as usize) < n_levels && (zrel - k * dz).abs() < 1e-9 * depth {
+                let slot = &mut half_breadth[k as usize];
+                *slot = slot.max((y - centre).abs());
+            }
+        };
         for t in &tris {
             let mut pts: Vec<[f64; 2]> = Vec::new();
             for e in 0..3 {
@@ -179,30 +225,31 @@ fn mesh_to_offsets(mesh: &Mesh, o: &Options) -> Result<(String, f64, f64, f64), 
                 }
             }
             for w in pts.windows(2) {
-                segs.push((w[0], w[1]));
-            }
-        }
-        let xm = x - (lmin + lmax) / 2.0;
-        for k in 0..o.levels {
-            let z = depth * k as f64 / (o.levels - 1) as f64;
-            let zv = vmin + z;
-            let mut y = 0.0_f64;
-            for (a, b) in &segs {
-                let (lo, hi) = (a[1].min(b[1]), a[1].max(b[1]));
-                if zv < lo - 1e-12 || zv > hi + 1e-12 {
+                let (a, b) = (w[0], w[1]);
+                let (lo, hi) = (a[1].min(b[1]) - z0, a[1].max(b[1]) - z0);
+                if hi < -1e-9 * depth || lo > depth * (1.0 + 1e-9) {
                     continue;
                 }
                 if hi - lo < 1e-12 {
-                    y = y.max(a[0].abs()).max(b[0].abs());
-                } else {
-                    let u = ((zv - a[1]) / (b[1] - a[1])).clamp(0.0, 1.0);
-                    y = y.max((a[0] + u * (b[0] - a[0])).abs());
+                    hit(lo, a[0]);
+                    hit(lo, b[0]);
+                    continue;
+                }
+                let k0 = ((lo.max(0.0)) / dz).ceil() as usize;
+                let k1 = ((hi.min(depth)) / dz).floor() as usize;
+                for k in k0..=k1.min(n_levels - 1) {
+                    let zrel = k as f64 * dz;
+                    let u = ((zrel + z0 - a[1]) / (b[1] - a[1])).clamp(0.0, 1.0);
+                    hit(zrel, a[0] + u * (b[0] - a[0]));
                 }
             }
-            csv.push_str(&format!("{xm:.4},{z:.4},{y:.5}\n"));
+        }
+        let xm = x - (lmin + lmax) / 2.0;
+        for (k, y) in half_breadth.iter().enumerate() {
+            csv.push_str(&format!("{xm:.4},{:.4},{y:.5}\n", k as f64 * dz));
         }
     }
-    Ok((csv, loa, 2.0 * tmax, depth))
+    Ok((csv, loa, beam, depth))
 }
 
 pub fn run(rest: &[&str], json_mode: bool) -> Result<(), String> {
@@ -212,8 +259,12 @@ pub fn run(rest: &[&str], json_mode: bool) -> Result<(), String> {
         up_y: false,
         bow_neg: false,
         scale: 1.0,
+        scale_given: false,
         stations: 21,
         levels: 41,
+        half: false,
+        baseline: None,
+        depth: None,
     };
     let (mut name, mut out_dir) = (None::<String>, ".".to_string());
     let (mut draft, mut kg) = (None::<f64>, None::<f64>);
@@ -247,7 +298,21 @@ pub fn run(rest: &[&str], json_mode: bool) -> Result<(), String> {
                     ))
                 }
             },
-            "--scale" => o.scale = num(a, it.next())?,
+            "--scale" => {
+                o.scale = num(a, it.next())?;
+                o.scale_given = true;
+            }
+            "--half" => o.half = true,
+            "--baseline" => {
+                let v = it.next().ok_or("--baseline needs a value")?;
+                o.baseline = Some(
+                    v.parse::<f64>()
+                        .ok()
+                        .filter(|n| n.is_finite())
+                        .ok_or(format!("--baseline needs a number, got '{v}'"))?,
+                );
+            }
+            "--depth" => o.depth = Some(num(a, it.next())?),
             "--stations" => {
                 o.stations = num(a, it.next())? as usize;
                 if !(3..=201).contains(&o.stations) {
@@ -296,6 +361,15 @@ pub fn run(rest: &[&str], json_mode: bool) -> Result<(), String> {
     let hs = hull
         .hydrostatics(draft)
         .ok_or("the hull has no displacement at that draft")?;
+    if let Some(n) = &name {
+        if n.is_empty()
+            || !n
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err("--name may only use letters, digits, '-' and '_'".into());
+        }
+    }
     let name = name.unwrap_or_else(|| {
         Path::new(file)
             .file_stem()
@@ -331,8 +405,11 @@ pub fn run(rest: &[&str], json_mode: bool) -> Result<(), String> {
     );
     std::fs::write(&csv_path, format!("{header}{csv}"))
         .map_err(|e| format!("writing {}: {e}", csv_path.display()))?;
+    let vessel = format!("{name} ({loa:.2} x {beam:.2} x {depth:.2} m)");
     let case = format!(
-        "{{\n  \"vessel\": \"{name} ({loa:.2} x {beam:.2} x {depth:.2} m)\",\n  \"offsets_csv\": \"{csv_name}\",\n  \"loading\": {{ \"draft_m\": {draft}, \"kg_m\": {kg:.3}, \"free_surface_moment_tm\": 0.0 }}\n}}\n"
+        "{{\n  \"vessel\": \"{}\",\n  \"offsets_csv\": \"{}\",\n  \"loading\": {{ \"draft_m\": {draft}, \"kg_m\": {kg:.3}, \"free_surface_moment_tm\": 0.0 }}\n}}\n",
+        crate::args::json_escape(&vessel),
+        crate::args::json_escape(&csv_name),
     );
     std::fs::write(&case_path, case)
         .map_err(|e| format!("writing {}: {e}", case_path.display()))?;
@@ -382,8 +459,12 @@ mod tests {
             up_y: false,
             bow_neg: false,
             scale: 1.0,
+            scale_given: false,
             stations: 21,
             levels: 41,
+            half: false,
+            baseline: None,
+            depth: None,
         }
     }
 
@@ -499,6 +580,118 @@ mod tests {
         );
         assert!(run(&["hull.txt"], true).is_err());
         assert!(run(&[&o, "--up", "w"], true).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+    /// Shifts every vertex of an OBJ by `dy` along y.
+    fn shift_y(obj: &str, dy: f64) -> String {
+        obj.lines()
+            .map(|l| {
+                let p: Vec<&str> = l.split_whitespace().collect();
+                if p.first() == Some(&"v") {
+                    let y: f64 = p[2].parse().unwrap();
+                    format!("v {} {} {}\n", p[1], y + dy, p[3])
+                } else {
+                    format!("{l}\n")
+                }
+            })
+            .collect()
+    }
+
+    /// 8B10: a hull modelled over y = 0..B is centred, not given twice its
+    /// beam; `--half` reads a half mesh with the centreline on y = 0.
+    #[test]
+    fn offset_and_half_meshes_give_the_right_beam() {
+        let full =
+            mesh_to_offsets(&parse_obj(&box_obj(60.0, 14.0, 4.5)).unwrap(), &opts()).unwrap();
+        let offset = parse_obj(&shift_y(&box_obj(60.0, 14.0, 4.5), 7.0)).unwrap();
+        let moved = mesh_to_offsets(&offset, &opts()).unwrap();
+        assert!((moved.2 - 14.0).abs() < 1e-9, "beam {}", moved.2);
+        assert_eq!(moved.0, full.0, "same offsets once centred");
+        // Half hull: y = 0..7 with the centreline on y = 0.
+        let half_mesh = parse_obj(&shift_y(&box_obj(60.0, 7.0, 4.5), 3.5)).unwrap();
+        let half = Options {
+            half: true,
+            ..opts()
+        };
+        let (csv, _, beam, _) = mesh_to_offsets(&half_mesh, &half).unwrap();
+        assert!((beam - 2.0 * 7.0).abs() < 1e-9, "beam {beam}");
+        let hs = tpt_yard_hydrostatics::parse_offsets_csv(&csv)
+            .unwrap()
+            .hydrostatics(2.0)
+            .unwrap();
+        // |y| max of the y = 0..7 box is 7: a 14 m beam box.
+        assert!((hs.displacement_t - 1.025 * 60.0 * 14.0 * 2.0).abs() < 1e-3 * 1722.0);
+    }
+
+    /// 8B10: a millimetre mesh is refused unless the unit is confirmed.
+    #[test]
+    fn millimetre_meshes_need_an_explicit_scale() {
+        let mm = parse_obj(&box_obj(60_000.0, 14_000.0, 4_500.0)).unwrap();
+        let err = mesh_to_offsets(&mm, &opts()).unwrap_err();
+        assert!(
+            err.contains("millimetres") && err.contains("--scale 0.001"),
+            "{err}"
+        );
+        let ok = Options {
+            scale: 0.001,
+            scale_given: true,
+            ..opts()
+        };
+        let (_, loa, beam, depth) = mesh_to_offsets(&mm, &ok).unwrap();
+        assert!(
+            (loa - 60.0).abs() < 1e-9 && (beam - 14.0).abs() < 1e-9 && (depth - 4.5).abs() < 1e-9
+        );
+    }
+
+    /// 8B10: `--baseline` and `--depth` cut away a skeg and a superstructure
+    /// that would set the baseline and depth.
+    #[test]
+    fn baseline_and_depth_trim_appendages() {
+        // A box hull 0..4.5 plus a 1 m skeg below (z -1..0) is the same
+        // mesh as the hull plus extra triangles: emulate by shifting the
+        // box down by 1 and cutting at z = 0.
+        let obj = box_obj(60.0, 14.0, 5.5)
+            .lines()
+            .map(|l| {
+                let p: Vec<&str> = l.split_whitespace().collect();
+                if p.first() == Some(&"v") {
+                    let z: f64 = p[3].parse().unwrap();
+                    format!("v {} {} {}\n", p[1], p[2], z - 1.0)
+                } else {
+                    format!("{l}\n")
+                }
+            })
+            .collect::<String>();
+        let mesh = parse_obj(&obj).unwrap();
+        let trimmed = Options {
+            baseline: Some(0.0),
+            depth: Some(4.5),
+            ..opts()
+        };
+        let (csv, _, _, depth) = mesh_to_offsets(&mesh, &trimmed).unwrap();
+        assert!((depth - 4.5).abs() < 1e-12);
+        let hs = tpt_yard_hydrostatics::parse_offsets_csv(&csv)
+            .unwrap()
+            .hydrostatics(2.0)
+            .unwrap();
+        assert!((hs.displacement_t - 1.025 * 60.0 * 14.0 * 2.0).abs() < 1e-3 * 1722.0);
+        // Without the trim the lowest point (z = -1) is the baseline.
+        let (_, _, _, d_all) = mesh_to_offsets(&mesh, &opts()).unwrap();
+        assert!((d_all - 5.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn names_that_would_break_the_case_json_are_refused() {
+        let dir = std::env::temp_dir().join(format!("tpt-yard-name-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let obj = dir.join("h.obj");
+        std::fs::write(&obj, box_obj(60.0, 14.0, 4.5)).unwrap();
+        let o = obj.to_string_lossy().into_owned();
+        let out = dir.join("out").to_string_lossy().into_owned();
+        for bad in ["a\"b", "a\\b", ""] {
+            let err = run(&[&o, "--name", bad, "--out", &out], true).unwrap_err();
+            assert!(err.contains("--name"), "{bad}: {err}");
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 }

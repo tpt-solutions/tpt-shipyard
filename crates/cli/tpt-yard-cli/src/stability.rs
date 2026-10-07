@@ -74,6 +74,7 @@ struct Options<'a> {
     csv_prefix: Option<&'a str>,
     svg: Option<&'a str>,
     strict: bool,
+    force: bool,
 }
 
 fn parse_options<'a>(rest: &[&'a str]) -> Result<Options<'a>, String> {
@@ -98,6 +99,7 @@ fn parse_options<'a>(rest: &[&'a str]) -> Result<Options<'a>, String> {
             "--csv" => o.csv_prefix = Some(it.next().ok_or("--csv needs a file prefix")?),
             "--svg" => o.svg = Some(it.next().ok_or("--svg needs a path")?),
             "--strict" => o.strict = true,
+            "--force" => o.force = true,
             flag if flag.starts_with("--") => return Err(format!("unknown option '{flag}'")),
             other => {
                 if path.replace(other).is_some() {
@@ -257,11 +259,10 @@ pub fn run(rest: &[&str], json_mode: bool) -> Result<(), String> {
     }
 
     if let Some(prefix) = o.csv_prefix {
-        write_csv(prefix, &model, &hs, &gz)?;
+        write_csv(prefix, &model, &hs, &gz, o.force)?;
     }
     if let Some(svg_path) = o.svg {
-        std::fs::write(svg_path, gz_svg(&vessel, &gz, &verdict))
-            .map_err(|e| format!("writing {svg_path}: {e}"))?;
+        crate::args::write_output(svg_path, gz_svg(&vessel, &gz, &verdict).as_bytes(), o.force)?;
     }
 
     if json_mode {
@@ -274,7 +275,8 @@ pub fn run(rest: &[&str], json_mode: bool) -> Result<(), String> {
     }
     if o.strict && !verdict.passed {
         return Err(format!(
-            "IMO 2008 criteria failed: {}",
+            "{}IMO 2008 criteria failed: {}",
+            crate::args::CHECK_PREFIX,
             verdict.failures.join("; ")
         ));
     }
@@ -478,7 +480,13 @@ fn json_report(
 
 /// `PREFIX-hydrostatics.csv` (a table around the design draft) and
 /// `PREFIX-gz.csv` (the GZ curve).
-fn write_csv(prefix: &str, model: &Model, hs: &Hydrostatics, gz: &GzCurve) -> Result<(), String> {
+fn write_csv(
+    prefix: &str,
+    model: &Model,
+    hs: &Hydrostatics,
+    gz: &GzCurve,
+    force: bool,
+) -> Result<(), String> {
     let mut table = String::from(
         "draft_m,displacement_t,kb_m,km_m,lcb_m,lcf_m,tpc_t_cm,mct1cm_tm_cm,waterplane_area_m2\n",
     );
@@ -505,7 +513,7 @@ fn write_csv(prefix: &str, model: &Model, hs: &Hydrostatics, gz: &GzCurve) -> Re
     }
     for (suffix, body) in [("hydrostatics", table), ("gz", curve)] {
         let path = format!("{prefix}-{suffix}.csv");
-        std::fs::write(&path, body).map_err(|e| format!("writing {path}: {e}"))?;
+        crate::args::write_output(&path, body.as_bytes(), force)?;
     }
     Ok(())
 }
