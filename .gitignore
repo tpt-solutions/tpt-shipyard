@@ -47,3 +47,6 @@ docs/book/book/
 # (third-party geometry, not redistributed here)
 /test-data/benchmarks/
 /dist/
+
+# Claude Code agent worktrees
+/.claude/worktrees/
