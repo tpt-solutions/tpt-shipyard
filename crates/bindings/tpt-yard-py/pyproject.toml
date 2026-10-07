@@ -1,0 +1,21 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "tpt-yard"
+version = "0.1.0"
+description = "Python bindings for the tpt-shipyard construction engine: digital twin, hydrostatics and stability from hull offsets, scheduling"
+readme = "README.md"
+license = { text = "MIT OR Apache-2.0" }
+requires-python = ">=3.9"
+classifiers = [
+  "Programming Language :: Rust",
+  "License :: OSI Approved :: MIT License",
+  "License :: OSI Approved :: Apache Software License",
+]
+
+[tool.maturin]
+module-name = "tpt_yard_py"
+# abi3 is not enabled (pyo3 0.22 builds per-interpreter wheels); CI builds
+# one wheel per supported Python.

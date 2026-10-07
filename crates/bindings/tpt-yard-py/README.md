@@ -1,7 +1,8 @@
 # tpt-yard-py
 
 Python bindings for tpt-shipyard (PyO3, first slice): the construction
-digital twin and the prismatic hull form.
+digital twin, the prismatic hull form, hulls from offsets tables
+(`OffsetsHull`) and the scheduler.
 
 ```python
 import tpt_yard_py
@@ -14,6 +15,13 @@ hull = tpt_yard_py.HullForm(140.0, 22.0, 0.72, 0.85)
 print(hull.hydrostatics(6.0)["displacement_t"])
 print(hull.gz_curve(6.0, 8.0, 40.0)[:3])
 
+# A real hull form from an offsets table (see schemas/hull-offsets.table-schema.json,
+# or generate one with `tpt-yard new-hull` / `tpt-yard import-hull`):
+hull = tpt_yard_py.OffsetsHull.from_csv_file("test-data/stability/wigley-offsets.csv")
+print(hull.hydrostatics(5.0)["displacement_t"])
+print(hull.gz_curve(5.0, 3.5, to_deg=40.0, step_deg=10.0))
+print(hull.imo_2008_check(5.0, 3.5)["passed"])
+
 sched = tpt_yard_py.Scheduler([
     (1, 10.0, [], [("drydock", 1.0)]),
     (2, 14.0, [1], [("drydock", 1.0)]),
@@ -24,7 +32,21 @@ print(sched.monte_carlo_risk(0.2, 500, 42))     # p50, p90, mean
 print(sched.resource_leveling_with_limits({"crew": 3.0})[0])
 ```
 
-## Building
+## Install (wheel)
+
+```sh
+pip install maturin
+maturin build --release -m crates/bindings/tpt-yard-py/Cargo.toml -o wheels
+pip install --no-index --find-links wheels tpt-yard
+python crates/bindings/tpt-yard-py/tests/offsets_smoke.py   # optional check
+```
+
+`pyproject.toml` configures maturin (distribution `tpt-yard`, module
+`tpt_yard_py`). Wheels are per-interpreter; the CI `python-bindings` job builds
+one, installs it into a clean venv, runs the offsets smoke test and uploads it
+as an artifact. Publishing to PyPI is not set up.
+
+## Building without maturin
 
 This crate is deliberately **detached from the workspace** (the empty
 `[workspace]` in its Cargo.toml): pyo3 needs a Python interpreter at

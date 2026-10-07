@@ -4,7 +4,8 @@
 //! Two entry points: a construction digital twin
 //! ([`DigitalTwin`] — load a project JSON, drive the build phases,
 //! read the weight report) and a prismatic hull form
-//! ([`HullForm`] — hydrostatics and intact GZ curves). Errors surface
+//! ([`HullForm`] — hydrostatics and intact GZ curves; [`OffsetsHull`] — the
+//! same from a real offsets table). Errors surface
 //! as `ValueError` with the engine's message.
 //!
 #![allow(clippy::useless_conversion)]
@@ -156,6 +157,118 @@ impl HullForm {
     }
 }
 
+/// A hull defined by an offsets table (the lines-plan form behind
+/// `tpt-yard stability`): hydrostatics, exact cross-curve GZ curves and the
+/// IMO 2008 criteria for a real hull form rather than a prismatic screen.
+#[pyclass]
+struct OffsetsHull {
+    inner: tpt_yard_hydrostatics::Bonjean,
+}
+
+#[pymethods]
+impl OffsetsHull {
+    /// Parses an offsets CSV (`station_x_m, draft_m, half_breadth_m`; see
+    /// `schemas/hull-offsets.table-schema.json`).
+    #[staticmethod]
+    fn from_csv(text: &str) -> PyResult<Self> {
+        let inner =
+            tpt_yard_hydrostatics::parse_offsets_csv(text).map_err(PyValueError::new_err)?;
+        Ok(Self { inner })
+    }
+
+    /// Reads an offsets CSV file.
+    #[staticmethod]
+    fn from_csv_file(path: &str) -> PyResult<Self> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| PyValueError::new_err(format!("reading {path}: {e}")))?;
+        Self::from_csv(&text)
+    }
+
+    /// Hydrostatics at an upright even-keel draft, keyed by name.
+    fn hydrostatics(&self, draft_m: f64) -> PyResult<HashMap<String, f64>> {
+        let h = self.inner.hydrostatics(draft_m).ok_or_else(|| {
+            PyValueError::new_err("the draft must be positive and within the offsets table")
+        })?;
+        Ok(HashMap::from([
+            ("draft_m".to_string(), h.draft_m),
+            ("displacement_t".to_string(), h.displacement_t),
+            ("kb_m".to_string(), h.kb_m),
+            ("km_m".to_string(), h.km_m),
+            ("lcb_m".to_string(), h.lcb_m),
+            ("lcf_m".to_string(), h.lcf_m),
+            ("tpc_t_cm".to_string(), h.tpc_t_cm),
+            ("mct1cm_tm_cm".to_string(), h.mct1cm_tm_cm),
+            ("waterplane_area_m2".to_string(), h.waterplane_area_m2),
+        ]))
+    }
+
+    /// The GZ curve from 0 to `to_deg` (every `step_deg`) as
+    /// `(heel_deg, gz_m)` pairs.
+    #[pyo3(signature = (draft_m, kg_m, to_deg=60.0, step_deg=5.0, free_surface_moment_tm=0.0))]
+    fn gz_curve(
+        &self,
+        draft_m: f64,
+        kg_m: f64,
+        to_deg: f64,
+        step_deg: f64,
+        free_surface_moment_tm: f64,
+    ) -> PyResult<Vec<(f64, f64)>> {
+        Ok(self
+            .curve(draft_m, kg_m, to_deg, step_deg, free_surface_moment_tm)?
+            .points
+            .iter()
+            .map(|p| (p.heel_deg, p.gz_m))
+            .collect())
+    }
+
+    /// The IMO 2008 IS Code general criteria for a loading: `passed`
+    /// (1.0/0.0) plus each criterion value.
+    #[pyo3(signature = (draft_m, kg_m, free_surface_moment_tm=0.0))]
+    fn imo_2008_check(
+        &self,
+        draft_m: f64,
+        kg_m: f64,
+        free_surface_moment_tm: f64,
+    ) -> PyResult<HashMap<String, f64>> {
+        let gz = self.curve(draft_m, kg_m, 60.0, 1.0, free_surface_moment_tm)?;
+        let v = tpt_yard_hydrostatics::imo_2008_general_criteria(&gz);
+        Ok(HashMap::from([
+            ("passed".to_string(), if v.passed { 1.0 } else { 0.0 }),
+            ("area_to_30_deg_mrad".to_string(), v.area_to_30_deg),
+            ("area_to_40_deg_mrad".to_string(), v.area_to_40_deg),
+            ("max_gz_heel_deg".to_string(), v.max_gz_heel_deg),
+            ("max_gz_m".to_string(), v.max_gz_m),
+            ("gm_corrected_m".to_string(), v.gm_corrected_m),
+        ]))
+    }
+}
+
+impl OffsetsHull {
+    fn curve(
+        &self,
+        draft_m: f64,
+        kg_m: f64,
+        to_deg: f64,
+        step_deg: f64,
+        fsm: f64,
+    ) -> PyResult<tpt_yard_hydrostatics::GzCurve> {
+        if !(fsm.is_finite() && fsm >= 0.0) {
+            return Err(PyValueError::new_err(
+                "the free-surface moment must be a non-negative number",
+            ));
+        }
+        let loading =
+            tpt_yard_hydrostatics::LoadingCondition::new(draft_m, kg_m).with_free_surface_tm(fsm);
+        self.inner
+            .gz_curve(loading, to_deg, step_deg)
+            .ok_or_else(|| {
+                PyValueError::new_err(
+                    "no GZ curve: check the draft is within the table and 0 < step, to_deg <= 180",
+                )
+            })
+    }
+}
+
 /// A construction scheduler over an activity network (review 7H: the
 /// planning bindings). Activities come as `(id, duration_h, dep_ids,
 /// resources)` tuples with resources as `(kind, capacity)` pairs using
@@ -304,6 +417,7 @@ impl Scheduler {
 fn tpt_yard_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DigitalTwin>()?;
     m.add_class::<HullForm>()?;
+    m.add_class::<OffsetsHull>()?;
     m.add_class::<Scheduler>()?;
     Ok(())
 }
