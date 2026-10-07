@@ -24,9 +24,10 @@
 //!
 //! Class-rule refinements that stay out of this slice (documented,
 //! not faked): the CSR buckling reduction curves (post-buckling
-//! reserve via usage factors on the slenderness lambda), rule minimum
-//! thickness tables, corrosion addition defaults, and stiffener
-//! flange/web checks.
+//! reserve via usage factors on the slenderness lambda), corrosion
+//! addition defaults, and stiffener flange/web checks. Rule minimum
+//! thicknesses are class content the engine does not ship: load your own
+//! with [`RuleTable`](crate::RuleTable).
 
 /// The clamped-plate slab constant in (m, kN/m², N/mm²):
 /// `1000·sqrt(0.5·1e-3)` (the rules print the rounded 22.4).

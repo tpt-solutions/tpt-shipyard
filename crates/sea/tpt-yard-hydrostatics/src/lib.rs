@@ -37,6 +37,7 @@ use std::fmt;
 mod flooding;
 mod offsets;
 mod probabilistic;
+mod rule_table;
 mod scantlings;
 
 pub use flooding::{
@@ -49,6 +50,9 @@ pub use probabilistic::{
     required_index_cargo, s_factor_cargo, s_final_factor, s_intermediate_factor, s_mom_factor,
     survival_craft_moment, v_factor, DamageCaseProbability, DamageLengthDensity,
     DamagedSurvivability, FloodStage, ProbabilisticError,
+};
+pub use rule_table::{
+    MinThicknessRule, RuleCheckedScantling, RuleGoverned, RuleTable, RuleTableError, ThicknessBasis,
 };
 pub use scantlings::{
     local_plate_scantling, plate_buckling_check_ec3, plate_buckling_reduction_ec3,

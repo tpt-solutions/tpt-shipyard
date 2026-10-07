@@ -1,0 +1,10 @@
+{
+  "society": "EXAMPLE ONLY",
+  "edition": "illustrative, not any society's rules",
+  "note": "Placeholder numbers that show the file format. Replace with the minimum thicknesses from your own classification society's current rules before using the results.",
+  "min_thickness": [
+    { "member": "bottom shell", "basis": "net", "base_mm": 5.0, "coeff_mm": 0.04, "length_exponent": 1.0, "max_mm": 16.0 },
+    { "member": "weather deck", "basis": "net", "base_mm": 1.0, "coeff_mm": 0.5, "length_exponent": 0.5, "min_mm": 6.0 },
+    { "member": "tank boundary", "basis": "gross", "base_mm": 7.5 }
+  ]
+}

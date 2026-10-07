@@ -12,6 +12,9 @@ Wire-format schemas for the engine's JSON documents (review 7C):
 - `orbital-structure.schema.json` — assembly manifests
   (`test-data/orbital-structures/iss-truss-manifest.json`), input to
   `OrbitalAssembly` planning.
+- `scantling-rule-table.schema.json` — a yard's own minimum-thickness rule table,
+  loaded by `RuleTable::from_json_str` (sample: `test-data/rules/`; the engine ships
+  no class-society values).
 - `weld-procedure.schema.json` — WPS records in `test-data/welding-procedures/`
   (`WeldProcedure::from_json`).
 - `stability-case.schema.json` — the case file read by `tpt-yard stability`

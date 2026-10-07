@@ -79,8 +79,56 @@ assert!((check.reduction - 0.5).abs() < 0.01);
 assert!(check.passes);
 ```
 
-The CSR plates' own η curves and the rule minimum thickness tables
-remain class-society work.
+The CSR plates' own η curves are class-society content and are not
+shipped; the Eurocode curve above is the stand-in. Minimum thicknesses
+are handled by a user-supplied rule table (next section).
+
+## Rule minimum thicknesses
+
+Minimum scantlings are rule content that differs between societies and
+changes with each edition, so the engine ships none. A yard loads its own
+table and the engine only applies it:
+
+```json
+{ "society": "Your society", "edition": "2026",
+  "min_thickness": [
+    { "member": "bottom shell", "basis": "net", "base_mm": 5.0,
+      "coeff_mm": 0.04, "length_exponent": 1.0, "max_mm": 16.0 },
+    { "member": "tank boundary", "basis": "gross", "base_mm": 7.5 } ] }
+```
+
+Each rule is `t_min = base + coeff · L^exponent`, clamped to optional
+`min_mm`/`max_mm`, in the ship length `L`; *net* minima get the scantling's
+corrosion addition on top, *gross* ones are used as built. The loader is
+strict (see `schemas/scantling-rule-table.schema.json`; the sample
+`test-data/rules/example-rule-table.json` is placeholder numbers, not a
+society's rules).
+
+[`RuleTable::check_plate`](tpt_yard_hydrostatics::RuleTable::check_plate)
+compares a calculated plate scantling with the member's minimum and reports
+the larger, with which one governed:
+
+```rust
+use tpt_yard_hydrostatics::{
+    local_plate_scantling, LocalPlateScantlingInput, RuleGoverned, RuleTable,
+};
+
+let table = RuleTable::from_json_str(
+    r#"{"society":"Example","edition":"x","min_thickness":[
+        {"member":"bottom shell","basis":"net","base_mm":5.0,
+         "coeff_mm":0.04,"length_exponent":1.0}]}"#,
+).unwrap();
+let plate = local_plate_scantling(LocalPlateScantlingInput {
+    spacing_m: 0.7, long_span_m: None, pressure_kn_m2: 10.0,
+    allowable_bending_mpa: 160.0, material_factor_k: 1.0,
+    boundary_factor: 1.0, corrosion_addition_mm: 1.5,
+    applied_compression_mpa: None, youngs_modulus_gpa: 206.0,
+}).unwrap();
+let checked = table.check_plate("bottom shell", 140.0, &plate).unwrap();
+// A lightly loaded plate is set by the rule minimum: 10.6 net + 1.5.
+assert_eq!(checked.governed_by, RuleGoverned::RuleMinimum);
+assert!((checked.required_gross_mm - 12.1).abs() < 1e-9);
+```
 
 ## Stiffeners
 

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tpt-solutions.github.io/tpt-shipyard/schemas/scantling-rule-table.schema.json",
+  "title": "Scantling rule table (RuleTable)",
+  "description": "A yard's own class-society minimum-thickness rules, applied by tpt-yard-hydrostatics (RuleTable::from_json_str). The engine ships no class values: each rule is t_min = base_mm + coeff_mm * L^length_exponent, clamped to [min_mm, max_mm], in the ship length L (m).",
+  "type": "object",
+  "required": ["society", "edition", "min_thickness"],
+  "properties": {
+    "society": { "type": "string", "description": "Society name, free text for reports." },
+    "edition": { "type": "string", "description": "Edition label, free text for reports." },
+    "note": { "type": "string" },
+    "min_thickness": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["member", "basis", "base_mm"],
+        "properties": {
+          "member": { "type": "string", "minLength": 1, "description": "Unique member name (matched after trimming)." },
+          "basis": { "enum": ["net", "gross"], "description": "Net: the corrosion addition is added on top. Gross: as built." },
+          "base_mm": { "type": "number", "minimum": 0 },
+          "coeff_mm": { "type": "number", "minimum": 0 },
+          "length_exponent": { "type": "number" },
+          "min_mm": { "type": "number", "minimum": 0 },
+          "max_mm": { "type": "number", "exclusiveMinimum": 0 }
+        },
+        "dependentRequired": {
+          "coeff_mm": ["length_exponent"],
+          "length_exponent": ["coeff_mm"]
+        }
+      }
+    }
+  }
+}
