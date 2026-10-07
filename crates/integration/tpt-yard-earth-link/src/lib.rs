@@ -1,9 +1,14 @@
 //! Bridge between weather and sea-state data (`tpt-earth`) and launch
 //! planning.
 //!
-//! The `tpt-earth` substrate is not published yet, so this crate vendors
+//! The `tpt-earth` substrate is not published yet (no crates.io release, so
+//! a dependency on it would break `cargo publish`), so this crate vendors
 //! the minimal sea-state forecast type ([`SeaStateForecast`], Douglas
-//! scale) behind the shape the substrate will use. [`plan_launch_window`]
+//! scale) and takes the one number the ocean-waves crate produces,
+//! significant wave height, through [`douglas_from_hs`] /
+//! [`SeaStateForecast::from_significant_wave_heights`]: feed it
+//! `WaveSpectrum::significant_wave_height()` per forecast hour, or give the
+//! CLI a forecast file with `hourly_hs_m`. [`plan_launch_window`]
 //! gates launch methods on sea state and returns the safe window.
 //!
 //! # Example
@@ -58,6 +63,21 @@ pub struct SeaStateForecast {
     pub hourly_sea_state: Vec<f64>,
 }
 
+/// The Douglas sea state (WMO code 0-9) for a significant wave height in
+/// metres: 0 calm (0 m), 1 calm rippled (<= 0.1), 2 smooth (<= 0.5),
+/// 3 slight (<= 1.25), 4 moderate (<= 2.5), 5 rough (<= 4), 6 very rough
+/// (<= 6), 7 high (<= 9), 8 very high (<= 14), 9 phenomenal (above).
+/// Upper bounds are inclusive. `None` for a negative or non-finite height.
+#[must_use]
+pub fn douglas_from_hs(hs_m: f64) -> Option<f64> {
+    if !hs_m.is_finite() || hs_m < 0.0 {
+        return None;
+    }
+    const UPPER: [f64; 9] = [0.0, 0.1, 0.5, 1.25, 2.5, 4.0, 6.0, 9.0, 14.0];
+    let state = UPPER.iter().position(|&u| hs_m <= u).unwrap_or(9);
+    Some(state as f64)
+}
+
 /// The safe launch window.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LaunchWindow {
@@ -108,10 +128,39 @@ impl std::error::Error for LaunchWindowError {}
 /// parsing of the wire format
 /// `{"hourly_sea_state": [0.5, 1.0, ...]}` — missing fields are
 /// `EmptyForecast`, non-numeric or negative entries are typed errors
-/// (Douglas states are 0-9; values above 9 are instrument error).
+/// (Douglas states are 0-9; values above 9 are instrument error). A file
+/// may instead carry `"hourly_hs_m"` (significant wave height per hour,
+/// metres), converted with [`douglas_from_hs`]; `hourly_sea_state` wins
+/// when both are present.
 impl SeaStateForecast {
+    /// Builds a forecast from hourly significant wave heights (m), e.g. the
+    /// ocean-waves model's `significant_wave_height()` per forecast hour.
+    ///
+    /// # Errors
+    ///
+    /// [`LaunchWindowError::MalformedEntry`] for a negative or non-finite
+    /// height, naming its hour.
+    pub fn from_significant_wave_heights(hs_m: &[f64]) -> Result<Self, LaunchWindowError> {
+        let hourly_sea_state = hs_m
+            .iter()
+            .enumerate()
+            .map(|(i, &h)| douglas_from_hs(h).ok_or(LaunchWindowError::MalformedEntry(i)))
+            .collect::<Result<_, _>>()?;
+        Ok(Self { hourly_sea_state })
+    }
+
     /// Deserializes from a JSON value produced by the wire format above.
     pub fn from_json_value(v: &tpt_yard_core::json::Value) -> Result<Self, LaunchWindowError> {
+        if v.get("hourly_sea_state").is_none() {
+            if let Some(hs) = v.get("hourly_hs_m").and_then(|x| x.as_array()) {
+                let heights: Vec<f64> = hs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| e.as_f64().ok_or(LaunchWindowError::MalformedEntry(i)))
+                    .collect::<Result<_, _>>()?;
+                return Self::from_significant_wave_heights(&heights);
+            }
+        }
         let arr = v
             .get("hourly_sea_state")
             .and_then(|x| x.as_array())
@@ -373,5 +422,76 @@ mod forecast_loader_tests {
         // Slipway limit 2.0: calm from hour 2 through 5 (4 hours).
         assert_eq!(window.earliest_hour, 2);
         assert_eq!(window.calm_hours, 4);
+    }
+}
+
+#[cfg(test)]
+mod wave_height_tests {
+    use super::*;
+
+    #[test]
+    fn douglas_table_boundaries_are_upper_inclusive() {
+        for (hs, ss) in [
+            (0.0, 0.0),
+            (0.05, 1.0),
+            (0.1, 1.0),
+            (0.11, 2.0),
+            (0.5, 2.0),
+            (1.0, 3.0),
+            (1.25, 3.0),
+            (2.0, 4.0),
+            (2.5, 4.0),
+            (3.0, 5.0),
+            (4.0, 5.0),
+            (5.0, 6.0),
+            (6.0, 6.0),
+            (7.5, 7.0),
+            (9.0, 7.0),
+            (12.0, 8.0),
+            (14.0, 8.0),
+            (14.1, 9.0),
+            (30.0, 9.0),
+        ] {
+            assert_eq!(douglas_from_hs(hs), Some(ss), "Hs {hs}");
+        }
+        for bad in [-0.1, f64::NAN, f64::INFINITY] {
+            assert_eq!(douglas_from_hs(bad), None);
+        }
+    }
+
+    #[test]
+    fn wave_heights_load_from_json_and_gate_the_window() {
+        let v =
+            tpt_yard_core::json::Value::parse(r#"{"hourly_hs_m": [3.0, 2.0, 0.4, 0.3, 0.8, 5.0]}"#)
+                .unwrap();
+        let f = SeaStateForecast::from_json_value(&v).unwrap();
+        assert_eq!(f.hourly_sea_state, vec![5.0, 4.0, 2.0, 2.0, 3.0, 6.0]);
+
+        // hourly_sea_state wins when both keys are present.
+        let both = tpt_yard_core::json::Value::parse(
+            r#"{"hourly_sea_state": [1.0], "hourly_hs_m": [9.0]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            SeaStateForecast::from_json_value(&both)
+                .unwrap()
+                .hourly_sea_state,
+            vec![1.0]
+        );
+
+        for text in [
+            r#"{"hourly_hs_m": [1.0, -2.0]}"#,
+            r#"{"hourly_hs_m": [1.0, "high"]}"#,
+        ] {
+            let v = tpt_yard_core::json::Value::parse(text).unwrap();
+            assert_eq!(
+                SeaStateForecast::from_json_value(&v),
+                Err(LaunchWindowError::MalformedEntry(1))
+            );
+        }
+        assert_eq!(
+            SeaStateForecast::from_significant_wave_heights(&[1.0, f64::NAN]),
+            Err(LaunchWindowError::MalformedEntry(1))
+        );
     }
 }
