@@ -12,7 +12,7 @@ review history are visible to everyone.
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
 │  License:        MIT OR Apache-2.0 (dual)                   │
-│  Contributions:  MIT OR Apache-2.0 (CLA-free via DCO)       │
+│  Contributions:  MIT OR Apache-2.0 (no CLA)                 │
 │  Trademark:      "TPT Shipyard" name reserved by TPT        │
 │  Governance:     Benevolent Dictator + RFC process          │
 │  Roadmap:        Public GitHub Projects board               │
@@ -37,8 +37,8 @@ review and merge within the delegated scope.
 
 ### Maintainers & Contributors
 
-Anyone may comment on issues and RFCs. Contributors who sign the DCO may submit
-PRs. Maintainers are added by the BD based on sustained, high-quality
+Anyone may comment on issues and RFCs. Anyone may submit PRs; contributions are
+accepted under the project's MIT OR Apache-2.0 licence. Maintainers are added by the BD based on sustained, high-quality
 contributions and are listed here when appointed.
 
 ## RFC Process
