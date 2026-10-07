@@ -16,16 +16,91 @@
 
 use tpt_yard_core::{Geometry3D, Vector3};
 
-/// Writes `geometry` as a minimal glTF 2.0 JSON string (embedded base64
-/// buffer, TRIANGLES mode). Returns the `.gltf` document text — write it
-/// to a `<name>.gltf` file.
+/// Escapes text for a JSON string literal body.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Why a mesh cannot be written as a valid glTF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GltfError {
+    /// No vertices or no triangles (a glTF primitive needs both).
+    EmptyGeometry,
+    /// A vertex coordinate is NaN or infinite.
+    NonFiniteCoordinate,
+    /// A triangle indexes a vertex that does not exist.
+    IndexOutOfRange,
+}
+
+impl std::fmt::Display for GltfError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            GltfError::EmptyGeometry => "the geometry has no vertices or no triangles",
+            GltfError::NonFiniteCoordinate => "a vertex coordinate is NaN or infinite",
+            GltfError::IndexOutOfRange => "a triangle indexes a vertex that does not exist",
+        })
+    }
+}
+
+impl std::error::Error for GltfError {}
+
+/// Writes `geometry` as a glTF 2.0 document, refusing meshes that would
+/// produce an invalid file (empty, non-finite coordinates, out-of-range
+/// indices). The mesh is z-up (the engine's convention); glTF is y-up, so
+/// the node carries a -90 degree rotation about X that stands the model upright
+/// in any viewer. Accessor bounds are computed from the f32 values actually
+/// stored, and the name is JSON-escaped.
+///
+/// # Errors
+///
+/// [`GltfError`] for an unwritable mesh.
+pub fn try_geometry_to_gltf(geometry: &Geometry3D, name: &str) -> Result<String, GltfError> {
+    if geometry.vertices.is_empty() || geometry.faces.is_empty() {
+        return Err(GltfError::EmptyGeometry);
+    }
+    if geometry
+        .vertices
+        .iter()
+        .any(|v| !(v.x.is_finite() && v.y.is_finite() && v.z.is_finite()))
+    {
+        return Err(GltfError::NonFiniteCoordinate);
+    }
+    let n = geometry.vertices.len();
+    if geometry.faces.iter().flatten().any(|&i| i as usize >= n) {
+        return Err(GltfError::IndexOutOfRange);
+    }
+    Ok(write_gltf(geometry, name))
+}
+
+/// Writes `geometry` as a glTF 2.0 JSON string for *valid* meshes — see
+/// [`try_geometry_to_gltf`], which checks that and is what callers with
+/// untrusted geometry should use. Non-finite coordinates are written as 0
+/// so the document stays valid JSON.
 pub fn geometry_to_gltf(geometry: &Geometry3D, name: &str) -> String {
+    write_gltf(geometry, name)
+}
+
+fn write_gltf(geometry: &Geometry3D, name: &str) -> String {
+    let name = json_escape(name);
+    let finite = |x: f64| if x.is_finite() { x } else { 0.0 };
     // Binary chunk: positions (f32 xyz per vertex), then indices (u32).
     let mut bin: Vec<u8> = Vec::new();
     for v in &geometry.vertices {
-        bin.extend_from_slice(&(v.x as f32).to_le_bytes());
-        bin.extend_from_slice(&(v.y as f32).to_le_bytes());
-        bin.extend_from_slice(&(v.z as f32).to_le_bytes());
+        bin.extend_from_slice(&(finite(v.x) as f32).to_le_bytes());
+        bin.extend_from_slice(&(finite(v.y) as f32).to_le_bytes());
+        bin.extend_from_slice(&(finite(v.z) as f32).to_le_bytes());
     }
     while !bin.len().is_multiple_of(4) {
         bin.push(0);
@@ -67,13 +142,15 @@ pub fn geometry_to_gltf(geometry: &Geometry3D, name: &str) -> String {
     let positions_byte_length = indices_offset;
     let indices_byte_length = bin_len - indices_offset;
 
-    // Min/max position accessors (glTF requires them for POSITION).
+    // Min/max position accessors (glTF requires them for POSITION), taken
+    // from the f32 values that are actually in the buffer.
     let mut min = [f64::MAX; 3];
     let mut max = [f64::MIN; 3];
     for v in &geometry.vertices {
         for (i, c) in [v.x, v.y, v.z].iter().enumerate() {
-            min[i] = min[i].min(*c);
-            max[i] = max[i].max(*c);
+            let stored = f64::from(finite(*c) as f32);
+            min[i] = min[i].min(stored);
+            max[i] = max[i].max(stored);
         }
     }
     if geometry.vertices.is_empty() {
@@ -87,9 +164,16 @@ pub fn geometry_to_gltf(geometry: &Geometry3D, name: &str) -> String {
         .copied()
         .max()
         .unwrap_or(0);
+    let min_index = geometry
+        .faces
+        .iter()
+        .flat_map(|f| f.iter())
+        .copied()
+        .min()
+        .unwrap_or(0);
 
     format!(
-        r#"{{"asset":{{"version":"2.0","generator":"tpt-shipyard"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0,"name":"{name}"}}],"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}},"indices":1,"mode":4}}]}}],"buffers":[{{"uri":"data:application/octet-stream;base64,{b64}","byteLength":{bin_len}}}],"bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":{positions_byte_length},"target":34962}},{{"buffer":0,"byteOffset":{indices_offset},"byteLength":{indices_byte_length},"target":34963}}],"accessors":[{{"bufferView":0,"componentType":5126,"count":{v_count},"type":"VEC3","min":[{min_x},{min_y},{min_z}],"max":[{max_x},{max_y},{max_z}]}},{{"bufferView":1,"componentType":5125,"count":{i_count},"type":"SCALAR","min":[0],"max":[{max_index}]}}]}}"#,
+        r#"{{"asset":{{"version":"2.0","generator":"tpt-shipyard"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0,"name":"{name}","rotation":[-0.7071067811865476,0,0,0.7071067811865476]}}],"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}},"indices":1,"mode":4}}]}}],"buffers":[{{"uri":"data:application/octet-stream;base64,{b64}","byteLength":{bin_len}}}],"bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":{positions_byte_length},"target":34962}},{{"buffer":0,"byteOffset":{indices_offset},"byteLength":{indices_byte_length},"target":34963}}],"accessors":[{{"bufferView":0,"componentType":5126,"count":{v_count},"type":"VEC3","min":[{min_x},{min_y},{min_z}],"max":[{max_x},{max_y},{max_z}]}},{{"bufferView":1,"componentType":5125,"count":{i_count},"type":"SCALAR","min":[{min_index}],"max":[{max_index}]}}]}}"#,
         v_count = geometry.vertices.len(),
         i_count = geometry.faces.len() * 3,
         min_x = min[0],
@@ -153,9 +237,37 @@ fn step_real(v: f64) -> String {
     }
 }
 
-/// STEP string literal: single quotes doubled.
+/// STEP string literal (ISO 10303-21): single quotes doubled, backslash
+/// doubled (it is the escape character), and every non-ASCII character
+/// encoded as `\X2\hhhh\X0\` (BMP) or `\X4\hhhhhhhh\X0\` (beyond it).
 fn step_string(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        match c {
+            '\'' => out.push_str("''"),
+            '\\' => out.push_str("\\\\"),
+            c if c.is_ascii() && !c.is_ascii_control() => out.push(c),
+            c if (c as u32) <= 0xFFFF => out.push_str(&format!("\\X2\\{:04X}\\X0\\", c as u32)),
+            c => out.push_str(&format!("\\X4\\{:08X}\\X0\\", c as u32)),
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// True when every edge is shared by exactly two triangles (a closed
+/// surface); only then may an IfcTriangulatedFaceSet claim `Closed`.
+fn is_closed_mesh(faces: &[[u32; 3]]) -> bool {
+    use std::collections::HashMap;
+    let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
+    for f in faces {
+        for k in 0..3 {
+            let (a, b) = (f[k], f[(k + 1) % 3]);
+            *edges.entry((a.min(b), a.max(b))).or_insert(0) += 1;
+        }
+    }
+    !edges.is_empty() && edges.values().all(|&n| n == 2)
 }
 
 /// The 22-character compressed IfcGloballyUniqueId for a counter value
@@ -287,10 +399,22 @@ pub fn elements_to_ifc(elements: &[IfcElement<'_>], project_name: &str) -> Strin
             .geometry
             .faces
             .iter()
-            .map(|f| format!("({},{},{})", f[0] + 1, f[1] + 1, f[2] + 1))
+            .map(|f| {
+                format!(
+                    "({},{},{})",
+                    u64::from(f[0]) + 1,
+                    u64::from(f[1]) + 1,
+                    u64::from(f[2]) + 1
+                )
+            })
             .collect();
         let face_set = w.entity(format!(
-            "IFCTRIANGULATEDFACESET(#{point_list},$,.T.,({}),$)",
+            "IFCTRIANGULATEDFACESET(#{point_list},$,{},({}),$)",
+            if is_closed_mesh(&element.geometry.faces) {
+                ".T."
+            } else {
+                ".F."
+            },
             faces.join(",")
         ));
         let shape_rep = w.entity(format!(
@@ -702,5 +826,117 @@ mod tests {
         // First vertex is (-1, -1, -1) for a centred 2 m box.
         let x = f32::from_le_bytes(decoded[0..4].try_into().unwrap());
         assert!((x - (-1.0)).abs() < 1e-6, "{x}");
+    }
+}
+
+#[cfg(test)]
+mod phase8_export_tests {
+    use super::*;
+
+    fn tetra() -> Geometry3D {
+        Geometry3D {
+            vertices: vec![
+                Vector3::new(0.0, 0.0, 0.0),
+                Vector3::new(1.0, 0.0, 0.0),
+                Vector3::new(0.0, 1.0, 0.0),
+                Vector3::new(0.0, 0.0, 1.0),
+            ],
+            faces: vec![[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]],
+        }
+    }
+
+    /// 8B20: a name with quotes, backslashes and control characters (a
+    /// Windows path) is escaped, so the document is valid JSON and the
+    /// name survives.
+    #[test]
+    fn gltf_name_is_escaped() {
+        let name = "C:\\yard \"A\"\\n1.json";
+        let doc = geometry_to_gltf(&tetra(), name);
+        let v = tpt_yard_core::json::Value::parse(&doc).expect("valid JSON");
+        let got = v
+            .get("nodes")
+            .and_then(|n| n.as_array())
+            .and_then(|n| n[0].get("name"))
+            .and_then(|n| n.as_str())
+            .expect("name");
+        assert_eq!(got, name);
+    }
+
+    /// 8B20: bounds come from the f32 values in the buffer, the index
+    /// accessor reports its real minimum, and the node stands the z-up mesh
+    /// upright for y-up viewers.
+    #[test]
+    fn gltf_bounds_match_the_stored_f32_values() {
+        let g = Geometry3D {
+            vertices: vec![
+                Vector3::new(0.1, 0.2, 0.3),
+                Vector3::new(1.7, 0.2, 0.3),
+                Vector3::new(0.1, 2.9, 0.3),
+                Vector3::new(0.1, 0.2, 4.1),
+            ],
+            faces: vec![[1, 2, 3], [1, 2, 3]],
+        };
+        let doc = try_geometry_to_gltf(&g, "t").expect("valid");
+        let v = tpt_yard_core::json::Value::parse(&doc).unwrap();
+        let acc = v.get("accessors").and_then(|a| a.as_array()).unwrap();
+        let min = acc[0].get("min").and_then(|m| m.as_array()).unwrap();
+        assert_eq!(min[0].as_f64().unwrap(), f64::from(0.1_f64 as f32));
+        let max = acc[0].get("max").and_then(|m| m.as_array()).unwrap();
+        assert_eq!(max[2].as_f64().unwrap(), f64::from(4.1_f64 as f32));
+        // Indices 1..=3: the accessor must not claim a minimum of 0.
+        let imin = acc[1].get("min").and_then(|m| m.as_array()).unwrap();
+        assert_eq!(imin[0].as_f64(), Some(1.0));
+        let node = &v.get("nodes").and_then(|n| n.as_array()).unwrap()[0];
+        let rot = node
+            .get("rotation")
+            .and_then(|r| r.as_array())
+            .expect("rotation");
+        assert!((rot[0].as_f64().unwrap() + 0.5_f64.sqrt()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn unwritable_meshes_are_refused() {
+        let empty = Geometry3D {
+            vertices: vec![],
+            faces: vec![],
+        };
+        assert_eq!(
+            try_geometry_to_gltf(&empty, "e"),
+            Err(GltfError::EmptyGeometry)
+        );
+        let mut nan = tetra();
+        nan.vertices[1].x = f64::NAN;
+        assert_eq!(
+            try_geometry_to_gltf(&nan, "n"),
+            Err(GltfError::NonFiniteCoordinate)
+        );
+        let mut oob = tetra();
+        oob.faces[0] = [0, 1, 9];
+        assert_eq!(
+            try_geometry_to_gltf(&oob, "o"),
+            Err(GltfError::IndexOutOfRange)
+        );
+        // The infallible writer still emits parseable JSON for a NaN.
+        assert!(tpt_yard_core::json::Value::parse(&geometry_to_gltf(&nan, "n")).is_ok());
+    }
+
+    /// 8B20: STEP strings escape backslashes and non-ASCII text; the
+    /// IFC face set is closed only for a closed mesh; indices cannot
+    /// overflow.
+    #[test]
+    fn ifc_strings_closedness_and_index_overflow() {
+        assert_eq!(step_string("a'b"), "'a''b'");
+        assert_eq!(step_string("C:\\x"), "'C:\\\\x'");
+        assert_eq!(step_string("Zürich"), "'Z\\X2\\00FC\\X0\\rich'");
+        assert_eq!(step_string("🚢"), "'\\X4\\0001F6A2\\X0\\'");
+        let closed = geometry_to_ifc(&tetra(), "t");
+        assert!(closed.contains("IFCTRIANGULATEDFACESET(#") && closed.contains(",$,.T.,"));
+        let mut open = tetra();
+        open.faces.pop();
+        assert!(geometry_to_ifc(&open, "t").contains(",$,.F.,"));
+        let mut huge = tetra();
+        huge.faces[0] = [0, 1, u32::MAX];
+        let doc = geometry_to_ifc(&huge, "t");
+        assert!(doc.contains("4294967296"), "u32::MAX + 1 must not wrap");
     }
 }
