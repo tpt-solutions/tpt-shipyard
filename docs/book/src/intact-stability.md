@@ -86,3 +86,44 @@ no superstructure or appendage buoyancy, and a flat deck at the top offset
 (reserve buoyancy above it is ignored). The prismatic model has no deck
 edge, so its GZ keeps rising with heel; the report warns when the maximum
 is not resolved. Neither path is a class submission.
+
+## Importing a hull mesh
+
+`tpt-yard import-hull hull.obj` (or a binary/ASCII `.stl`) slices a surface
+mesh into the same offsets CSV and case file, ready for `stability`:
+
+```bash
+tpt-yard import-hull hull.stl --up z --bow +x --scale 0.001 --draft 6.2 --kg 8.5 --out my-hull
+```
+
+Length runs along the mesh X axis, `--up` picks the vertical axis (`z` or
+`y`), `--scale` converts the mesh units to metres, and the lowest mesh point
+becomes the baseline. At each of `--stations` transverse planes and
+`--levels` heights the half-breadth is the widest crossing of the section, so
+whole-hull and half-hull meshes both work. The slicing assumes sections that
+do not re-enter (no tumblehome pockets or tunnels) and a hull symmetric about
+the centreline; appendages and superstructure in the mesh will inflate the
+offsets, so import the bare hull. Without `--draft`/`--kg` the case defaults to
+half the depth and 0.6 of the depth: set your real loading before relying on
+the result.
+
+## Benchmark hulls (KCS, DTMB 5415)
+
+The two standard CFD/manoeuvring benchmark hulls are not shipped in the
+repository — the SIMMAN 2014 workshop site that publishes them states no
+licence — but one command fetches and converts them:
+
+```bash
+pip install numpy
+python scripts/fetch-benchmark-hulls.py          # or: kcs | dtmb5415
+tpt-yard stability test-data/benchmarks/kcs.json --draft 10.8 --kg 14.3
+```
+
+The script downloads the IGES hull definitions, verifies them against pinned
+SHA-256 hashes, tessellates the NURBS surfaces and runs `import-hull`. It then
+checks the displacement at the published design draft against the published
+particulars (`Cb · Lpp · B · T`); the converted hulls land at +1.0 % (KCS) and
++0.1 % (5415). The 5415 file is a 1:24.83 model whose sonar dome sits below the
+keel line, so its baseline is the dome bottom and drafts are offset by 3.0 m;
+the script prints the offset. The case files default KG to a placeholder:
+supply a real KG before trusting a stability result.
