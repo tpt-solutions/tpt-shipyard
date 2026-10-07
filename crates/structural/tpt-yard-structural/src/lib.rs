@@ -68,6 +68,7 @@ pub mod fem;
 pub mod frame;
 pub mod mindlin;
 pub mod plates;
+pub mod shell_fem;
 pub mod shells;
 
 pub use fem::{Element, FemError, NodalLoad, Node, Support, TrussModel, TrussSolution};
@@ -76,6 +77,9 @@ pub use frame::{
     MemberLoad,
 };
 pub use plates::{PlateElement, PlateError, PlateModel, PlateNode, PlateSolution, PlateSupport};
+pub use shell_fem::{
+    ShellElement, ShellError, ShellModel, ShellNodalLoad, ShellSolution, ShellSupport,
+};
 
 /// One structural member with the phase at which it enters the structure.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -748,7 +752,7 @@ impl crate::PartialStructure {
     ///
     /// # Errors
     ///
-    /// [`CoreError`] on malformed payloads; node/element index
+    /// [`tpt_yard_core::CoreError`] on malformed payloads; node/element index
     /// consistency is re-checked by [`crate::ConstructionStructuralSolver`].
     pub fn from_json_with_loads(
         v: &tpt_yard_core::json::Value,

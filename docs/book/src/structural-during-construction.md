@@ -208,3 +208,19 @@ and linear-slope states exert no force; the twisting thin-limit mode
 carries exactly the Kirchhoff twisting curvature and no shear energy) —
 the checks that caught a transverse-shear edge-orientation error during
 development.
+
+## Shell elements
+
+[`ShellModel`](tpt_yard_structural::ShellModel) models curved shells as
+assemblies of planar rectangular facets: each carries a Q4 plane-stress
+membrane, the MITC4 Mindlin bending above and a small drilling stiffness, with
+six degrees of freedom per node in global axes. Cylinders, prisms, tanks and
+flat panels mesh exactly into such facets; doubly curved surfaces would need
+triangles or warped quadrilaterals, which are not provided. Loads are nodal
+forces and a per-facet surface load vector (gravity, or a pressure resolved by
+the caller); supports are exact DOF eliminations.
+
+Verification: a stretched plate elongates exactly; a clamped plate deflects
+identically (to 1e-8) lying flat and tilted into an arbitrary plane, and
+matches Timoshenko; and the Scordelis-Lo barrel vault converges to the
+MacNeal-Harder value 0.3024 m (0.2848 at 4x4, 0.2951 at 8x8 facets).
