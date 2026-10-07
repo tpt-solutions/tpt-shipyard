@@ -125,21 +125,32 @@ pub fn plate_buckling_thickness_mm(
             .sqrt())
 }
 
-/// The half-wave count `m = ceil(a/b)` and the aspect factor
-/// `(m·b/a + a/(m·b))²` — 4.0 for square panels and for long panels at
-/// the half-wave resonance, larger between resonances.
+/// The half-wave count `m` and the aspect factor `(m·b/a + a/(m·b))²` —
+/// 4.0 for square panels and for long panels at the half-wave resonance,
+/// larger between resonances. The panel buckles in the mode that
+/// minimises k, which is `m = floor(a/b)` or `m = ceil(a/b)`; taking the
+/// ceiling alone overstates k just above a square (a/b = 1.05 gives 5.9
+/// instead of 4.0).
 fn aspect_factor(short_span_mm: f64, long_span_mm: f64) -> (f64, u32) {
     let ratio = long_span_mm / short_span_mm;
-    let m = (ratio.ceil() as u32).max(1);
-    let mf = m as f64;
-    let k = (mf * short_span_mm / long_span_mm + long_span_mm / (mf * short_span_mm)).powi(2);
-    (k, m)
+    let k_of = |m: u32| {
+        let mf = m as f64;
+        (mf * short_span_mm / long_span_mm + long_span_mm / (mf * short_span_mm)).powi(2)
+    };
+    let hi = (ratio.ceil() as u32).max(1);
+    let lo = (ratio.floor() as u32).max(1);
+    let (k_hi, k_lo) = (k_of(hi), k_of(lo));
+    if k_lo < k_hi {
+        (k_lo, lo)
+    } else {
+        (k_hi, hi)
+    }
 }
 
 /// The EN 1993-1-5:2006 clause 4.4 plate-buckling reduction factor ρ
 /// for *internal* compression elements (the Winter-type capacity
 /// curve): ρ = 1.0 below the slenderness limit
-/// `0.5 + 0.085/(1 + ψ)`, else `(λ̄ − 0.055·(3 + ψ))/λ̄²`, capped at 1.
+/// `0.5 + sqrt(0.085 − 0.055·ψ)` (0.673 for uniform compression), else `(λ̄ − 0.055·(3 + ψ))/λ̄²`, capped at 1.
 /// `lambda_bar = sqrt(f_y / sigma_cr)` is the normalized plate
 /// slenderness and `stress_ratio_psi = sigma_2/sigma_1` the edge
 /// stress ratio (−1..1; 1 = uniform compression). The buckling
@@ -161,7 +172,7 @@ pub fn plate_buckling_reduction_ec3(
     {
         return Err(ScantlingError::InvalidInput);
     }
-    let limit = 0.5 + 0.085 / (1.0 + stress_ratio_psi);
+    let limit = 0.5 + (0.085 - 0.055 * stress_ratio_psi).sqrt();
     if lambda_bar <= limit {
         return Ok(1.0);
     }
@@ -482,8 +493,7 @@ mod tests {
     /// combines Euler + reduction into rho f_y capacity.
     #[test]
     fn ec3_reduction_curve_matches_the_standard_text() {
-        // Below the formula limit (0.5425 for psi = 1) and inside the
-        // cap region: no reduction.
+        // Below the formula limit (0.673 for psi = 1): no reduction.
         assert_eq!(plate_buckling_reduction_ec3(0.5, 1.0).unwrap(), 1.0);
         assert_eq!(plate_buckling_reduction_ec3(0.65, 1.0).unwrap(), 1.0);
         // Hand values: rho = (lambda - 0.22)/lambda^2, capped at 1.
@@ -496,15 +506,20 @@ mod tests {
         assert!((r1 - 0.78).abs() < 1e-12, "{r1}");
         let r2 = plate_buckling_reduction_ec3(2.0, 1.0).unwrap();
         assert!((r2 - (2.0 - 0.22) / 4.0).abs() < 1e-12, "{r2}");
-        // Stress ratio shifts the knee: psi = 0 -> limit 0.585 and
-        // offset 0.055*3 = 0.165.
-        assert_eq!(plate_buckling_reduction_ec3(0.585, 0.0).unwrap(), 1.0);
+        // Stress ratio shifts the knee: psi = 0 -> limit
+        // 0.5 + sqrt(0.085) = 0.7916 and offset 0.055*3 = 0.165.
+        assert_eq!(plate_buckling_reduction_ec3(0.785, 0.0).unwrap(), 1.0);
+        // psi = -1 (pure bending) is finite: limit 0.5 + sqrt(0.14) =
+        // 0.874, and rho = (lambda - 0.11)/lambda^2 beyond it.
+        assert_eq!(plate_buckling_reduction_ec3(0.87, -1.0).unwrap(), 1.0);
+        let rb = plate_buckling_reduction_ec3(1.2, -1.0).unwrap();
+        assert!((rb - (1.2 - 0.11) / 1.44).abs() < 1e-12, "{rb}");
         let r0 = plate_buckling_reduction_ec3(1.0, 0.0).unwrap();
         assert!((r0 - (1.0 - 0.165)).abs() < 1e-12, "{r0}");
         // Continuity and monotone decrease on the uniform curve.
         let mut prev = 1.0_f64;
         for i in 1..=40 {
-            let lam = 0.5425 + (2.5 - 0.5425) * i as f64 / 40.0;
+            let lam = 0.673 + (2.5 - 0.673) * i as f64 / 40.0;
             let rho = plate_buckling_reduction_ec3(lam, 1.0).unwrap();
             assert!(rho <= prev + 1e-12, "rho rises at {lam}");
             assert!((0.0..=1.0).contains(&rho));
@@ -608,6 +623,12 @@ mod tests {
         let (k, m) = aspect_factor(800.0, 3200.0);
         assert_eq!(m, 4);
         assert!((k - 4.0).abs() < 1e-12);
+        // Just above square: the m = 1 mode governs (the ceiling m = 2
+        // would give k = 5.9 and overstate the buckling stress by ~47 %).
+        let (k, m) = aspect_factor(800.0, 840.0);
+        assert_eq!(m, 1);
+        let k1: f64 = (800.0_f64 / 840.0 + 840.0 / 800.0).powi(2);
+        assert!((k - k1).abs() < 1e-12 && k < 4.02, "{k}");
         // 2.5:1: m = 3, k = (3/2.5 + 2.5/3)^2 = 4.1344...
         let (k, m) = aspect_factor(800.0, 2000.0);
         assert_eq!(m, 3);
