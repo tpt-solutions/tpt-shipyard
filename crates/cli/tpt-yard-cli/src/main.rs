@@ -15,6 +15,8 @@
 //!   criteria from a hull-offsets table or a prismatic screen (`stability.rs`).
 //! - `new-hull <wigley|barge|workboat|tug|sailboat|ferry> [--out DIR]` — write a runnable hull
 //!   (offsets CSV + stability case) to start from (`hulls.rs`).
+//! - `import-hull MESH.obj|.stl [--up y|z] [--bow +x|-x] [--scale F]` — slice a hull
+//!   surface mesh into an offsets CSV + stability case (`meshhull.rs`).
 //! - `schedule FILE.json [--limit kind=value]...` — CPM critical path and
 //!   resource levelling for a vessel project's activities; `--limit`
 //!   states yard-wide capacities per resource kind (crane tonnes, crew
@@ -28,6 +30,7 @@
 
 mod help;
 mod hulls;
+mod meshhull;
 mod stability;
 
 use std::collections::BTreeMap;
@@ -109,6 +112,7 @@ fn run(args: &[&str], json_mode: bool) -> Result<(), String> {
         "export" => export_cmd(rest, json_mode),
         "stability" => stability::run(rest, json_mode),
         "new-hull" => hulls::run(rest, json_mode),
+        "import-hull" => meshhull::run(rest, json_mode),
         "schedule" => schedule(rest, json_mode),
         "risk" => risk(rest, json_mode),
         "report" => report(rest.first().ok_or("report needs a file path")?, json_mode),

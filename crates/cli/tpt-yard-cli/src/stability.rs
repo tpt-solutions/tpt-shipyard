@@ -616,4 +616,56 @@ mod tests {
         assert!(run(&[&case, "--bogus"], true).is_err());
         assert!(run(&[&case, "--offsets", "missing.csv"], true).is_err());
     }
+    /// The schemas must not drift from what the command reads and the
+    /// generators write: every key in the shipped cases is declared, and the
+    /// offsets table schema names the CSV columns the generators emit.
+    #[test]
+    fn the_schemas_describe_the_shipped_files() {
+        let schema_path = |n: &str| format!("{}/../../../schemas/{n}", env!("CARGO_MANIFEST_DIR"));
+        let read =
+            |p: String| Value::parse(&std::fs::read_to_string(&p).expect("reads")).expect("json");
+        let case_schema = read(schema_path("stability-case.schema.json"));
+        // Every key of `obj` must be a declared property of `schema`.
+        let check = |what: &str, obj: &Value, schema: &Value| {
+            let props = schema
+                .get("properties")
+                .and_then(Value::as_object)
+                .expect("properties");
+            for (k, _) in obj.as_object().expect("object") {
+                assert!(
+                    props.iter().any(|(d, _)| d == k),
+                    "{what}: '{k}' not in the schema"
+                );
+            }
+        };
+        for name in ["wigley.json", "container-ship-prismatic.json"] {
+            let case = read(data(name));
+            check(name, &case, &case_schema);
+            for section in ["hull", "loading"] {
+                if let Some(v) = case.get(section) {
+                    let sch = case_schema
+                        .get("properties")
+                        .and_then(|p| p.get(section))
+                        .expect("sub");
+                    check(&format!("{name} {section}"), v, sch);
+                }
+            }
+        }
+        let table = read(schema_path("hull-offsets.table-schema.json"));
+        let names: Vec<String> = table
+            .get("fields")
+            .and_then(Value::as_array)
+            .expect("fields")
+            .iter()
+            .map(|f| {
+                f.get("name")
+                    .and_then(Value::as_str)
+                    .expect("name")
+                    .to_string()
+            })
+            .collect();
+        let csv = std::fs::read_to_string(data("wigley-offsets.csv")).expect("csv");
+        let header = csv.lines().find(|l| !l.starts_with('#')).expect("header");
+        assert_eq!(header, names.join(","));
+    }
 }

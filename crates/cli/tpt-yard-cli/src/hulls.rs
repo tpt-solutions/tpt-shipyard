@@ -205,7 +205,8 @@ pub fn run(rest: &[&str], json_mode: bool) -> Result<(), String> {
             }
         }
     }
-    let kind = kind.ok_or("new-hull needs a hull: wigley, barge, workboat, tug, sailboat or ferry")?;
+    let kind =
+        kind.ok_or("new-hull needs a hull: wigley, barge, workboat, tug, sailboat or ferry")?;
     let (d_loa, d_beam, d_draft, d_depth) = kind.defaults();
     let (loa, beam, draft) = (
         loa.unwrap_or(d_loa),

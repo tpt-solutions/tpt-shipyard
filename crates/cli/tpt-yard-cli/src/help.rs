@@ -24,6 +24,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "write a runnable hull (offsets CSV + stability case) to start from",
     ),
     (
+        "import-hull",
+        "import-hull MESH.obj|MESH.stl [--up y|z] [--bow +x|-x] [--scale F] [--stations N] [--levels N] [--draft M] [--kg M] [--name N] [--out DIR] [--force]",
+        "slice a hull surface mesh (OBJ or STL) into an offsets CSV + stability case",
+    ),
+    (
         "schedule",
         "schedule FILE.json [--limit kind=value]... [--json]",
         "critical path and resource levelling for a project's activities",
