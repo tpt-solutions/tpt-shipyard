@@ -115,7 +115,7 @@ jobs:
       - name: Combined checksum file
         run: cd dist && cat *.sha256 > SHA256SUMS
       - name: Create release with generated notes, WASM and CLI assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           files: |
