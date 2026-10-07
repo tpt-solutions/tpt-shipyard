@@ -776,6 +776,48 @@ pub struct DamageCompartment {
     pub free_surface_moment_tm: f64,
 }
 
+/// The static heel (degrees, signed like `tcg_m`) where the wall-sided
+/// righting arm balances a transverse weight offset:
+///
+/// `GM sin(phi) + (BM / 2) tan(phi)^2 sin(phi) = TCG cos(phi)`
+///
+/// — the large-angle replacement for the small-angle `atan(TCG / GM)`
+/// list. The left side rises monotonically for `GM > 0`, so the root is
+/// unique and found by bisection; with `BM = 0` it is exactly
+/// `atan(TCG / GM)`. Returns +/-90 when no equilibrium exists below 90
+/// degrees (`GM <= 0` — the loll case — or an offset beyond the arm).
+/// `gm_m` carries any free-surface correction; `bm_m` is the transverse
+/// metacentric radius at the damaged draft.
+#[must_use]
+pub fn heel_equilibrium_deg(gm_m: f64, bm_m: f64, tcg_m: f64) -> f64 {
+    let sign = if tcg_m < 0.0 { -1.0 } else { 1.0 };
+    let t = tcg_m.abs();
+    if t == 0.0 && gm_m > 0.0 {
+        return 0.0;
+    }
+    if gm_m <= 0.0 || !gm_m.is_finite() || !bm_m.is_finite() || !t.is_finite() {
+        return sign * 90.0;
+    }
+    let bm = bm_m.max(0.0);
+    let g = |phi: f64| {
+        let (s, c) = phi.sin_cos();
+        gm_m * s + 0.5 * bm * (s / c) * (s / c) * s - t * c
+    };
+    let (mut lo, mut hi) = (0.0_f64, 89.9_f64.to_radians());
+    if g(hi) < 0.0 {
+        return sign * 90.0;
+    }
+    for _ in 0..80 {
+        let mid = 0.5 * (lo + hi);
+        if g(mid) < 0.0 {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    sign * (0.5 * (lo + hi)).to_degrees()
+}
+
 /// Outcome of the added-weight damage screen.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DamageResult {
@@ -787,8 +829,11 @@ pub struct DamageResult {
     pub mean_draft_m: f64,
     /// Damaged trim (fore - aft), m.
     pub trim_m: f64,
-    /// List angle from the transverse floodwater offset, degrees
-    /// (small-angle tan phi = TCG / GM).
+    /// List angle, degrees: the equilibrium of the wall-sided righting arm
+    /// against the floodwater's transverse offset,
+    /// `GZ(phi) = TCG cos(phi)` (see [`heel_equilibrium_deg`]); reduces to
+    /// `tan phi = TCG / GM` for small lists. 90 when no equilibrium exists
+    /// below 90 degrees (GM <= 0 or a list beyond the wall-sided model).
     pub list_angle_deg: f64,
     /// Damaged GM: KM at the damaged draft, KG grown by the floodwater,
     /// minus the free-surface correction, m.
@@ -850,7 +895,14 @@ impl HullForm {
         let solved = self.trim_equilibrium(mass, lcg_damaged, Some(kg_damaged))?;
         let km = self.hydrostatics(solved.mean_draft_m).km_m;
         let gm = km - kg_damaged - fsm / mass;
-        let list = (tcg_damaged / gm.max(1e-6)).atan().to_degrees();
+        let bm = {
+            let hs = self.hydrostatics(solved.mean_draft_m);
+            hs.km_m - hs.kb_m
+        };
+        let list = heel_equilibrium_deg(gm, bm, tcg_damaged);
+        if list.abs() >= 90.0 {
+            notes.push("no equilibrium heel below 90 deg: the vessel capsizes".to_string());
+        }
         notes.push(format!(
             "damaged: draft {:.2} m, GM {:.2} m (free-surface {:.1} t*m), list {list:.2} deg",
             solved.mean_draft_m,
@@ -1458,8 +1510,21 @@ mod tests {
             .damage_stability(w, 0.0, kg, 0.0, &[wing])
             .expect("solvable");
         let tcg = 300.0 * 1.025 * 0.4 / r2.displacement_t;
-        let expected_list = (tcg / r2.gm_m).atan().to_degrees();
-        assert!((r2.list_angle_deg - expected_list).abs() < 1e-9);
+        // The list solves GZ(phi) = TCG cos(phi) on the wall-sided arm and
+        // stays within a fraction of a percent of the small-angle answer.
+        let bm = {
+            let hs = hull.hydrostatics(r2.mean_draft_m);
+            hs.km_m - hs.kb_m
+        };
+        let p = r2.list_angle_deg.to_radians();
+        let residual = r2.gm_m * p.sin() + 0.5 * bm * p.tan().powi(2) * p.sin() - tcg * p.cos();
+        assert!(residual.abs() < 1e-9, "{residual}");
+        let small = (tcg / r2.gm_m).atan().to_degrees();
+        assert!(
+            (r2.list_angle_deg - small).abs() < 0.01 * small,
+            "{} vs {small}",
+            r2.list_angle_deg
+        );
         assert!(r2.list_angle_deg > 0.0, "starboard flood lists starboard");
     }
 
@@ -1779,5 +1844,44 @@ mod tests {
         assert!((v.area_to_30_deg - 30f64.to_radians()).abs() < 1e-9);
         assert!((v.area_to_40_deg - 40f64.to_radians()).abs() < 1e-9);
         assert!(v.passed);
+    }
+}
+
+#[cfg(test)]
+mod heel_solver_tests {
+    use super::heel_equilibrium_deg;
+
+    #[test]
+    fn without_a_bm_term_it_is_exactly_the_atan_list() {
+        for (gm, t) in [(1.0_f64, 0.1_f64), (0.5, 0.3), (2.0, 1.5), (0.2, 0.05)] {
+            let exact = (t / gm).atan().to_degrees();
+            assert!((heel_equilibrium_deg(gm, 0.0, t) - exact).abs() < 1e-9);
+            assert!((heel_equilibrium_deg(gm, 0.0, -t) + exact).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn the_solution_balances_the_wall_sided_arm_and_beats_small_angle() {
+        // A large list: GM 0.6, BM 8, TCG 0.35 — the BM tan^2 term makes
+        // the vessel stiffer than atan(TCG/GM) says.
+        let (gm, bm, t) = (0.6, 8.0, 0.35);
+        let phi = heel_equilibrium_deg(gm, bm, t);
+        let p = phi.to_radians();
+        let resid = gm * p.sin() + 0.5 * bm * p.tan().powi(2) * p.sin() - t * p.cos();
+        assert!(resid.abs() < 1e-12, "{resid}");
+        let small = (t / gm).atan().to_degrees();
+        assert!(phi < small && phi > 0.0, "{phi} vs small-angle {small}");
+        // Monotone in the offset.
+        assert!(heel_equilibrium_deg(gm, bm, 0.5) > phi);
+    }
+
+    #[test]
+    fn no_equilibrium_means_capsize_and_zero_offset_means_upright() {
+        assert_eq!(heel_equilibrium_deg(0.0, 8.0, 0.1), 90.0);
+        assert_eq!(heel_equilibrium_deg(-0.3, 8.0, -0.1), -90.0);
+        assert_eq!(heel_equilibrium_deg(1.0, 8.0, 0.0), 0.0);
+        // Offset far beyond any arm with no BM: no root below 90 deg
+        // would need TCG > GM tan(89.9); a huge offset capsizes.
+        assert_eq!(heel_equilibrium_deg(0.1, 0.0, 1.0e6), 90.0);
     }
 }

@@ -494,7 +494,7 @@ impl HullForm {
     /// [`Self::damage_stability`] and
     /// [`Self::damaged_survivability_cargo`] exactly; feed the
     /// per-stage `(heel, gz_max, range)` into
-    /// [`s_intermediate_factor`](crate::s_intermediate_factor) for the
+    /// [`s_intermediate_factor`] for the
     /// Reg. 7-2.2 survival probability.
     ///
     /// # Errors

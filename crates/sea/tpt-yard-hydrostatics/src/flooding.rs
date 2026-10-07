@@ -311,6 +311,97 @@ impl crate::HullForm {
         }
         Ok((equalization_s, stages))
     }
+
+    /// Staged flooding with cross-flooding inside each stage's
+    /// equilibrium. Every compartment is tagged: a *breach* compartment
+    /// (`equalizing = false`) is open to the sea and floods fully from
+    /// the first stage, while an *equalizing* compartment (the
+    /// opposite-side tank fed through the cross-flooding duct) follows
+    /// the Torricelli profile [`equalization_stage_fractions`]. Each
+    /// stage is solved at its own equilibrium — trim, GM with the stage's
+    /// free surface, and the large-angle heel from
+    /// [`heel_equilibrium_deg`](crate::heel_equilibrium_deg) — so the
+    /// returned heels show the asymmetric peak right after the breach and
+    /// its recovery as the duct fills the far side. The last stage has
+    /// every compartment full and reproduces
+    /// [`Self::damage_stability`] exactly.
+    ///
+    /// `heel_deg` is signed (positive to starboard); the righting-arm
+    /// scan runs from its magnitude. Returns the equalization time
+    /// ([`cross_flooding_time`]) with the stages.
+    ///
+    /// # Errors
+    ///
+    /// [`ProbabilisticError`](crate::ProbabilisticError) on the same
+    /// inputs as [`Self::damage_stages_equalization`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn damage_stages_cross_flooding(
+        &self,
+        displacement_t: f64,
+        lcg_from_midship_m: f64,
+        kg_m: f64,
+        free_surface_moment_tm: f64,
+        compartments: &[(crate::DamageCompartment, bool)],
+        n_stages: u32,
+        head0_m: f64,
+        duct_area_m2: f64,
+        discharge_coeff: f64,
+        supply_area_m2: f64,
+        flood_area_m2: f64,
+    ) -> Result<(f64, Vec<crate::FloodStage>), crate::ProbabilisticError> {
+        if n_stages == 0 {
+            return Err(crate::ProbabilisticError::UnsolvedDamage);
+        }
+        let equalization_s = cross_flooding_time(
+            head0_m,
+            0.0,
+            duct_area_m2,
+            discharge_coeff,
+            supply_area_m2,
+            flood_area_m2,
+        )
+        .map_err(|_| crate::ProbabilisticError::UnsolvedDamage)?;
+        let mut stages = Vec::with_capacity(n_stages as usize);
+        for eq_fraction in equalization_stage_fractions(n_stages) {
+            let scaled: Vec<crate::DamageCompartment> = compartments
+                .iter()
+                .map(|(c, equalizing)| {
+                    let f = if *equalizing { eq_fraction } else { 1.0 };
+                    crate::DamageCompartment {
+                        name: c.name.clone(),
+                        volume_m3: c.volume_m3 * f,
+                        centroid: c.centroid,
+                        free_surface_moment_tm: c.free_surface_moment_tm * f,
+                    }
+                })
+                .collect();
+            let damaged = self
+                .damage_stability(
+                    displacement_t,
+                    lcg_from_midship_m,
+                    kg_m,
+                    free_surface_moment_tm,
+                    &scaled,
+                )
+                .ok_or(crate::ProbabilisticError::UnsolvedDamage)?;
+            let (gz_max, range, theta_v) = self.gz_scan(
+                damaged.mean_draft_m,
+                damaged.gm_m,
+                damaged.list_angle_deg.abs(),
+            );
+            stages.push(crate::FloodStage {
+                fraction: eq_fraction,
+                displacement_t: damaged.displacement_t,
+                mean_draft_m: damaged.mean_draft_m,
+                heel_deg: damaged.list_angle_deg,
+                gm_m: damaged.gm_m,
+                gz_max_m: gz_max,
+                range_deg: range,
+                vanishing_angle_deg: theta_v,
+            });
+        }
+        Ok((equalization_s, stages))
+    }
 }
 
 #[cfg(test)]
@@ -367,6 +458,59 @@ mod tests {
             ),
             Err(crate::ProbabilisticError::UnsolvedDamage)
         );
+    }
+
+    /// Cross-flooding inside the stage equilibrium: a port breach lists
+    /// the ship hard to port at once, then the duct fills the starboard
+    /// tank and the heel recovers monotonically to the symmetric end
+    /// state; the final stage is the full-flood `damage_stability`.
+    #[test]
+    fn cross_flooding_recovers_the_list_stage_by_stage() {
+        let hull = HullForm {
+            loa_m: 140.0,
+            boa_m: 22.0,
+            cb: 0.72,
+            cwp: 0.85,
+        };
+        let mk = |name: &str, y: f64| DamageCompartment {
+            name: name.into(),
+            volume_m3: 600.0,
+            centroid: (5.0, y, 2.0),
+            free_surface_moment_tm: 0.0,
+        };
+        let comps = vec![(mk("WBT P", -8.0), false), (mk("WBT S", 8.0), true)];
+        let (t, stages) = hull
+            .damage_stages_cross_flooding(
+                30_000.0, 0.0, 9.0, 0.0, &comps, 5, 2.0, 0.3, 0.6, 600.0, 600.0,
+            )
+            .expect("solves");
+        assert!(t > 0.0);
+        // Port breach alone lists to port (negative heel) at stage 1.
+        assert!(stages[0].heel_deg < -0.5, "{}", stages[0].heel_deg);
+        // The list recovers monotonically as the starboard tank fills.
+        for w in stages.windows(2) {
+            assert!(w[1].heel_deg > w[0].heel_deg, "{:?}", stages);
+        }
+        // Mirror-image compartments full: upright, and identical to the
+        // single-shot damage_stability on the full set.
+        let last = stages.last().unwrap();
+        assert!(last.heel_deg.abs() < 1e-9, "{}", last.heel_deg);
+        let full: Vec<DamageCompartment> = comps.iter().map(|(c, _)| c.clone()).collect();
+        let single = hull
+            .damage_stability(30_000.0, 0.0, 9.0, 0.0, &full)
+            .unwrap();
+        assert!((last.mean_draft_m - single.mean_draft_m).abs() < 1e-12);
+        assert!((last.gm_m - single.gm_m).abs() < 1e-12);
+        // Flooded displacement grows monotonically.
+        for w in stages.windows(2) {
+            assert!(w[1].displacement_t > w[0].displacement_t);
+        }
+        // Zero stages refused.
+        assert!(hull
+            .damage_stages_cross_flooding(
+                30_000.0, 0.0, 9.0, 0.0, &comps, 0, 2.0, 0.3, 0.6, 600.0, 600.0
+            )
+            .is_err());
     }
 
     fn tank() -> TankCompartment {

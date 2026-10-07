@@ -107,6 +107,22 @@ equalization), and `top_plan_area_m2` gives tanks trapezoidal walls
 (fill height by the quadratic formula, CG by the first-moment closed
 form).
 
-What remains class-society work: tank plans with non-vertical walls,
-per-stage heel solvers with cross-flooding time effects inside the
-stage physics, and survival-craft arrangement assumptions.
+## Heel and cross-flooding inside each stage
+
+The list is no longer the small-angle `atan(TCG/GM)`:
+[`heel_equilibrium_deg`](tpt_yard_hydrostatics::heel_equilibrium_deg) solves
+the wall-sided balance `GM sin(phi) + (BM/2) tan^2(phi) sin(phi) = TCG
+cos(phi)` by bisection (unique root for GM > 0; exactly `atan(TCG/GM)` when
+BM = 0; stiffer than small-angle for big lists; +/-90 degrees when no
+equilibrium exists). Every stage uses it.
+
+[`damage_stages_cross_flooding`](tpt_yard_hydrostatics::HullForm::damage_stages_cross_flooding)
+tags each compartment as a *breach* (open to the sea, flooded fully from the
+first stage) or *equalizing* (the far-side tank fed through the duct,
+following the Torricelli profile). Each stage is its own equilibrium, so the
+signed heels show the asymmetric peak right after the breach and its recovery
+as the duct fills the opposite tank; with mirror tanks the heel climbs
+monotonically back to upright and the last stage equals `damage_stability`.
+
+What remains class-society work: tank plans with non-vertical walls beyond
+the trapezoidal case and survival-craft arrangement assumptions.
