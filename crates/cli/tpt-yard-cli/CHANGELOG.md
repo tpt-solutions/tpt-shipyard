@@ -1,5 +1,11 @@
 # Changelog
 
+
+## [0.1.0](https://github.com/tpt-solutions/tpt-shipyard/releases/tag/tpt-yard-cli-v0.1.0) - 2026-10-07
+
+### Other
+
+- Merge pull request #14 from tpt-solutions/dependabot/github_actions/softprops/action-gh-release-3
 ##
 - `pdf-report project.json [--out file.pdf]`: the full calculation
   package (weights, by-group, phases, schedule, risk, structural check)
