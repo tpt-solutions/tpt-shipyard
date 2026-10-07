@@ -50,7 +50,7 @@ pub enum ScheduleObjective {
     /// first-to-last span over the dock-drawing activities reported in
     /// [`ScheduleResult::dock_occupancy_h`] (dock contention itself is
     /// a levelling job — pair this with
-    /// [`Self::resource_leveling_with_limits`] and a Drydock limit).
+    /// [`ShipyardScheduler::resource_leveling_with_limits`] and a Drydock limit).
     MinimizeDrydockTime,
     /// Maximum parallelism (earliest starts everywhere).
     MaximizeParallelism,
