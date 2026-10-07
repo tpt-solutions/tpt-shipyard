@@ -198,6 +198,36 @@ pub fn padeye_check(
     out_of_plane_deg: f64,
 ) -> PadeyeCheck {
     let mut notes = Vec::new();
+    let positive = |x: f64| x.is_finite() && x > 0.0;
+    let non_negative = |x: f64| x.is_finite() && x >= 0.0;
+    let valid = load_kn.is_finite()
+        && daf.is_finite()
+        && out_of_plane_deg.is_finite()
+        && positive(geo.plate_thickness_mm)
+        && positive(geo.hole_diameter_mm)
+        && positive(geo.root_width_mm)
+        && positive(geo.edge_distance_mm)
+        && positive(geo.pin_diameter_mm)
+        && non_negative(geo.root_arm_mm)
+        && non_negative(geo.weld_leg_mm)
+        && positive(material.yield_mpa)
+        && positive(material.ultimate_mpa);
+    if !valid {
+        // A NaN or non-physical input must never report a safe lug.
+        return PadeyeCheck {
+            bearing_utilization: f64::NAN,
+            net_section_utilization: f64::NAN,
+            tear_out_utilization: f64::NAN,
+            root_bending_utilization: f64::NAN,
+            weld_utilization: None,
+            design_load_kn: f64::NAN,
+            safe: false,
+            notes: vec![
+                "invalid input: loads, angles and dimensions must be finite, the lug dimensions positive and the root arm and weld leg non-negative"
+                    .into(),
+            ],
+        };
+    }
     let daf = if daf >= 1.0 { daf } else { 1.0 };
     let design_kn = load_kn.abs() * daf;
     let t = geo.plate_thickness_mm.max(1e-6);
@@ -224,7 +254,7 @@ pub fn padeye_check(
     // 4. Root bending + tension interaction: out-of-plane component
     //    P·sin(beta) on the root arm, section modulus of the root width.
     let beta = out_of_plane_deg.to_radians();
-    let p_out = design_kn * 1000.0 * beta.sin();
+    let p_out = design_kn * 1000.0 * beta.sin().abs();
     let moment_n_mm = p_out * geo.root_arm_mm;
     let section_modulus = geo.root_width_mm * t * t / 6.0;
     let bending = moment_n_mm / section_modulus;
@@ -247,13 +277,13 @@ pub fn padeye_check(
         ("tear-out", u_tear),
         ("root bending", u_root),
     ] {
-        if u > 1.0 {
+        if u.is_nan() || u > 1.0 {
             safe = false;
             notes.push(format!("{name} utilization {u:.2} exceeds 1.0"));
         }
     }
     if let Some(u) = u_weld {
-        if u > 1.0 {
+        if u.is_nan() || u > 1.0 {
             safe = false;
             notes.push(format!("weld throat utilization {u:.2} exceeds 1.0"));
         }
@@ -387,7 +417,13 @@ pub fn cog_uncertainty_envelope(
     sling_angle_deg: f64,
 ) -> f64 {
     let span = lift_span_m.max(1e-6);
-    let u = uncertainty_m.clamp(0.0, span);
+    // The CoG cannot move past a lift point: beyond span/2 the whole load
+    // sits on one point (share 1.0), never more.
+    let u = if uncertainty_m.is_finite() {
+        uncertainty_m.clamp(0.0, span / 2.0)
+    } else {
+        span / 2.0
+    };
     // Nominal centred CoG: each point takes half. Shifted CoG by u toward
     // one point: share = (span/2 + u) / span.
     let share = (span / 2.0 + u) / span;
@@ -498,6 +534,22 @@ pub fn pin_bending_check(
     material: &Material,
 ) -> PinCheck {
     let mut notes = Vec::new();
+    let positive = |x: f64| x.is_finite() && x > 0.0;
+    if !(load_kn.is_finite()
+        && daf.is_finite()
+        && positive(pin_diameter_mm)
+        && positive(clevis_span_mm)
+        && lug_thickness_mm.is_finite()
+        && lug_thickness_mm >= 0.0
+        && positive(material.yield_mpa))
+    {
+        return PinCheck {
+            bending_utilization: f64::NAN,
+            shear_utilization: f64::NAN,
+            safe: false,
+            notes: vec!["invalid input: loads and dimensions must be finite and positive".into()],
+        };
+    }
     let daf = if daf >= 1.0 { daf } else { 1.0 };
     let p_n = load_kn.abs() * 1000.0 * daf;
     let d = pin_diameter_mm.max(1e-6);
@@ -511,7 +563,7 @@ pub fn pin_bending_check(
     let u_bend = bending / (material.yield_mpa / 1.5);
     let u_shear = shear / (0.6 * material.yield_mpa / 1.5);
     let mut safe = true;
-    if u_bend > 1.0 {
+    if u_bend.is_nan() || u_bend > 1.0 {
         safe = false;
         notes.push(format!("pin bending utilization {u_bend:.2} exceeds 1.0"));
     }
@@ -816,5 +868,91 @@ mod tests {
             hook,
         );
         assert!(!legs_within_allowable(&loads, &points));
+    }
+}
+
+#[cfg(test)]
+mod phase8_tests {
+    use super::*;
+
+    fn lug() -> PadeyeGeometry {
+        PadeyeGeometry {
+            plate_thickness_mm: 40.0,
+            hole_diameter_mm: 60.0,
+            root_arm_mm: 100.0,
+            root_width_mm: 250.0,
+            edge_distance_mm: 90.0,
+            pin_diameter_mm: 55.0,
+            weld_leg_mm: 12.0,
+        }
+    }
+
+    fn steel() -> Material {
+        Material::ah36()
+    }
+
+    /// Regression (8A14): NaN and non-physical inputs used to compare as
+    /// "not above 1.0" and report a safe lug.
+    #[test]
+    fn nan_and_negative_inputs_never_report_safe() {
+        let ok = padeye_check(&lug(), &steel(), 100.0, 1.2, 10.0);
+        assert!(ok.safe, "{:?}", ok.notes);
+        for bad in [
+            padeye_check(&lug(), &steel(), f64::NAN, 1.2, 10.0),
+            padeye_check(&lug(), &steel(), 100.0, f64::NAN, 10.0),
+            padeye_check(&lug(), &steel(), 100.0, 1.2, f64::NAN),
+            padeye_check(&lug(), &steel(), f64::INFINITY, 1.2, 10.0),
+            padeye_check(
+                &PadeyeGeometry {
+                    root_arm_mm: -500.0,
+                    ..lug()
+                },
+                &steel(),
+                100.0,
+                1.2,
+                10.0,
+            ),
+            padeye_check(
+                &PadeyeGeometry {
+                    plate_thickness_mm: f64::NAN,
+                    ..lug()
+                },
+                &steel(),
+                100.0,
+                1.2,
+                10.0,
+            ),
+        ] {
+            assert!(!bad.safe && bad.bearing_utilization.is_nan());
+            assert!(bad.notes[0].contains("invalid input"));
+        }
+        let pin = pin_bending_check(55.0, 120.0, 40.0, 100.0, 1.2, &steel());
+        assert!(pin.safe, "{:?}", pin.notes);
+        assert!(!pin_bending_check(55.0, 120.0, 40.0, f64::NAN, 1.2, &steel()).safe);
+        assert!(!pin_bending_check(f64::NAN, 120.0, 40.0, 100.0, 1.2, &steel()).safe);
+    }
+
+    /// A sling out of the lug plane to either side bends the lug the same
+    /// way (the sign of the angle must not reduce the utilisation).
+    #[test]
+    fn out_of_plane_angle_sign_does_not_help() {
+        let plus = padeye_check(&lug(), &steel(), 400.0, 1.0, 20.0);
+        let minus = padeye_check(&lug(), &steel(), 400.0, 1.0, -20.0);
+        assert!((plus.root_bending_utilization - minus.root_bending_utilization).abs() < 1e-12);
+    }
+
+    /// Regression (8A14): the worst-case share is capped at 1.0 (the whole
+    /// load on one point), not 1.5 for an uncertainty past the lift point.
+    #[test]
+    fn envelope_share_never_exceeds_one() {
+        // span 2 m, uncertainty 5 m, vertical legs (90 deg): <= W.
+        let t = cog_uncertainty_envelope(1000.0, 2.0, 5.0, 90.0);
+        assert!((t - 1000.0).abs() < 1e-9, "{t}");
+        // Uncertainty 0.5 m of a 2 m span: share (1 + 0.5) / 2 = 0.75.
+        let t = cog_uncertainty_envelope(1000.0, 2.0, 0.5, 90.0);
+        assert!((t - 750.0).abs() < 1e-9, "{t}");
+        // NaN uncertainty is taken as the worst case.
+        let t = cog_uncertainty_envelope(1000.0, 2.0, f64::NAN, 90.0);
+        assert!((t - 1000.0).abs() < 1e-9);
     }
 }
