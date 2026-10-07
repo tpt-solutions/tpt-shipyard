@@ -419,9 +419,10 @@ pub struct WeightItem {
 /// over their stations) and the buoyancy distribution (prismatic, per the
 /// [`HullForm`]); integrating load over length gives the shear curve, and
 /// integrating shear gives the still-water bending moment. The peak
-/// hogging/sagging moment is compared against a class screening allow-
-/// able: `M_allow = C·L²·B·Cb` (t·m, with C ≈ 17.5 for a 140 m class —
-/// the IACS CSR-style coefficient scaled weakly with length).
+/// hogging/sagging moment is compared against an allowable: by default the
+/// order-of-magnitude screening proxy `0.175·L²·B·Cb` (t·m — about the
+/// size of the rule wave moment, *not* a class limit), or the ship's own
+/// loading-manual limit via [`HullForm::hull_girder_strength_with_limit`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct HullGirderResult {
     /// Still-water bending moment at each station (aft -> fore), t·m.
@@ -458,6 +459,25 @@ impl HullForm {
         items: &[WeightItem],
         n_stations: usize,
     ) -> HullGirderResult {
+        // The proxy was 17.5·L²·B·Cb, two orders of magnitude above the
+        // rule wave moment, so the check could never fail (Phase 8, 8A6).
+        let proxy = 0.175 * self.loa_m * self.loa_m * self.boa_m * self.cb;
+        self.hull_girder_strength_with_limit(items, n_stations, proxy)
+    }
+
+    /// [`Self::hull_girder_strength`] against the ship's own allowable
+    /// still-water bending moment, t·m (from the loading manual).
+    pub fn hull_girder_strength_with_limit(
+        &self,
+        items: &[WeightItem],
+        n_stations: usize,
+        allowable_tm: f64,
+    ) -> HullGirderResult {
+        let allowable = if allowable_tm.is_finite() && allowable_tm > 0.0 {
+            allowable_tm
+        } else {
+            f64::NAN
+        };
         let n = n_stations.max(2);
         let ds = self.loa_m / n as f64;
 
@@ -510,17 +530,12 @@ impl HullForm {
                     }
                 });
 
-        // Screening allowable: C x L^2 x B x Cb, C ~ 17.5 (CSR-style
-        // coefficient for this size range; weak length dependence
-        // simplified away).
-        let c = 17.5;
-        let allowable = c * self.loa_m * self.loa_m * self.boa_m * self.cb;
-
         HullGirderResult {
             peak_swbm_tm: peak,
             peak_station: peak_idx,
             allowable_tm: allowable,
-            utilization: peak / allowable.max(1e-9),
+            utilization: peak / allowable,
+            // A missing or invalid allowable never passes.
             passed: peak <= allowable,
             peak_sign: sign,
             swbm_tm: swbm,
@@ -561,7 +576,26 @@ pub fn high_strength_factor(grade: &str) -> Option<f64> {
     }
 }
 
+/// Standard gravity, m/s² (t·m → kN·m).
+pub const G_N_PER_KG: f64 = 9.806_65;
+
+impl HullGirderResult {
+    /// The peak still-water bending moment in kN·m (the unit
+    /// [`HullForm::scantling_requirement`] takes), from the t·m the
+    /// girder curves are in.
+    #[must_use]
+    pub fn peak_swbm_knm(&self) -> f64 {
+        self.peak_swbm_tm * G_N_PER_KG
+    }
+}
+
 impl HullForm {
+    /// [`Self::scantling_requirement`] for a still-water moment in t·m
+    /// (the unit [`HullGirderResult`] reports), converted to kN·m.
+    pub fn scantling_requirement_tm(&self, swbm_tm: f64, k_factor: f64) -> Option<GirderScantling> {
+        self.scantling_requirement(swbm_tm * G_N_PER_KG, k_factor)
+    }
+
     /// Screens the hull-girder scantling: the required section modulus
     /// against the CSR normal-stress allowable `175/k` MPa, combining the
     /// supplied still-water moment with the rule wave-induced moments
@@ -569,8 +603,12 @@ impl HullForm {
     /// check adds rule minimum modulus, local scantlings, buckling and
     /// sloping-floor corrections.
     ///
+    /// `swbm_knm` is in **kN·m** (a [`HullGirderResult`] reports t·m: use
+    /// [`Self::scantling_requirement_tm`] or
+    /// [`HullGirderResult::peak_swbm_knm`]).
+    ///
     /// Returns `None` when the length is outside the wave-moment rule
-    /// range (90-300 m) or the inputs are not physical.
+    /// range (90-500 m) or the inputs are not physical.
     pub fn scantling_requirement(&self, swbm_knm: f64, k_factor: f64) -> Option<GirderScantling> {
         if !(swbm_knm.is_finite() && swbm_knm >= 0.0) || !(k_factor.is_finite() && k_factor > 0.0) {
             return None;
@@ -799,21 +837,35 @@ impl HullForm {
         })
     }
 
-    /// IACS CSR wave-induced vertical bending moments (review 7H leftover):
-    /// sagging `+0.11·Cw·L²·B·(Cb+0.7)` and hogging `−0.13·Cw·L²·B·(Cb+0.7)`
-    /// in kN·m, with the wave coefficient `Cw = 10.75 − ((300−L)/100)^1.5`
-    /// for 90 ≤ L ≤ 300 m (returned as None outside the rule range).
-    /// Combine with the still-water moment from
-    /// [`Self::hull_girder_strength`] for the total girder demand.
+    /// IACS wave-induced vertical bending moments (UR S11 / CSR), kN·m,
+    /// as `(sagging, hogging)` with the hogging value negative:
+    ///
+    /// - sagging `+0.11·Cw·L²·B·(Cb+0.7)`;
+    /// - hogging `-0.19·Cw·L²·B·Cb`;
+    /// - wave coefficient `Cw = 10.75 − ((300−L)/100)^1.5` for
+    ///   90 ≤ L ≤ 300 m, `10.75` for 300 < L ≤ 350 m and
+    ///   `10.75 − ((L−350)/150)^1.5` for 350 < L ≤ 500 m (`None` outside
+    ///   90–500 m).
+    ///
+    /// The rule length `L` is taken as `loa_m` (the prismatic model has no
+    /// separate rule length); check the coefficients against your rule
+    /// edition before relying on them. Combine with the still-water moment
+    /// from [`Self::hull_girder_strength`] for the total girder demand.
     pub fn wave_bending_moment(&self) -> Option<(f64, f64)> {
         let l = self.loa_m;
-        if !(90.0..=300.0).contains(&l) {
+        if !(90.0..=500.0).contains(&l) {
             return None;
         }
-        let cw = 10.75 - ((300.0 - l) / 100.0).powf(1.5);
-        let base = 0.11 * cw * l * l * self.boa_m * (self.cb + 0.7);
-        let hog = -0.13 / 0.11 * base;
-        Some((base, hog))
+        let cw = if l <= 300.0 {
+            10.75 - ((300.0 - l) / 100.0).powf(1.5)
+        } else if l <= 350.0 {
+            10.75
+        } else {
+            10.75 - ((l - 350.0) / 150.0).powf(1.5)
+        };
+        let sag = 0.11 * cw * l * l * self.boa_m * (self.cb + 0.7);
+        let hog = -0.19 * cw * l * l * self.boa_m * self.cb;
+        Some((sag, hog))
     }
 }
 
@@ -1333,7 +1385,7 @@ mod tests {
         let req = hull.scantling_requirement(swbm, k).expect("in rule range");
         let cw = 10.75 - (1.6_f64).powf(1.5);
         let sag = 0.11 * cw * 140.0 * 140.0 * 22.0 * 1.42;
-        let hog = 0.13 / 0.11 * sag;
+        let hog = 0.19 * cw * 140.0 * 140.0 * 22.0 * 0.72;
         let allowable = 175.0 / 0.72;
         let w_sag = (swbm + sag) / allowable * 1e-3;
         let w_hog = (swbm + hog) / allowable * 1e-3;
@@ -1670,11 +1722,11 @@ mod tests {
                              // Cw = 10.75 - ((300-140)/100)^1.5 = 10.75 - 2.0236 = 8.7264.
         let cw = 10.75 - (1.6_f64).powf(1.5);
         let sag = 0.11 * cw * 140.0 * 140.0 * 22.0 * (0.72 + 0.7);
-        let hog = -0.13 / 0.11 * sag;
+        let hog = -0.19 * cw * 140.0 * 140.0 * 22.0 * 0.72;
         let (s, h) = hull.wave_bending_moment().expect("L inside rule range");
         assert!((s - sag).abs() < 1e-6, "{s} vs {sag}");
         assert!((h - hog).abs() < 1e-6, "{h} vs {hog}");
-        // Outside 90-300 m the rules do not apply.
+        // Outside 90-500 m the rules do not apply.
         let short = HullForm {
             loa_m: 60.0,
             boa_m: 12.0,
@@ -1839,47 +1891,59 @@ mod tests {
         assert!(r.swsf_t[0].abs() < 1e-6 && r.swsf_t[50].abs() < 1e-6);
     }
 
-    /// Verification: realistic hold loadings land at plausible utilizations
-    /// (0.05-0.5, matching real-ship SWBM margins under the CSR-style
-    /// allowable), monotone in the overload; the screening branch itself is
-    /// exercised with an absurd concentration as a pure math check (the
-    /// equilibrium buoyancy model means only *local* excess drives the
-    /// moment, so utilizations stay low for plausible loads).
+    /// Verification (rewritten for Phase 8, 8A6): the old test piled 72 000 t on
+    /// a 13 600 t ship and judged the result against an allowable two
+    /// orders too large. A single mass M amidships on uniform buoyancy has
+    /// the closed-form moment M·L/8, and the screen now fails when the
+    /// load grows past the allowable.
     #[test]
     fn allowable_screening_monotone_and_branches() {
         let hull = feeder();
-        // Balanced hold pattern (6 holds x 12000 t amidships).
-        let hold = |m: f64| {
-            let items: Vec<WeightItem> = [45.0, 55.0, 65.0, 75.0, 85.0, 95.0]
-                .iter()
-                .map(|&x| WeightItem { x_m: x, mass_t: m })
-                .collect();
-            hull.hull_girder_strength(&items, 40)
+        let l = hull.loa_m;
+        // A point mass at midship: peak moment M L / 8 (the triangular
+        // station split moves it a few percent).
+        let point = |m: f64| {
+            hull.hull_girder_strength(
+                &[WeightItem {
+                    x_m: l / 2.0,
+                    mass_t: m,
+                }],
+                70,
+            )
         };
-        let normal = hold(12_000.0);
-        assert!(normal.passed, "util {}", normal.utilization);
+        let r = point(2_000.0);
+        let hand = 2_000.0 * l / 8.0;
         assert!(
-            (0.02..=0.5).contains(&normal.utilization),
-            "plausible loading out of realistic band: {}",
-            normal.utilization
+            (r.peak_swbm_tm - hand).abs() < 0.03 * hand,
+            "{} vs hand {hand}",
+            r.peak_swbm_tm
         );
-        // Double the cargo: utilization roughly doubles (local excess
-        // drives it) and still passes.
-        let over = hold(26_000.0);
-        assert!(over.utilization > normal.utilization);
-        assert!(over.passed);
-
-        // Absurd single concentration: pure math check of the failure
-        // branch (not a physical loading).
-        let absurd = hull.hull_girder_strength(
-            &[WeightItem {
-                x_m: 70.0,
-                mass_t: 1_000_000.0,
-            }],
-            40,
+        assert!(r.passed, "util {}", r.utilization);
+        // Utilisation is linear in the mass and the check fails once the
+        // moment passes the proxy allowable (0.175 L^2 B Cb).
+        let (a, b) = (point(2_000.0), point(4_000.0));
+        assert!((b.utilization / a.utilization - 2.0).abs() < 1e-9);
+        let limit_mass = r.allowable_tm / (l / 8.0);
+        assert!(!point(1.2 * limit_mass).passed);
+        assert!(point(0.8 * limit_mass).passed);
+        // A balanced realistic loading (lightship spread evenly plus six
+        // holds amidships, 6.4 kt in all) is inside the proxy.
+        let mut items: Vec<WeightItem> = (0..8)
+            .map(|i| WeightItem {
+                x_m: 10.0 + 17.0 * i as f64,
+                mass_t: 500.0,
+            })
+            .collect();
+        items.extend([45.0, 55.0, 65.0, 75.0, 85.0, 95.0].map(|x| WeightItem {
+            x_m: x,
+            mass_t: 400.0,
+        }));
+        let balanced = hull.hull_girder_strength(&items, 70);
+        assert!(
+            balanced.passed && balanced.utilization > 0.0,
+            "{}",
+            balanced.utilization
         );
-        assert!(absurd.utilization > 1.0);
-        assert!(!absurd.passed);
     }
 
     /// Verification: the area integration is the trapezoid of GZ·dφ — a
@@ -2045,5 +2109,92 @@ mod imo_full_criteria_tests {
         let early = imo_2008_general_criteria_with_flooding(&c, Some(25.0));
         assert!(!early.passed);
         assert!(early.failures.iter().any(|f| f.contains("below 30")));
+    }
+}
+
+#[cfg(test)]
+mod girder_tests {
+    use super::*;
+
+    fn ship() -> HullForm {
+        HullForm {
+            loa_m: 140.0,
+            boa_m: 22.0,
+            cb: 0.72,
+            cwp: 0.85,
+        }
+    }
+
+    /// Hand values for the IACS UR S11 wave moments (140 x 22, Cb 0.72):
+    /// Cw = 10.75 - 1.6^1.5 = 8.7270, sag = 0.11 Cw L^2 B (Cb+0.7),
+    /// hog = -0.19 Cw L^2 B Cb.
+    #[test]
+    fn wave_moments_follow_ur_s11() {
+        let (sag, hog) = ship().wave_bending_moment().unwrap();
+        let cw = 10.75 - 1.6_f64.powf(1.5);
+        assert!(
+            (sag - 0.11 * cw * 19_600.0 * 22.0 * 1.42).abs() < 1e-6,
+            "{sag}"
+        );
+        assert!(
+            (hog + 0.19 * cw * 19_600.0 * 22.0 * 0.72).abs() < 1e-6,
+            "{hog}"
+        );
+        // Cw above 300 m: 10.75 to 350 m, then the 150 m rolloff.
+        let big = |l: f64| HullForm { loa_m: l, ..ship() }.wave_bending_moment();
+        let flat = |l: f64| big(l).unwrap().0 / (0.11 * l * l * 22.0 * 1.42);
+        assert!((flat(320.0) - 10.75).abs() < 1e-9);
+        assert!((flat(400.0) - (10.75 - (50.0_f64 / 150.0).powf(1.5))).abs() < 1e-9);
+        assert!(big(89.0).is_none() && big(501.0).is_none());
+    }
+
+    /// Regression (8A6): the allowable was ~100x the wave moment so the check
+    /// could never fail. A heavily hogged load now fails the screen, a
+    /// given loading-manual limit decides, and an invalid limit never passes.
+    #[test]
+    fn the_still_water_screen_can_fail() {
+        let h = ship();
+        // 20 000 t at midship against 4 000 t at each end: heavy hogging.
+        let items = [
+            WeightItem {
+                x_m: 5.0,
+                mass_t: 4_000.0,
+            },
+            WeightItem {
+                x_m: 70.0,
+                mass_t: 20_000.0,
+            },
+            WeightItem {
+                x_m: 135.0,
+                mass_t: 4_000.0,
+            },
+        ];
+        let r = h.hull_girder_strength(&items, 70);
+        assert!(r.peak_swbm_tm > 1.0e4, "{}", r.peak_swbm_tm);
+        // The proxy is the same order as the rule wave moment (kN.m / g).
+        let wave_tm = h.wave_bending_moment().unwrap().0 / G_N_PER_KG;
+        assert!(r.allowable_tm < 2.0 * wave_tm && r.allowable_tm > 0.2 * wave_tm);
+        let tight = h.hull_girder_strength_with_limit(&items, 70, 1.0e4);
+        assert!(!tight.passed && tight.utilization > 1.0);
+        let loose = h.hull_girder_strength_with_limit(&items, 70, 1.0e9);
+        assert!(loose.passed);
+        for bad in [0.0, -5.0, f64::NAN] {
+            assert!(!h.hull_girder_strength_with_limit(&items, 70, bad).passed);
+        }
+    }
+
+    /// 8A9: the kN.m / t.m bridge is explicit.
+    #[test]
+    fn explicit_unit_bridges_agree() {
+        let h = ship();
+        let a = h.scantling_requirement_tm(10_000.0, 1.0).unwrap();
+        let b = h.scantling_requirement(10_000.0 * G_N_PER_KG, 1.0).unwrap();
+        assert!((a.required_modulus_m3 - b.required_modulus_m3).abs() < 1e-12);
+        let items = [WeightItem {
+            x_m: 70.0,
+            mass_t: 20_000.0,
+        }];
+        let r = h.hull_girder_strength(&items, 40);
+        assert!((r.peak_swbm_knm() - r.peak_swbm_tm * G_N_PER_KG).abs() < 1e-9);
     }
 }

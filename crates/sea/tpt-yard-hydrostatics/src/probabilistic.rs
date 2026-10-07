@@ -267,10 +267,13 @@ pub fn s_final_factor(
             if ro_ro_deck { 20.0 } else { 16.0 },
         )
     };
+    // GZmax and Range are each capped at their target (Reg. 7-2.3: neither
+    // is "to be taken as more than" TGZmax / TRange); capping the product
+    // instead let a long range hide a weak arm.
+    let gz = gz_max_m.clamp(0.0, t_gz);
+    let range = range_deg.clamp(0.0, t_range);
     heel_gate_k(equilibrium_heel_deg, theta_min, theta_max)
-        * ((range_deg.max(0.0) / t_range) * (gz_max_m.max(0.0) / t_gz))
-            .powf(0.25)
-            .clamp(0.0, 1.0)
+        * ((range / t_range) * (gz / t_gz)).powf(0.25)
 }
 
 /// The Reg. 7-2.2 intermediate-stage factor: `[GZmax/0.05 ×
@@ -403,6 +406,40 @@ impl HullForm {
         free_surface_moment_tm: f64,
         compartments: &[DamageCompartment],
     ) -> Result<DamagedSurvivability, ProbabilisticError> {
+        self.damaged_survivability_cargo_with_flooding(
+            displacement_t,
+            lcg_from_midship_m,
+            kg_m,
+            free_surface_moment_tm,
+            compartments,
+            None,
+        )
+    }
+
+    /// [`Self::damaged_survivability_cargo`] with the angle at which an
+    /// unprotected opening floods (or the deck edge immerses). The
+    /// wall-sided arm only grows with heel, so without a limit the range
+    /// runs to 90 degrees and the attained index is overstated; Reg. 7-2
+    /// ends the range at the downflooding angle. `None` keeps the
+    /// unlimited (upper-bound) scan.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::damaged_survivability_cargo`], plus
+    /// [`ProbabilisticError::UnsolvedDamage`] for a non-positive or
+    /// non-finite flooding angle.
+    pub fn damaged_survivability_cargo_with_flooding(
+        &self,
+        displacement_t: f64,
+        lcg_from_midship_m: f64,
+        kg_m: f64,
+        free_surface_moment_tm: f64,
+        compartments: &[DamageCompartment],
+        flooding_angle_deg: Option<f64>,
+    ) -> Result<DamagedSurvivability, ProbabilisticError> {
+        if flooding_angle_deg.is_some_and(|f| !f.is_finite() || f <= 0.0) {
+            return Err(ProbabilisticError::UnsolvedDamage);
+        }
         let damaged = self
             .damage_stability(
                 displacement_t,
@@ -412,8 +449,13 @@ impl HullForm {
                 compartments,
             )
             .ok_or(ProbabilisticError::UnsolvedDamage)?;
-        let theta_e = damaged.list_angle_deg.max(0.0);
-        let (gz_max, range, theta_v) = self.gz_scan(damaged.mean_draft_m, damaged.gm_m, theta_e);
+        let theta_e = damaged.list_angle_deg.abs();
+        let (gz_max, range, theta_v) = self.gz_scan_to(
+            damaged.mean_draft_m,
+            damaged.gm_m,
+            theta_e,
+            flooding_angle_deg.unwrap_or(90.0),
+        );
         let s = s_factor_cargo(theta_e, gz_max, range);
         Ok(DamagedSurvivability {
             equilibrium_heel_deg: theta_e,
@@ -430,6 +472,19 @@ impl HullForm {
     /// rebuilds as `GM sin(phi) + BM tan^2(phi) sin(phi) / 2`. A
     /// non-positive GM gives `(0, 0, theta_e)`.
     pub(crate) fn gz_scan(&self, mean_draft_m: f64, gm: f64, theta_e_deg: f64) -> (f64, f64, f64) {
+        self.gz_scan_to(mean_draft_m, gm, theta_e_deg, 90.0)
+    }
+
+    /// [`Self::gz_scan`] ending at `limit_deg` (the downflooding angle):
+    /// the range is measured to the lesser of the vanishing angle and the
+    /// limit.
+    pub(crate) fn gz_scan_to(
+        &self,
+        mean_draft_m: f64,
+        gm: f64,
+        theta_e_deg: f64,
+        limit_deg: f64,
+    ) -> (f64, f64, f64) {
         let bm = {
             let hs = self.hydrostatics(mean_draft_m);
             hs.km_m - hs.kb_m
@@ -444,9 +499,9 @@ impl HullForm {
             return (0.0, 0.0, theta_e);
         }
         let step = 0.25_f64;
-        let (mut gz_max, mut theta_v) = (0.0_f64, 90.0_f64);
+        let (mut gz_max, mut theta_v) = (0.0_f64, limit_deg.min(90.0));
         let mut phi = theta_e;
-        while phi <= 90.0 {
+        while phi <= limit_deg {
             let gz = gz_at(phi);
             if gz <= 0.0 && phi > theta_e {
                 theta_v = phi;
@@ -559,9 +614,11 @@ impl HullForm {
 /// `sum(mass * 9.81 * distance) / 1000`. The rule's arrangement
 /// assumptions (which craft, swung positions) are the caller's.
 pub fn survival_craft_moment(craft: &[(f64, f64)]) -> f64 {
+    // kg x m / 1000 = t.m (the unit `s_mom_factor` and its Reg. 7-2.4
+    // formula use); the earlier version also multiplied by g, giving kN.m.
     craft
         .iter()
-        .map(|(mass_kg, outboard_m)| mass_kg * 9.81 * outboard_m / 1000.0)
+        .map(|(mass_kg, outboard_m)| mass_kg * outboard_m / 1000.0)
         .sum()
 }
 
@@ -833,15 +890,84 @@ mod tests {
         );
     }
 
-    /// The survival-craft moment sums mass * g * outboard arm.
+    /// Regression (8A2): the wall-sided arm only grows, so an unlimited scan
+    /// runs to 90 degrees. A flooding angle ends the range and the peak
+    /// there, lowering the survival factor.
+    #[test]
+    fn downflooding_angle_limits_the_damaged_scan() {
+        let hull = HullForm {
+            loa_m: 140.0,
+            boa_m: 22.0,
+            cb: 0.72,
+            cwp: 0.85,
+        };
+        let comps = vec![DamageCompartment {
+            name: "DB 3".into(),
+            volume_m3: 300.0,
+            centroid: (10.0, 0.0, 1.25),
+            free_surface_moment_tm: 0.0,
+        }];
+        let open = hull
+            .damaged_survivability_cargo(13_000.0, 0.0, 8.0, 0.0, &comps)
+            .unwrap();
+        assert!(open.range_deg > 80.0, "{}", open.range_deg);
+        let limited = hull
+            .damaged_survivability_cargo_with_flooding(13_000.0, 0.0, 8.0, 0.0, &comps, Some(25.0))
+            .unwrap();
+        assert!(
+            (limited.range_deg - 25.0).abs() < 1e-9,
+            "{}",
+            limited.range_deg
+        );
+        assert!(limited.vanishing_angle_deg <= 25.0 + 1e-9);
+        assert!(limited.gz_max_m < open.gz_max_m);
+        // A tight limit also lowers s when the unlimited curve scored 1.
+        assert!(limited.s_factor <= open.s_factor);
+        let early = hull
+            .damaged_survivability_cargo_with_flooding(13_000.0, 0.0, 8.0, 0.0, &comps, Some(8.0))
+            .unwrap();
+        assert!(early.s_factor < limited.s_factor || limited.s_factor < 1.0);
+        for bad in [0.0, -5.0, f64::NAN] {
+            assert!(hull
+                .damaged_survivability_cargo_with_flooding(
+                    13_000.0,
+                    0.0,
+                    8.0,
+                    0.0,
+                    &comps,
+                    Some(bad)
+                )
+                .is_err());
+        }
+    }
+
+    /// The survival-craft moment sums mass x outboard arm in t.m (the unit
+    /// `s_mom_factor` takes; it was kN.m, a factor g too large).
     #[test]
     fn survival_craft_moment_sums_the_launching_list() {
-        // Two fully loaded boats at 3 m and one raft at 4 m outboard.
+        // Two fully loaded boats at 3 m and one raft at 4 m outboard:
+        // (6000*3*2 + 1000*4) kg.m / 1000 = 40 t.m.
         let m = survival_craft_moment(&[(6_000.0, 3.0), (6_000.0, 3.0), (1_000.0, 4.0)]);
-        let expected = (6_000.0 * 9.81 * 3.0) * 2.0 / 1000.0 + 1_000.0 * 9.81 * 4.0 / 1000.0;
-        assert!((m - expected).abs() < 1e-9);
-        assert!((m - 392.4).abs() < 1e-9, "hand value {m}");
+        assert!((m - 40.0).abs() < 1e-9, "hand value {m}");
         assert_eq!(survival_craft_moment(&[]), 0.0);
+        // Feeds s_mom directly: 40 t.m against GZmax 0.30 m on 10 000 t.
+        let s = s_mom_factor(0.30, 10_000.0, m);
+        assert_eq!(s, 1.0, "(0.30-0.04)*10000/40 = 65 caps at 1");
+    }
+
+    /// Regression (8A7): GZmax and Range are capped separately. A long range
+    /// with a weak arm used to read as a full pass (product capped at 1).
+    #[test]
+    fn s_final_caps_gz_and_range_separately() {
+        // Range 40 deg (cap 16), GZmax 0.06 m (cap 0.12), K = 1:
+        // ((16/16) * (0.06/0.12))^0.25 = 0.5^0.25 = 0.8409.
+        let s = s_final_factor(0.0, 0.06, 40.0, false, false);
+        assert!((s - 0.5_f64.powf(0.25)).abs() < 1e-12, "{s}");
+        // Both capped -> exactly 1, never above.
+        assert_eq!(s_final_factor(0.0, 0.5, 90.0, false, false), 1.0);
+        // The ro-ro targets are 0.20 m / 20 deg.
+        let r = s_final_factor(0.0, 0.10, 40.0, false, true);
+        assert!((r - 0.5_f64.powf(0.25)).abs() < 1e-12, "{r}");
     }
 
     /// The reference coefficients for `Ls <= 198 m` in exact fractions:
