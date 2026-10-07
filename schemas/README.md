@@ -14,6 +14,14 @@ Wire-format schemas for the engine's JSON documents (review 7C):
   `OrbitalAssembly` planning.
 - `weld-procedure.schema.json` — WPS records in `test-data/welding-procedures/`
   (`WeldProcedure::from_json`).
+- `stability-case.schema.json` — the case file read by `tpt-yard stability`
+  (and written by `new-hull` / `import-hull`): a hull (offsets CSV or prismatic
+  coefficients) plus a loading condition.
+- `hull-offsets.table-schema.json` — the offsets CSV itself, as a
+  [Frictionless Table Schema](https://specs.frictionlessdata.io/table-schema/)
+  (`station_x_m, draft_m, half_breadth_m`; the file-level rules the schema
+  cannot express — each station starts at the baseline, no repeated drafts —
+  are in its description and enforced by `parse_offsets_csv`).
 
 Two files in `test-data/` are reference parameter sets for the examples, not
 engine wire formats, and are documented by their own contents instead of a

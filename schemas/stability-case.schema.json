@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tpt-solutions.github.io/tpt-shipyard/schemas/stability-case.schema.json",
+  "title": "Stability case (tpt-yard stability)",
+  "description": "Input of `tpt-yard stability`: a hull (an offsets CSV, or prismatic coefficients) plus a loading condition. Written by `tpt-yard new-hull` and `tpt-yard import-hull`; see test-data/stability/. Command-line flags override the loading fields.",
+  "type": "object",
+  "properties": {
+    "vessel": { "type": "string", "description": "Display name used in reports." },
+    "offsets_csv": {
+      "type": "string",
+      "description": "Path to a hull-offsets CSV (see hull-offsets.table-schema.json), relative to this file. Wins over `hull` when both are given."
+    },
+    "hull": {
+      "type": "object",
+      "description": "Prismatic screening model, used when no offsets table is given. Far cruder than offsets: Cwp/Cb stand in for the real form.",
+      "required": ["loa_m", "boa_m"],
+      "properties": {
+        "loa_m": { "type": "number", "exclusiveMinimum": 0 },
+        "boa_m": { "type": "number", "exclusiveMinimum": 0 },
+        "cb": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.7 },
+        "cwp": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.85 },
+        "depth_m": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Only used to default the draft (65 %) and KG (55 %) when `loading` omits them."
+        }
+      }
+    },
+    "loading": {
+      "type": "object",
+      "properties": {
+        "draft_m": { "type": "number", "exclusiveMinimum": 0 },
+        "kg_m": { "type": "number", "description": "Centre of gravity above the baseline." },
+        "free_surface_moment_tm": { "type": "number", "minimum": 0, "default": 0 }
+      }
+    }
+  },
+  "anyOf": [{ "required": ["offsets_csv"] }, { "required": ["hull"] }],
+  "$comment": "Without `hull.depth_m`, `loading.draft_m` and `loading.kg_m` are required (or the --draft/--kg flags)."
+}

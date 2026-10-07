@@ -1,0 +1,24 @@
+{
+  "$schema": "https://specs.frictionlessdata.io/schemas/table-schema.json",
+  "title": "Hull offsets table (tpt-yard stability)",
+  "description": "Frictionless Table Schema for the offsets CSV read by `parse_offsets_csv`. One row per offset. Comma, semicolon or tab separated; `#` starts a comment; one optional header row; rows in any order. Each station (same station_x_m) must start at the baseline (draft_m = 0), must not repeat a draft, and needs at least two offsets; at least two stations are required. The hull is taken as symmetric about the centreline, so only the half-breadth is given.",
+  "fields": [
+    {
+      "name": "station_x_m",
+      "type": "number",
+      "description": "Longitudinal position from midship, metres, positive forward."
+    },
+    {
+      "name": "draft_m",
+      "type": "number",
+      "description": "Height above the baseline, metres.",
+      "constraints": { "minimum": 0 }
+    },
+    {
+      "name": "half_breadth_m",
+      "type": "number",
+      "description": "Half-breadth of the section at that height, metres.",
+      "constraints": { "minimum": 0 }
+    }
+  ]
+}
