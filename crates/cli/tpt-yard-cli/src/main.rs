@@ -10,6 +10,11 @@
 //! - `export MANIFEST.json [--gltf out.gltf] [--ifc out.ifc]` — block
 //!   division written out as glTF 2.0 (merged mesh) and/or IFC4 STEP
 //!   (one named product per block) for web viewers and BIM tools.
+//! - `stability CASE.json [--offsets F.csv] [--draft M] [--kg M] [--csv PREFIX]`
+//!   `[--svg F.svg] [--strict]` — hydrostatics, GZ curve and the IMO 2008
+//!   criteria from a hull-offsets table or a prismatic screen (`stability.rs`).
+//! - `new-hull <wigley|barge|workboat|tug|sailboat|ferry> [--out DIR]` — write a runnable hull
+//!   (offsets CSV + stability case) to start from (`hulls.rs`).
 //! - `schedule FILE.json [--limit kind=value]...` — CPM critical path and
 //!   resource levelling for a vessel project's activities; `--limit`
 //!   states yard-wide capacities per resource kind (crane tonnes, crew
@@ -20,6 +25,10 @@
 //!   the workspace templates.
 //!
 //! Every command takes `--json` to emit machine-readable output.
+
+mod help;
+mod hulls;
+mod stability;
 
 use std::collections::BTreeMap;
 use std::process::ExitCode;
@@ -33,9 +42,13 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
-            eprintln!(
-                "usage: tpt-yard <validate|plan|schedule|risk|report|new|export|html-report|pdf-report> [--json] ..."
-            );
+            match args.first().and_then(|c| help::usage_of(c)) {
+                Some(usage) => eprintln!(
+                    "
+{usage}"
+                ),
+                None => eprintln!("run `tpt-yard --help` for the command list"),
+            }
             ExitCode::FAILURE
         }
     }
@@ -55,7 +68,38 @@ fn split_flag<'a>(args: &'a [String], flag: &str) -> (bool, Vec<&'a str>) {
 }
 
 fn run(args: &[&str], json_mode: bool) -> Result<(), String> {
-    let (cmd, rest) = args.split_first().ok_or("missing subcommand")?;
+    let Some((cmd, rest)) = args.split_first() else {
+        print!("{}", help::overview());
+        return Err("missing subcommand".into());
+    };
+    match *cmd {
+        "--help" | "-h" => {
+            print!("{}", help::overview());
+            return Ok(());
+        }
+        "--version" | "-V" => {
+            println!("tpt-yard {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        "help" => {
+            return match rest.first() {
+                None => {
+                    print!("{}", help::overview());
+                    Ok(())
+                }
+                Some(c) => {
+                    print!("{}", help::usage_of(c).ok_or(unknown_command(c))?);
+                    Ok(())
+                }
+            };
+        }
+        _ if rest.iter().any(|a| *a == "--help" || *a == "-h") => {
+            let usage = help::usage_of(cmd).ok_or(unknown_command(cmd))?;
+            print!("{usage}");
+            return Ok(());
+        }
+        _ => {}
+    }
     match *cmd {
         "validate" => validate(rest.first().ok_or("validate needs a file path")?),
         "plan" => plan(
@@ -63,6 +107,8 @@ fn run(args: &[&str], json_mode: bool) -> Result<(), String> {
             json_mode,
         ),
         "export" => export_cmd(rest, json_mode),
+        "stability" => stability::run(rest, json_mode),
+        "new-hull" => hulls::run(rest, json_mode),
         "schedule" => schedule(rest, json_mode),
         "risk" => risk(rest, json_mode),
         "report" => report(rest.first().ok_or("report needs a file path")?, json_mode),
@@ -110,7 +156,14 @@ fn run(args: &[&str], json_mode: bool) -> Result<(), String> {
             }
             pdf_report(args.first().ok_or("pdf-report needs a project path")?, &out)
         }
-        other => Err(format!("unknown subcommand '{other}'")),
+        other => Err(unknown_command(other)),
+    }
+}
+
+fn unknown_command(cmd: &str) -> String {
+    match help::suggest(cmd) {
+        Some(near) => format!("unknown subcommand '{cmd}' — did you mean '{near}'?"),
+        None => format!("unknown subcommand '{cmd}'"),
     }
 }
 

@@ -1,0 +1,5 @@
+{
+  "vessel": "Container ship 1400 TEU (prismatic screen)",
+  "hull": { "loa_m": 140.0, "boa_m": 22.0, "cb": 0.70, "cwp": 0.85 },
+  "loading": { "draft_m": 7.8, "kg_m": 6.6, "free_surface_moment_tm": 0.0 }
+}

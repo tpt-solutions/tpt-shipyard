@@ -873,6 +873,7 @@ version = "0.1.0"
 dependencies = [
  "tpt-yard",
  "tpt-yard-core",
+ "tpt-yard-hydrostatics",
 ]
 
 [[package]]

@@ -1,0 +1,5 @@
+{
+  "vessel": "Wigley hull (analytic reference)",
+  "offsets_csv": "wigley-offsets.csv",
+  "loading": { "draft_m": 5.0, "kg_m": 3.5, "free_surface_moment_tm": 0.0 }
+}

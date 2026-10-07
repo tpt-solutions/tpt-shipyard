@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 tpt-yard = { workspace = true }
 tpt-yard-core = { workspace = true }
+tpt-yard-hydrostatics = { workspace = true }
 
 [lints]
 workspace = true

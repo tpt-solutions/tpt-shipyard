@@ -31,15 +31,14 @@ and `CHANGELOG.md`; crates.io `keywords` and `categories` are declared in each
 manifest. See for example
 [`crates/structural/tpt-yard-welding`](crates/structural/tpt-yard-welding).
 
-| Crate | Description | Status |
-|---|---|---|
-
 Status legend: **Done** = implemented and verified against analytical/golden
 cases. **Simplified model** = working, but with documented modelling
 simplifications (see each crate's README — several are roadmap items to
 deepen). **Stand-in** = a thin, honest bridge awaiting the companion
 `tpt-transport` / `tpt-process` / `tpt-earth` substrates.
 
+| Crate | Description | Status |
+|---|---|---|
 | `tpt-yard-core` | Core shipyard types: vessel projects, build phases, activities | Done |
 | `tpt-yard-assembly` | Shared assembly-activity primitives: dependency graphs | Done |
 | `tpt-yard-weight` | Weight and CoG management | Done |
@@ -54,7 +53,7 @@ deepen). **Stand-in** = a thin, honest bridge awaiting the companion
 | `tpt-yard-launch` | Launch calculations | Simplified model (statics screening + dynamic slipway simulation with stern-lift/poppet/way-moment series) |
 | `tpt-yard-outfitting` | Systems installation and routing | Simplified model (AABB routing checks) |
 | `tpt-yard-sea-trials` | Sea-trial test planning | Done |
-| `tpt-yard-hydrostatics` | Hydrostatics, GZ curves, IMO 2008 stability, hull-girder strength, damage stability, scantlings | Simplified model (prismatic hull; Bonjean/cross-curves, SOLAS probabilistic damage stability (cargo, single-zone), local plate scantlings + Euler buckling shipped; class buckling curves and probabilistic r/v factors on roadmap) |
+| `tpt-yard-hydrostatics` | Hydrostatics, GZ curves, IMO 2008 stability, hull-girder strength, damage stability, scantlings | Simplified model (prismatic screen, plus hull-offsets hydrostatics and constant-displacement GZ from a CSV offsets table; Bonjean/cross-curves, SOLAS probabilistic damage stability (cargo, multi-zone, with r- and v-factors), local plate scantlings + Euler/EN 1993-1-5 buckling shipped; class (CSR) buckling curves and rule minimum-thickness tables on roadmap) |
 | `tpt-yard-orbital-assembly` | Orbital assembly planning | Simplified model (greedy sequence, kinematic checks) |
 | `tpt-yard-space-structural` | Structures without launch constraints | Simplified model (analytical screening) |
 | `tpt-yard-space-manufacturing` | In-space manufacturing and additive construction | Simplified model (estimate-grade constants) |
@@ -136,6 +135,24 @@ Run a complete worked example with
 `test-data/`. The `examples/` directory covers block assembly, a submarine
 pressure hull, drydock flooding, orbital truss assembly, a rotating habitat,
 and in-space solar-array manufacturing.
+
+### Stability from the command line
+
+Hydrostatics, the GZ curve and the IMO 2008 intact-stability criteria for a
+loading condition, from a hull-offsets CSV (full form) or prismatic
+coefficients (screening):
+
+```text
+cargo run -p tpt-yard-cli -- new-hull workboat --out my-hull   # offsets CSV + case file
+cargo run -p tpt-yard-cli -- stability my-hull/workboat.json --csv out --svg gz.svg --strict
+```
+
+`new-hull` writes a runnable starting point (`wigley`, `barge`, `workboat`, `tug`, `sailboat` or `ferry`,
+every dimension adjustable); replace its offsets CSV with your own lines
+plan to analyse your hull. `--strict` exits non-zero when a criterion fails, so it drops straight into
+CI; `--json` gives machine-readable output. The Wigley offsets in
+`test-data/stability/` are checked against the hull's closed-form
+hydrostatics. See the [stability chapter](docs/book/src/intact-stability.md).
 
 Geometry leaves the engine in open formats: `tpt_yard::export::geometry_to_gltf`
 writes a self-contained glTF 2.0 document for web viewers,

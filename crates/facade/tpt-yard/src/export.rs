@@ -396,21 +396,42 @@ pub fn geometry_from_gltf(text: &str) -> Result<Geometry3D, String> {
         .and_then(|n| n.as_u64())
         .ok_or("gltf: index bufferView offset missing")? as usize;
 
+    // The declared counts are untrusted: check that the views fit the
+    // decoded buffer before allocating or slicing.
+    let face_count = index_count / 3;
+    let fits = |offset: usize, n: usize| {
+        n.checked_mul(12)
+            .and_then(|len| offset.checked_add(len))
+            .is_some_and(|end| end <= bin.len())
+    };
+    if !fits(pos_offset, positions) {
+        return Err("gltf: POSITION view exceeds the buffer".into());
+    }
+    if !fits(idx_offset, face_count) {
+        return Err("gltf: index view exceeds the buffer".into());
+    }
+    let word = |o: usize| -> [u8; 4] { [bin[o], bin[o + 1], bin[o + 2], bin[o + 3]] };
+
     let mut vertices = Vec::with_capacity(positions);
     for i in 0..positions {
         let o = pos_offset + i * 12;
-        let x = f32::from_le_bytes(bin[o..o + 4].try_into().expect("4 bytes")) as f64;
-        let y = f32::from_le_bytes(bin[o + 4..o + 8].try_into().expect("4 bytes")) as f64;
-        let z = f32::from_le_bytes(bin[o + 8..o + 12].try_into().expect("4 bytes")) as f64;
+        let x = f32::from_le_bytes(word(o)) as f64;
+        let y = f32::from_le_bytes(word(o + 4)) as f64;
+        let z = f32::from_le_bytes(word(o + 8)) as f64;
         vertices.push(Vector3::new(x, y, z));
     }
-    let mut faces = Vec::with_capacity(index_count / 3);
-    for i in 0..index_count / 3 {
+    let mut faces = Vec::with_capacity(face_count);
+    for i in 0..face_count {
         let o = idx_offset + i * 12;
-        let a = u32::from_le_bytes(bin[o..o + 4].try_into().expect("4 bytes"));
-        let b = u32::from_le_bytes(bin[o + 4..o + 8].try_into().expect("4 bytes"));
-        let c = u32::from_le_bytes(bin[o + 8..o + 12].try_into().expect("4 bytes"));
-        faces.push([a, b, c]);
+        let tri = [
+            u32::from_le_bytes(word(o)),
+            u32::from_le_bytes(word(o + 4)),
+            u32::from_le_bytes(word(o + 8)),
+        ];
+        if tri.iter().any(|&ix| ix as usize >= positions) {
+            return Err(format!("gltf: face {i} indexes a vertex out of range"));
+        }
+        faces.push(tri);
     }
     Ok(Geometry3D { vertices, faces })
 }
@@ -472,6 +493,18 @@ mod tests {
         // Malformed input is a message, not a panic.
         assert!(geometry_from_gltf("{}").is_err());
         assert!(geometry_from_gltf("not json").is_err());
+    }
+
+    /// Declared counts larger than the embedded buffer (truncated file,
+    /// hostile count) are errors, not slice panics or huge allocations.
+    #[test]
+    fn gltf_reader_rejects_counts_beyond_the_buffer() {
+        let g = Geometry3D::from_box(1.0, 1.0, 1.0);
+        let text = geometry_to_gltf(&g, "bad counts");
+        let n = g.vertices.len();
+        let inflated = text.replacen(&format!("\"count\":{n}"), "\"count\":4000000000", 1);
+        assert_ne!(inflated, text, "the POSITION count was rewritten");
+        assert!(geometry_from_gltf(&inflated).is_err());
     }
 
     /// The IFC document is a well-formed STEP physical file: markers in

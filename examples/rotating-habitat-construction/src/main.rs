@@ -6,7 +6,22 @@ use tpt_yard_core::Material;
 use tpt_yard_habitat::{HabitatDesigner, HabitatType};
 use tpt_yard_space_structural::SpaceStructuralDesigner;
 
+/// Reports a bad path or manifest as one `error:` line and a nonzero
+/// exit, instead of the default panic message and backtrace hint.
+fn install_error_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let payload = info.payload();
+        let msg = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("unexpected failure");
+        eprintln!("error: {msg} (check the manifest path and fields)");
+    }));
+}
+
 fn main() {
+    install_error_hook();
     // The habitat reference parameters (review 7F: examples read their test
     // data and accept a path argument). Defaults to the repo's Stanford
     // torus reference (RFC 0005).

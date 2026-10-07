@@ -562,7 +562,7 @@ impl DigitalTwin {
         match &self.support_condition {
             SupportCondition::KeelBlocks { positions } if positions.len() >= 2 => {
                 let mut xs: Vec<f64> = positions.iter().map(|p| p.x).collect();
-                xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                xs.sort_by(f64::total_cmp);
                 let aft = xs[0];
                 let fore = xs[xs.len() - 1];
                 let span = fore - aft;

@@ -12,6 +12,14 @@ tpt-yard schedule <project.json> [--limit crane=200 --limit crew=40] [--json]
                                                # yard-wide capacities per resource kind for
                                                # capacity-aware levelling
 tpt-yard report <project.json> [--json]        # weight / CoG / structural summary
+tpt-yard new-hull <wigley|barge|workboat|tug|sailboat|ferry> [--loa M --beam M --draft M --depth M --kg M] [--out DIR]
+                                               # write a runnable hull: offsets CSV + stability case
+tpt-yard --help | --version | <command> --help # usage; a mistyped command suggests the nearest one
+tpt-yard stability <case.json> [--offsets hull.csv] [--draft M] [--kg M] [--fsm TM]
+                   [--to-deg DEG] [--csv PREFIX] [--svg gz.svg] [--strict] [--json]
+                                               # hydrostatics + GZ curve + IMO 2008 criteria
+                                               # from a hull-offsets CSV or prismatic coefficients;
+                                               # --strict exits 1 on a failed criterion
 tpt-yard new <sea|space> [NAME] [--json]       # scaffold a project
 ```
 

@@ -35,6 +35,7 @@
 use std::fmt;
 
 mod flooding;
+mod offsets;
 mod probabilistic;
 mod scantlings;
 
@@ -42,6 +43,7 @@ pub use flooding::{
     cross_flooding_time, equalization_stage_fractions, flood_cg_z, flood_volume_m3,
     tank_free_surface_moment_tm, tank_stage_compartment, FloodingError, TankCompartment,
 };
+pub use offsets::parse_offsets_csv;
 pub use probabilistic::{
     attained_subdivision_index, combined_cargo_index, multi_zone_p_factor, p_factor, r_factor,
     required_index_cargo, s_factor_cargo, s_final_factor, s_intermediate_factor, s_mom_factor,
@@ -141,7 +143,8 @@ pub struct GzPoint {
 /// The computed GZ curve.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GzCurve {
-    /// Points from 0° to `to_deg` in 10° steps.
+    /// Points from 0° to `to_deg` (10° steps for the prismatic model, the
+    /// requested step for [`Bonjean::gz_curve`]).
     pub points: Vec<GzPoint>,
     /// Effective GM after the free-surface correction, m.
     pub gm_corrected_m: f64,
@@ -258,66 +261,88 @@ impl HullForm {
     /// - maximum GZ at ≥ 25° heel;
     /// - corrected initial GM ≥ 0.15 m.
     pub fn imo_2008_general(&self, gz: &GzCurve, _draft_m: f64) -> ImoVerdict {
-        let interp = |deg: f64| -> f64 {
-            let (a, b) = gz
-                .points
-                .windows(2)
-                .find(|w| w[0].heel_deg <= deg && w[1].heel_deg >= deg)
-                .map(|w| (w[0], w[1]))
-                .unwrap_or((
-                    gz.points[gz.points.len() - 2],
-                    gz.points[gz.points.len() - 1],
-                ));
-            let t = (deg - a.heel_deg) / (b.heel_deg - a.heel_deg).max(1e-9);
-            a.gz_m + t * (b.gz_m - a.gz_m)
-        };
-        // Area by trapezoid on a fine grid.
-        let area_to = |limit: f64| -> f64 {
-            let n = 60;
-            let step = limit / n as f64;
-            (0..n)
-                .map(|i| {
-                    // GZ is in metres, dφ in radians — no conversion of the
-                    // ordinate.
-                    let a = interp(limit * i as f64 / n as f64);
-                    let b = interp(limit * (i + 1) as f64 / n as f64);
-                    0.5 * (a + b) * step.to_radians()
-                })
-                .sum::<f64>()
-        };
-        let area_30 = area_to(30.0);
-        let area_40 = area_to(40.0);
-        // Ties resolve to the LARGEST heel (a flat curve attains its max
-        // at every angle, so "max GZ at >= 25 deg" must hold).
-        let (max_gz, max_heel) = gz.points.iter().fold((0.0f64, 0.0f64), |(gm, gh), p| {
-            if p.gz_m >= gm {
-                (p.gz_m, p.heel_deg)
-            } else {
-                (gm, gh)
-            }
-        });
-        let mut failures = Vec::new();
-        if area_30 < 0.055 {
-            failures.push(format!("area to 30° {area_30:.4} < 0.055 m·rad"));
-        }
-        if area_40 < 0.090 {
-            failures.push(format!("area to 40° {area_40:.4} < 0.090 m·rad"));
-        }
-        if max_heel < 25.0 {
-            failures.push(format!("max GZ at {max_heel:.0}° < 25°"));
-        }
-        if gz.gm_corrected_m < 0.15 {
-            failures.push(format!("GM {:.3} m < 0.15 m", gz.gm_corrected_m));
-        }
-        ImoVerdict {
-            passed: failures.is_empty(),
-            area_to_30_deg: area_30,
-            area_to_40_deg: area_40,
-            max_gz_heel_deg: max_heel,
-            max_gz_m: max_gz,
+        imo_2008_general_criteria(gz)
+    }
+}
+
+/// The IMO 2008 IS Code general criteria on any GZ curve — the prismatic
+/// model's or one from hull offsets ([`Bonjean::gz_curve`]). The curve
+/// must reach 40° (and have at least two points); a shorter curve fails
+/// with a message rather than being extrapolated.
+pub fn imo_2008_general_criteria(gz: &GzCurve) -> ImoVerdict {
+    let reach = gz.points.last().map_or(0.0, |p| p.heel_deg);
+    if gz.points.len() < 2 || reach < 40.0 {
+        return ImoVerdict {
+            passed: false,
+            area_to_30_deg: 0.0,
+            area_to_40_deg: 0.0,
+            max_gz_heel_deg: 0.0,
+            max_gz_m: 0.0,
             gm_corrected_m: gz.gm_corrected_m,
-            failures,
+            failures: vec![format!(
+                "the GZ curve reaches {reach:.0}°; the criteria need it to reach 40°"
+            )],
+        };
+    }
+    let interp = |deg: f64| -> f64 {
+        let (a, b) = gz
+            .points
+            .windows(2)
+            .find(|w| w[0].heel_deg <= deg && w[1].heel_deg >= deg)
+            .map(|w| (w[0], w[1]))
+            .unwrap_or((
+                gz.points[gz.points.len() - 2],
+                gz.points[gz.points.len() - 1],
+            ));
+        let t = (deg - a.heel_deg) / (b.heel_deg - a.heel_deg).max(1e-9);
+        a.gz_m + t * (b.gz_m - a.gz_m)
+    };
+    // Area by trapezoid on a fine grid.
+    let area_to = |limit: f64| -> f64 {
+        let n = 60;
+        let step = limit / n as f64;
+        (0..n)
+            .map(|i| {
+                // GZ is in metres, dφ in radians — no conversion of the
+                // ordinate.
+                let a = interp(limit * i as f64 / n as f64);
+                let b = interp(limit * (i + 1) as f64 / n as f64);
+                0.5 * (a + b) * step.to_radians()
+            })
+            .sum::<f64>()
+    };
+    let area_30 = area_to(30.0);
+    let area_40 = area_to(40.0);
+    // Ties resolve to the LARGEST heel (a flat curve attains its max
+    // at every angle, so "max GZ at >= 25 deg" must hold).
+    let (max_gz, max_heel) = gz.points.iter().fold((0.0f64, 0.0f64), |(gm, gh), p| {
+        if p.gz_m >= gm {
+            (p.gz_m, p.heel_deg)
+        } else {
+            (gm, gh)
         }
+    });
+    let mut failures = Vec::new();
+    if area_30 < 0.055 {
+        failures.push(format!("area to 30° {area_30:.4} < 0.055 m·rad"));
+    }
+    if area_40 < 0.090 {
+        failures.push(format!("area to 40° {area_40:.4} < 0.090 m·rad"));
+    }
+    if max_heel < 25.0 {
+        failures.push(format!("max GZ at {max_heel:.0}° < 25°"));
+    }
+    if gz.gm_corrected_m < 0.15 {
+        failures.push(format!("GM {:.3} m < 0.15 m", gz.gm_corrected_m));
+    }
+    ImoVerdict {
+        passed: failures.is_empty(),
+        area_to_30_deg: area_30,
+        area_to_40_deg: area_40,
+        max_gz_heel_deg: max_heel,
+        max_gz_m: max_gz,
+        gm_corrected_m: gz.gm_corrected_m,
+        failures,
     }
 }
 
@@ -970,7 +995,7 @@ impl Bonjean {
         }
         let x_min = sorted[0].x_from_midship_m;
         let x_max = sorted[sorted.len() - 1].x_from_midship_m;
-        let n = (sorted.len() * 8 - 1).max(200);
+        let n = (sorted.len() * 8).max(200); // even, as Simpson needs
         let dx = (x_max - x_min) / n as f64;
         let area = |i: usize| {
             let x = x_min + i as f64 * dx;
@@ -1000,9 +1025,10 @@ impl Bonjean {
         }
     }
 
-    /// Cross-curve ordinate KN at heel: the buoyancy point's arm from the
-    /// keel measured along the ship's centreline plane,
-    /// `KN = z_B cos phi + y_B sin phi`, from a strip integration of the
+    /// Cross-curve ordinate KN at heel: the lever from the keel to the
+    /// line of action of the buoyancy,
+    /// `KN = -y_B cos phi + z_B sin phi` (`y_B < 0` on the submerged
+    /// side, so `KN ~ KM sin phi` at small heel), from a strip integration of the
     /// submerged width of every station under the inclined waterline. The
     /// waterline rotates about the centreline point `(0, draft)` — the
     /// classical cross-curve convention — so its plane is
@@ -1039,7 +1065,7 @@ impl Bonjean {
             (sorted.len() - 1, sorted.len() - 1, 0.0)
         };
 
-        let n = (sorted.len() * 8 - 1).max(200);
+        let n = (sorted.len() * 8).max(200); // even, as Simpson needs
         let dx = (x_max - x_min) / n as f64;
         // Vertical strips: z up to a generous cap (deepest table point plus
         // margin covers all realistic sections).
@@ -1108,7 +1134,7 @@ impl Bonjean {
         let y_cb = my / vol;
         let z_cb = mz / vol;
         let _ = mx;
-        (vol * RHO_SEA_T_M3, z_cb * cos + y_cb * sin)
+        (vol * RHO_SEA_T_M3, -y_cb * cos + z_cb * sin)
     }
 }
 
@@ -1286,7 +1312,7 @@ mod tests {
         // gained/lost wall-sided triangles cancel), and the wedge pair
         // moves the buoyancy centre to
         //   z = T/2 + B^2 tan^2/(24 T),  y = -B^2 tan/(12 T),
-        // so KN = z cos(phi) + y sin(phi).
+        // so KN = -y cos(phi) + z sin(phi) (~ KM sin(phi) at small heel).
         for &phi_deg in &[10.0, 25.0] {
             let (disp, kn) = box_hull.cross_curve_ordinate(t, phi_deg);
             let expected_disp = 140.0 * 22.0 * t * 1.025;
@@ -1297,7 +1323,7 @@ mod tests {
             let tan = phi_deg.to_radians().tan();
             let z_bar = t / 2.0 + 22.0_f64.powi(2) * tan * tan / (24.0 * t);
             let y_bar = -22.0_f64.powi(2) * tan / (12.0 * t);
-            let expected = z_bar * phi_deg.to_radians().cos() + y_bar * phi_deg.to_radians().sin();
+            let expected = -y_bar * phi_deg.to_radians().cos() + z_bar * phi_deg.to_radians().sin();
             assert!(
                 (kn - expected).abs() < 0.03 * expected.max(1.0),
                 "heel {phi_deg}: KN {kn} vs {expected}"
@@ -1328,7 +1354,7 @@ mod tests {
         // At 45 deg (tan = 1) the constant-volume waterline is z + y = T'
         // with (T' + B/2)^2 / 2 = upright area: the flooded section is the
         // exact triangle (−B/2, 0), (T', 0), (−B/2, T'+B/2), so
-        // KN = (z' + y')/sqrt(2) with (y', z') its centroid.
+        // KN = (z' - y')/sqrt(2) with (y', z') its centroid.
         let expected_tri_area = t * 22.0; // upright section area, m^2
         let t_heel_expected = (2.0 * expected_tri_area).sqrt() - 11.0;
         assert!(
@@ -1337,17 +1363,20 @@ mod tests {
         );
         let y_c = (5.248_f64 - 11.0 - 11.0) / 3.0;
         let z_c = (t_heel_expected + 11.0) / 3.0;
-        let kn_expected = (z_c + y_c) / std::f64::consts::SQRT_2;
+        let kn_expected = (z_c - y_c) / std::f64::consts::SQRT_2;
         let (_, kn45) = box_hull.cross_curve_ordinate(t_heel, 45.0);
         assert!(
             (kn45 - kn_expected).abs() < 0.02,
             "KN {kn45} vs triangle {kn_expected}"
         );
-        // A KG = T/2 box has lost stability by 45 deg: GZ is negative —
-        // the screening says so honestly.
+        // The beamy KG = T/2 box (GM = 6.7 m) is still strongly stable at
+        // 45 deg: KN = 11/sqrt(2), so GZ = 11/sqrt(2) - 3 sin(45) = 4 sqrt(2).
         let gz = kn45 - 3.0 * 45.0_f64.to_radians().sin();
-        assert!(gz < 0.0, "KG=T/2 box must be unstable at 45 deg: {gz}");
-        // ...and still positive at 25 deg with the constant-volume draft.
+        assert!(
+            (gz - 4.0 * std::f64::consts::SQRT_2).abs() < 0.03,
+            "GZ at 45 deg: {gz}"
+        );
+        // ...and positive at 25 deg with the constant-volume draft.
         let (mut lo, mut hi) = (1.0_f64, 12.0_f64);
         for _ in 0..40 {
             let mid = 0.5 * (lo + hi);

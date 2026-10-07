@@ -21,6 +21,7 @@
 
 - [Hull Blocks](hull-blocks.md)
 - [Launch Analysis](launch-analysis.md)
+- [Intact Stability from Offsets](intact-stability.md)
 - [Damage Stability](damage-stability.md)
 - [Scantling Checks](scantlings.md)
 - [Outfitting](outfitting.md)

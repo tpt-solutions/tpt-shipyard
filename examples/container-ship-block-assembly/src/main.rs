@@ -10,7 +10,22 @@ use tpt_yard_digital_twin::{DigitalTwin, SupportCondition};
 use tpt_yard_hull::{HullConstruction, HullGeometry};
 use tpt_yard_weight::{ItemStatus, WeightItem, WeightModel};
 
+/// Reports a bad path or manifest as one `error:` line and a nonzero
+/// exit, instead of the default panic message and backtrace hint.
+fn install_error_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let payload = info.payload();
+        let msg = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("unexpected failure");
+        eprintln!("error: {msg} (check the manifest path and fields)");
+    }));
+}
+
 fn main() {
+    install_error_hook();
     // The block-division manifest (review 7F: examples read their test data
     // and accept a path argument). Defaults to the repo's 140 m container
     // ship; pass another manifest path to plan a different hull.
