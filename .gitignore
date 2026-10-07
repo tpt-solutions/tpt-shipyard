@@ -42,3 +42,7 @@ docs/book/book/
 # Local env
 .env
 .env.local
+
+# Benchmark hulls fetched on demand by scripts/fetch-benchmark-hulls.py
+# (third-party geometry, not redistributed here)
+/test-data/benchmarks/
