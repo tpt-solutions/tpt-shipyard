@@ -748,14 +748,19 @@ fn joint_dist(a: &[f64], b: &[f64]) -> f64 {
 
 /// Smallest signed difference between two yaw angles, in `(-π, π]`.
 fn yaw_diff(target: f64, current: f64) -> f64 {
-    let mut e = target - current;
-    while e > std::f64::consts::PI {
-        e -= 2.0 * std::f64::consts::PI;
+    let e = target - current;
+    if !e.is_finite() {
+        return 0.0;
     }
-    while e < -std::f64::consts::PI {
-        e += 2.0 * std::f64::consts::PI;
+    // `rem_euclid` terminates for any magnitude (a subtract loop spins
+    // forever once |e| exceeds 2^53 * 2pi).
+    let tau = 2.0 * std::f64::consts::PI;
+    let w = e.rem_euclid(tau);
+    if w > std::f64::consts::PI {
+        w - tau
+    } else {
+        w
     }
-    e
 }
 
 /// Solves the dense `n × n` system `a·x = b` in place by Gaussian
@@ -793,6 +798,19 @@ fn solve_dense(a: &mut [Vec<f64>], b: &mut [f64]) -> Option<Vec<f64>> {
 
 #[cfg(test)]
 mod tests {
+    /// Regression (2026-10-08 review): a huge or non-finite yaw error made
+    /// the subtract loop spin forever.
+    #[test]
+    fn yaw_diff_terminates_and_wraps() {
+        use std::f64::consts::PI;
+        assert!((yaw_diff(0.1, 0.0) - 0.1).abs() < 1e-12);
+        assert!((yaw_diff(2.0 * PI + 0.1, 0.0) - 0.1).abs() < 1e-9);
+        assert!((yaw_diff(-PI - 0.1, 0.0) - (PI - 0.1)).abs() < 1e-9);
+        assert!(yaw_diff(1e300, 0.0).abs() <= PI);
+        assert_eq!(yaw_diff(f64::INFINITY, 0.0), 0.0);
+        assert_eq!(yaw_diff(f64::NAN, 0.0), 0.0);
+    }
+
     use super::*;
 
     fn two_link() -> RoboticArm {

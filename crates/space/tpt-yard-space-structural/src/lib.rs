@@ -239,7 +239,8 @@ impl SpaceStructuralDesigner {
     pub fn micrometeoroid_shielding(&self, required_protection_mm: f64) -> ShieldDesign {
         let d = required_protection_mm.max(0.0);
         let bumper = (d / 8.0).max(0.5);
-        let standoff = (d / 10.0).max(0.1);
+        // Standoff ~10·d: `d` is in mm, the field is in metres (d/100).
+        let standoff = (d / 100.0).max(0.02);
         let rear = (0.4 * d).max(1.5);
         let areal = (bumper + rear) / 1000.0 * self.material.density_kg_m3;
         ShieldDesign {
@@ -349,10 +350,10 @@ mod tests {
     fn shielding_matches_iss_proportions() {
         let designer = SpaceStructuralDesigner::new(Material::aa5083());
         let s = designer.micrometeoroid_shielding(10.0);
-        // Columbus-class: ~1.3 mm bumper (d/8), ~100 mm standoff (d/10),
+        // Columbus-class: ~1.3 mm bumper (d/8), ~100 mm standoff (10·d),
         // ~4 mm rear wall (0.4 d).
         assert!((s.bumper_thickness_mm - 1.25).abs() < 0.1);
-        assert!((s.standoff_m - 1.0).abs() < 1e-9);
+        assert!((s.standoff_m - 0.1).abs() < 1e-9);
         assert!((s.rear_wall_thickness_mm - 4.0).abs() < 1e-9);
         let s1 = designer.micrometeoroid_shielding(3.0);
         assert!(s.rear_wall_thickness_mm > s1.rear_wall_thickness_mm);
@@ -366,8 +367,8 @@ mod tests {
         assert!(s2.bumper_thickness_mm > s1.bumper_thickness_mm);
         assert!(s2.standoff_m > s1.standoff_m);
         assert!(s2.areal_density_kg_m2 > s1.areal_density_kg_m2);
-        // ISS-calibrated ratios: standoff d/10, rear wall 0.4 d.
-        assert!((s2.standoff_m - 1.0).abs() < 1e-9);
+        // ISS-calibrated ratios: standoff 10·d (= 100 mm at d = 10 mm), rear wall 0.4 d.
+        assert!((s2.standoff_m - 0.1).abs() < 1e-9);
         assert!((s2.rear_wall_thickness_mm - 4.0).abs() < 1e-9);
     }
 

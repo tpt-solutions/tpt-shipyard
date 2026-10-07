@@ -821,7 +821,7 @@ println!("life fraction: {:.2}", fatigue.life_fraction);""",
         "model": [
             "Thin-ring hoop stress with the structural material density; radial growth is the elastic strain times the radius.",
             "Coffin-Manson life `N_f = 0.5 (dE / (3.5 sigma_u / E))^(-1/0.12)`; aluminium's higher expansion burns life faster than steel (tested ordering).",
-            "Whipple ratios (bumper d/6, standoff d/10, wall d/12) are NASA ship-set screening practice, documented in RFC 0005.",
+            "Whipple ratios (bumper d/8, standoff 10·d, rear wall 0.4·d) are calibrated to published ISS dual-wall sets, documented in RFC 0005.",
         ],
         "verification": [
             "Golden: `rotating-habitat-stress.json` at machine precision",

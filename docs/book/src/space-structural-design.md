@@ -32,6 +32,6 @@ higher expansion (aluminium) or lower ductility burns life faster.
 
 ## Micrometeoroid shielding
 
-Whipple-shield screening sizes: bumper `d/6` mm, standoff `d/10` m, rear
-wall `d/12` mm for protected particle diameter `d`, with package areal
+Whipple-shield screening sizes: bumper `d/8` mm, standoff `10·d` mm, rear
+wall `0.4·d` mm for protected particle diameter `d`, with package areal
 density. Environment flux converts to expected impacts per year per area.
