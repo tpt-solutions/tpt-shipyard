@@ -58,9 +58,44 @@ jobs:
           name: tpt-yard-wasm-web
           path: pkg/
 
+  binaries:
+    name: CLI binary (${{ matrix.target }})
+    needs: [test, verify-tag]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
+          - { target: x86_64-apple-darwin, os: macos-15-intel }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build tpt-yard
+        run: cargo build --release --locked -p tpt-yard-cli
+      - name: Smoke-test the binary
+        shell: bash
+        run: |
+          bin=target/release/tpt-yard
+          "$bin" --version
+          "$bin" validate templates/container-ship.json
+          "$bin" new-hull wigley --out "$RUNNER_TEMP/hull"
+          "$bin" stability "$RUNNER_TEMP/hull/wigley.json" --strict
+      - name: Package
+        shell: bash
+        run: python scripts/package-cli.py "${{ matrix.target }}" "${GITHUB_REF#refs/tags/v}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cli-${{ matrix.target }}
+          path: dist/*
+
   github-release:
     name: GitHub Release
-    needs: publish
+    needs: [publish, binaries]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -71,8 +106,18 @@ jobs:
         with:
           name: tpt-yard-wasm-web
           path: pkg
-      - name: Create release with generated notes and WASM assets
+      - name: Download CLI binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: cli-*
+          path: dist
+          merge-multiple: true
+      - name: Combined checksum file
+        run: cd dist && cat *.sha256 > SHA256SUMS
+      - name: Create release with generated notes, WASM and CLI assets
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: pkg/*
+          files: |
+            pkg/*
+            dist/*

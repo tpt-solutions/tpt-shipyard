@@ -41,6 +41,31 @@ jobs:
       - name: Docs
         run: cargo doc --workspace --no-deps --locked
 
+  cli-binary:
+    name: CLI binary packaging (${{ matrix.os }})
+    needs: fmt
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The same build, smoke test and packaging the release workflow runs
+      # per target, so a broken release path shows up on the PR.
+      - run: cargo build --release --locked -p tpt-yard-cli
+      - name: Smoke-test and package
+        shell: bash
+        run: |
+          bin=target/release/tpt-yard
+          "$bin" --version
+          "$bin" new-hull wigley --out "$RUNNER_TEMP/hull"
+          "$bin" stability "$RUNNER_TEMP/hull/wigley.json" --strict
+          python scripts/package-cli.py "${{ runner.os }}-test" 0.0.0
+          ls dist
+
   examples:
     name: Examples run
     needs: fmt
@@ -109,6 +134,20 @@ jobs:
           assert p90 >= p50 > 0
           print("python bindings OK")
           EOF
+      # The distributable form: a real wheel built by maturin (one per
+      # interpreter), installed into a clean venv and driven through the
+      # offsets path against the Wigley closed forms.
+      - name: Build, install and smoke-test the wheel
+        run: |
+          python -m venv /tmp/whl
+          /tmp/whl/bin/pip install maturin
+          /tmp/whl/bin/maturin build --release --locked -m crates/bindings/tpt-yard-py/Cargo.toml -o /tmp/wheels
+          /tmp/whl/bin/pip install --no-index --find-links /tmp/wheels tpt-yard
+          /tmp/whl/bin/python crates/bindings/tpt-yard-py/tests/offsets_smoke.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-wheel
+          path: /tmp/wheels/*.whl
 
   wasm:
     name: WASM build + browser tests
